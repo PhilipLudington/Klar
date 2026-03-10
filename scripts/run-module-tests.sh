@@ -699,6 +699,50 @@ else
     echo "⊘ yaml (test not found, skipping)"
 fi
 
+echo "--- channel: Channel builtins ---"
+temp_bin="/tmp/klar_module_channel"
+if [ -d "$TEST_DIR/channel" ]; then
+    if $KLAR build $TEST_DIR/channel/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ channel (exit: $result)"
+            record_success "channel"
+        else
+            echo "✗ channel (expected: 0, got: $result)"
+            record_failure "channel" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ channel (build failed)"
+        record_failure "channel" "build failed"
+    fi
+else
+    echo "⊘ channel (test not found, skipping)"
+fi
+
+echo "--- threadpool: ThreadPool builtins ---"
+temp_bin="/tmp/klar_module_threadpool"
+if [ -d "$TEST_DIR/threadpool" ]; then
+    if $KLAR build $TEST_DIR/threadpool/main.kl -o "$temp_bin" 2>/dev/null; then
+        run_with_timeout 10 "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ threadpool (exit: $result)"
+            record_success "threadpool"
+        else
+            echo "✗ threadpool (expected: 0, got: $result)"
+            record_failure "threadpool" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ threadpool (build failed)"
+        record_failure "threadpool" "build failed"
+    fi
+else
+    echo "⊘ threadpool (test not found, skipping)"
+fi
+
 TOTAL=$((PASSED + FAILED))
 
 # Write results JSON

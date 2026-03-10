@@ -2387,6 +2387,41 @@ pub const TypeChecker = struct {
         });
 
         // ====================================================================
+        // Phase 9.4: Channel builtins
+        // ====================================================================
+
+        // channel_create#[T](capacity: i32) -> (Sender#[T], Receiver#[T])
+        // This is special-cased in checkCall for generic type resolution.
+        // We register it as a function taking i32 and returning a tuple (the
+        // type parameter resolution happens in the checkCall special case).
+        // For now, register a simple version; the actual return type is
+        // resolved during type checking of the call expression.
+        {
+            const channel_elem = self.type_builder.i32Type();
+            const sender_t = try self.type_builder.senderType(channel_elem);
+            const receiver_t = try self.type_builder.receiverType(channel_elem);
+            const tuple_elems = try self.allocator.dupe(types.Type, &[_]types.Type{ sender_t, receiver_t });
+            const channel_ret = try self.type_builder.tupleType(tuple_elems);
+            const channel_fn_type = try self.type_builder.functionType(&.{self.type_builder.i32Type()}, channel_ret);
+            try self.current_scope.define(.{
+                .name = "channel_create",
+                .type_ = channel_fn_type,
+                .kind = .function,
+                .mutable = false,
+                .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+            });
+        }
+
+        // ThreadPool type - thread pool for concurrent task execution
+        try self.current_scope.define(.{
+            .name = "ThreadPool",
+            .type_ = self.type_builder.threadPoolType(),
+            .kind = .type_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // ====================================================================
         // Register builtin trait implementations for I/O types
         // ====================================================================
 
@@ -3720,6 +3755,31 @@ pub const TypeChecker = struct {
             // Special handling for Some/None constructors to infer Optional type from context
             if (std.mem.eql(u8, func_name, "Some") or std.mem.eql(u8, func_name, "None")) {
                 return self.checkSomeNoneCall(call, std.mem.eql(u8, func_name, "Some"));
+            }
+
+            // Special handling for channel_create#[T](capacity) -> (Sender#[T], Receiver#[T])
+            if (std.mem.eql(u8, func_name, "channel_create")) {
+                if (call.args.len != 1) {
+                    self.addError(.invalid_call, call.span, "channel_create requires exactly 1 argument (capacity), got {d}", .{call.args.len});
+                    return self.type_builder.unknownType();
+                }
+                const cap_type = self.checkExpr(call.args[0]);
+                if (!cap_type.isInteger()) {
+                    self.addError(.type_mismatch, call.args[0].span(), "channel_create capacity must be an integer", .{});
+                }
+                // Resolve element type from type args
+                var elem_type: types.Type = self.type_builder.i32Type(); // default
+                if (call.type_args) |ta| {
+                    if (ta.len == 1) {
+                        elem_type = type_resolution.resolveTypeExpr(self, ta[0]) catch self.type_builder.unknownType();
+                    } else if (ta.len > 1) {
+                        self.addError(.type_mismatch, call.span, "channel_create expects exactly 1 type argument", .{});
+                    }
+                }
+                const sender_t = self.type_builder.senderType(elem_type) catch return self.type_builder.unknownType();
+                const receiver_t = self.type_builder.receiverType(elem_type) catch return self.type_builder.unknownType();
+                const tuple_elems = self.allocator.dupe(types.Type, &[_]types.Type{ sender_t, receiver_t }) catch return self.type_builder.unknownType();
+                return self.type_builder.tupleType(tuple_elems) catch self.type_builder.unknownType();
             }
 
             // Special handling for print/println - accept both string and String

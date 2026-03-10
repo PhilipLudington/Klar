@@ -1,0 +1,31 @@
+// Test basic channel operations (single-threaded)
+fn main() -> i32 {
+    // Create a channel with capacity 4
+    let pair: (Sender#[i32], Receiver#[i32]) = channel_create#[i32](4)
+    let tx: Sender#[i32] = pair.0
+    let rx: Receiver#[i32] = pair.1
+
+    // Send values (won't block since buffer has capacity)
+    tx.send(10)
+    tx.send(20)
+    tx.send(30)
+
+    // Receive values (won't block since buffer has data)
+    let v1: ?i32 = rx.recv()
+    let v2: ?i32 = rx.recv()
+    let v3: ?i32 = rx.recv()
+
+    // Close the channel
+    tx.close()
+
+    // Receive from closed empty channel should return None
+    let v4: ?i32 = rx.recv()
+
+    // Verify values
+    let sum: i32 = (v1 ?? 0) + (v2 ?? 0) + (v3 ?? 0) + (v4 ?? 0)
+
+    if sum == 60 {
+        return 0
+    }
+    return 1
+}

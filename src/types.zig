@@ -55,6 +55,13 @@ pub const Type = union(enum) {
     set: *SetType,
     string_data: *StringDataType,
 
+    // Channel types
+    sender: *SenderType,
+    receiver: *ReceiverType,
+
+    // Concurrency types
+    thread_pool: void,
+
     // I/O types
     file: void, // Opaque FILE* handle
     io_error: void, // IoError enum type
@@ -142,6 +149,11 @@ pub const Type = union(enum) {
             .set => |s| s.element.eql(other.set.element),
             // String data is a singleton type (no type parameters)
             .string_data => true,
+            // Channel types depend on element type
+            .sender => |s| s.element.eql(other.sender.element),
+            .receiver => |r| r.element.eql(other.receiver.element),
+            // ThreadPool is a singleton type
+            .thread_pool => true,
             // Buffered I/O type equality depends on inner reader/writer type
             .buf_reader => |br| br.inner.eql(other.buf_reader.inner),
             .buf_writer => |bw| bw.inner.eql(other.buf_writer.inner),
@@ -268,7 +280,7 @@ pub const Type = union(enum) {
             // - Associated type refs (will be resolved during monomorphization)
             // - Extern types (opaque or sized, treat as non-Copy for safety)
             // - CStrOwned (owns null-terminated C string memory)
-            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .set, .string_data, .context_error, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .buf_reader, .buf_writer, .path, .unknown, .error_type, .associated_type_ref, .extern_type, .cstr_owned => false,
+            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .set, .string_data, .sender, .receiver, .thread_pool, .context_error, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .buf_reader, .buf_writer, .path, .unknown, .error_type, .associated_type_ref, .extern_type, .cstr_owned => false,
         };
     }
 };
@@ -675,6 +687,18 @@ pub const SetType = struct {
     element: Type,
 };
 
+/// Sender type for channel send-end (Sender#[T])
+/// Layout: { ptr } (opaque pointer to shared ChannelInner)
+pub const SenderType = struct {
+    element: Type,
+};
+
+/// Receiver type for channel receive-end (Receiver#[T])
+/// Layout: { ptr } (opaque pointer to shared ChannelInner)
+pub const ReceiverType = struct {
+    element: Type,
+};
+
 /// String type for heap-allocated UTF-8 strings (String)
 /// A heap-allocated, dynamically-sized string.
 /// Layout: { ptr: *u8, len: i32, capacity: i32 }
@@ -946,6 +970,26 @@ pub const TypeBuilder = struct {
         return .{ .set = set };
     }
 
+    // Sender type constructor
+    pub fn senderType(self: *TypeBuilder, element: Type) !Type {
+        const sender = try self.arena.allocator().create(SenderType);
+        sender.* = .{ .element = element };
+        return .{ .sender = sender };
+    }
+
+    // Receiver type constructor
+    pub fn receiverType(self: *TypeBuilder, element: Type) !Type {
+        const receiver = try self.arena.allocator().create(ReceiverType);
+        receiver.* = .{ .element = element };
+        return .{ .receiver = receiver };
+    }
+
+    // ThreadPool type constructor
+    pub fn threadPoolType(self: *TypeBuilder) Type {
+        _ = self;
+        return .{ .thread_pool = {} };
+    }
+
     // String data type constructor
     pub fn stringDataType(self: *TypeBuilder) !Type {
         const str = try self.arena.allocator().create(StringDataType);
@@ -1158,6 +1202,17 @@ pub fn formatType(writer: anytype, t: Type) !void {
         .string_data => {
             try writer.writeAll("String");
         },
+        .sender => |s| {
+            try writer.writeAll("Sender#[");
+            try formatType(writer, s.element);
+            try writer.writeAll("]");
+        },
+        .receiver => |r| {
+            try writer.writeAll("Receiver#[");
+            try formatType(writer, r.element);
+            try writer.writeAll("]");
+        },
+        .thread_pool => try writer.writeAll("ThreadPool"),
         .file => try writer.writeAll("File"),
         .io_error => try writer.writeAll("IoError"),
         .stdout_handle => try writer.writeAll("Stdout"),

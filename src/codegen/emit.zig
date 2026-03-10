@@ -353,6 +353,14 @@ pub const Emitter = struct {
         is_buf_writer: bool = false,
         /// For BufWriter#[W], the inner writer type.
         buf_writer_inner_type: ?types.Type = null,
+        /// True if this is a Sender#[T] channel endpoint.
+        is_sender: bool = false,
+        /// True if this is a Receiver#[T] channel endpoint.
+        is_receiver: bool = false,
+        /// For Sender/Receiver, the element type for type-safe send/recv.
+        channel_element_type: ?types.Type = null,
+        /// True if this is a ThreadPool type.
+        is_thread_pool: bool = false,
         /// Full semantic type for pattern matching (Result, Optional, etc.)
         semantic_type: ?types.Type = null,
         /// True if this is an extern fn (C function pointer) type.
@@ -1278,6 +1286,43 @@ pub const Emitter = struct {
                 .llvm_type = us_type,
                 .field_indices = us_field_indices,
                 .field_names = us_field_names,
+            }) catch return EmitError.OutOfMemory;
+        }
+
+        // Sender: { ptr } (channel endpoint)
+        if (!self.struct_types.contains("Sender")) {
+            const sender_type = self.getChannelEndpointType();
+            const s_field_indices = self.allocator.dupe(u32, &[_]u32{0}) catch return EmitError.OutOfMemory;
+            const s_field_names = self.allocator.dupe([]const u8, &[_][]const u8{"_chan_ptr"}) catch return EmitError.OutOfMemory;
+            self.struct_types.put("Sender", .{
+                .llvm_type = sender_type,
+                .field_indices = s_field_indices,
+                .field_names = s_field_names,
+            }) catch return EmitError.OutOfMemory;
+        }
+
+        // Receiver: { ptr } (channel endpoint)
+        if (!self.struct_types.contains("Receiver")) {
+            const receiver_type = self.getChannelEndpointType();
+            const r_field_indices = self.allocator.dupe(u32, &[_]u32{0}) catch return EmitError.OutOfMemory;
+            const r_field_names = self.allocator.dupe([]const u8, &[_][]const u8{"_chan_ptr"}) catch return EmitError.OutOfMemory;
+            self.struct_types.put("Receiver", .{
+                .llvm_type = receiver_type,
+                .field_indices = r_field_indices,
+                .field_names = r_field_names,
+            }) catch return EmitError.OutOfMemory;
+        }
+
+        // ThreadPool: { ptr } (pointer to ThreadPoolInner)
+        if (!self.struct_types.contains("ThreadPool")) {
+            var tp_fields = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+            const tp_type = llvm.Types.struct_(self.ctx, &tp_fields, false);
+            const tp_field_indices = self.allocator.dupe(u32, &[_]u32{0}) catch return EmitError.OutOfMemory;
+            const tp_field_names = self.allocator.dupe([]const u8, &[_][]const u8{"_pool_ptr"}) catch return EmitError.OutOfMemory;
+            self.struct_types.put("ThreadPool", .{
+                .llvm_type = tp_type,
+                .field_indices = tp_field_indices,
+                .field_names = tp_field_names,
             }) catch return EmitError.OutOfMemory;
         }
 
@@ -2351,6 +2396,10 @@ pub const Emitter = struct {
                 const is_buf_writer_let = self.isTypeBufWriter(decl.type_);
                 // Check if this is a CStrOwned type (needs free on drop)
                 const is_cstr_owned_let = self.isTypeCstrOwned(decl.type_);
+                // Check if this is a channel endpoint type
+                const channel_info = self.getChannelTypeInfo(decl.type_);
+                // Check if this is a ThreadPool type
+                const is_thread_pool_let = self.isTypeThreadPool(decl.type_);
                 // Resolve semantic type for pattern matching (Result, Optional, etc.)
                 const semantic_type = self.resolveTypeExprDirect(decl.type_);
                 // Check if this is an extern fn type (C function pointer)
@@ -2387,6 +2436,10 @@ pub const Emitter = struct {
                     .is_path = is_path_let,
                     .is_buf_reader = is_buf_reader_let,
                     .is_buf_writer = is_buf_writer_let,
+                    .is_sender = if (channel_info) |ci| ci.is_sender else false,
+                    .is_receiver = if (channel_info) |ci| !ci.is_sender else false,
+                    .channel_element_type = if (channel_info) |ci| ci.element_type else null,
+                    .is_thread_pool = is_thread_pool_let,
                     .semantic_type = semantic_type,
                     .is_extern_fn = is_extern_fn_let,
                     .extern_fn_type = extern_fn_llvm_type_let,
@@ -5516,6 +5569,10 @@ pub const Emitter = struct {
             } else if (std.mem.eql(u8, name, "dns_lookup")) {
                 return self.emitDnsLookup(call);
             }
+            // Phase 9.4: Channel builtins
+            else if (std.mem.eql(u8, name, "channel_create")) {
+                return self.emitChannelCreate(call);
+            }
         }
 
         // Check if this is a monomorphized generic function call
@@ -7256,6 +7313,33 @@ pub const Emitter = struct {
         }
     }
 
+    /// Check if a type expression is a Sender#[T] or Receiver#[T] channel type.
+    const ChannelTypeInfo = struct {
+        is_sender: bool,
+        element_type: types.Type,
+    };
+
+    fn getChannelTypeInfo(self: *Emitter, type_expr: ast.TypeExpr) ?ChannelTypeInfo {
+        switch (type_expr) {
+            .generic_apply => |g| {
+                if (g.base == .named and g.args.len == 1) {
+                    const base_name = g.base.named.name;
+                    const is_sender = std.mem.eql(u8, base_name, "Sender");
+                    const is_receiver = std.mem.eql(u8, base_name, "Receiver");
+                    if (is_sender or is_receiver) {
+                        if (self.type_checker) |tc| {
+                            const tc_mut = @constCast(tc);
+                            const elem_type = tc_mut.resolveTypeExpr(g.args[0]) catch return null;
+                            return .{ .is_sender = is_sender, .element_type = elem_type };
+                        }
+                    }
+                }
+                return null;
+            },
+            else => return null,
+        }
+    }
+
     /// Resolve a type expression to a types.Type for use as expected_type context.
     /// Used to propagate type annotations to constructors like Ok/Err.
     fn resolveExpectedType(self: *Emitter, type_expr: ast.TypeExpr) ?types.Type {
@@ -8592,7 +8676,9 @@ pub const Emitter = struct {
                         std.mem.eql(u8, base_name, "List") or
                         std.mem.eql(u8, base_name, "Map") or
                         std.mem.eql(u8, base_name, "Set") or
-                        std.mem.eql(u8, base_name, "Future"))
+                        std.mem.eql(u8, base_name, "Future") or
+                        std.mem.eql(u8, base_name, "Sender") or
+                        std.mem.eql(u8, base_name, "Receiver"))
                         return null;
                     var mangled = std.ArrayListUnmanaged(u8){};
                     mangled.appendSlice(self.allocator, base_name) catch return null;
@@ -10687,6 +10773,11 @@ pub const Emitter = struct {
                 return try self.emitExpr(method.args[0]);
             }
 
+            // ThreadPool.new(num_threads: i32) -> ThreadPool
+            if (std.mem.eql(u8, obj_name, "ThreadPool") and std.mem.eql(u8, method.method_name, "new")) {
+                return self.emitThreadPoolNew(method);
+            }
+
             // Path.new(s: string) -> Path
             if (std.mem.eql(u8, obj_name, "Path") and std.mem.eql(u8, method.method_name, "new")) {
                 return self.emitPathNew(method);
@@ -11809,6 +11900,86 @@ pub const Emitter = struct {
                 if (method.args.len != 1) return EmitError.InvalidAST;
                 const buf_val = try self.emitExpr(method.args[0]);
                 return self.emitStdinRead(buf_val, method.args[0]);
+            }
+        }
+
+        // Check for Sender methods: send, close
+        if (self.isSenderExpr(method.object)) {
+            const sender_ptr: llvm.ValueRef = if (method.object == .identifier) blk: {
+                if (self.named_values.get(method.object.identifier.name)) |local| {
+                    break :blk local.value;
+                }
+                const obj_val = try self.emitExpr(method.object);
+                const ep_type = self.getChannelEndpointType();
+                const tmp_alloca = self.builder.buildAlloca(ep_type, "sender.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            } else blk: {
+                const obj_val = try self.emitExpr(method.object);
+                const ep_type = self.getChannelEndpointType();
+                const tmp_alloca = self.builder.buildAlloca(ep_type, "sender.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            };
+            if (std.mem.eql(u8, method.method_name, "send")) {
+                return self.emitChannelSend(sender_ptr, method);
+            }
+            if (std.mem.eql(u8, method.method_name, "close")) {
+                return self.emitChannelClose(sender_ptr);
+            }
+        }
+
+        // Check for Receiver methods: recv, close
+        if (self.isReceiverExpr(method.object)) {
+            const receiver_ptr: llvm.ValueRef = if (method.object == .identifier) blk: {
+                if (self.named_values.get(method.object.identifier.name)) |local| {
+                    break :blk local.value;
+                }
+                const obj_val = try self.emitExpr(method.object);
+                const ep_type = self.getChannelEndpointType();
+                const tmp_alloca = self.builder.buildAlloca(ep_type, "recv.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            } else blk: {
+                const obj_val = try self.emitExpr(method.object);
+                const ep_type = self.getChannelEndpointType();
+                const tmp_alloca = self.builder.buildAlloca(ep_type, "recv.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            };
+            if (std.mem.eql(u8, method.method_name, "recv")) {
+                return self.emitChannelRecv(receiver_ptr, method);
+            }
+            if (std.mem.eql(u8, method.method_name, "close")) {
+                return self.emitChannelClose(receiver_ptr);
+            }
+        }
+
+        // Check for ThreadPool methods: spawn, shutdown
+        if (self.isThreadPoolExpr(method.object)) {
+            const pool_ptr: llvm.ValueRef = if (method.object == .identifier) blk: {
+                if (self.named_values.get(method.object.identifier.name)) |local| {
+                    break :blk local.value;
+                }
+                const obj_val = try self.emitExpr(method.object);
+                var tp_fields = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+                const tp_type = llvm.Types.struct_(self.ctx, &tp_fields, false);
+                const tmp_alloca = self.builder.buildAlloca(tp_type, "pool.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            } else blk: {
+                const obj_val = try self.emitExpr(method.object);
+                var tp_fields = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+                const tp_type = llvm.Types.struct_(self.ctx, &tp_fields, false);
+                const tmp_alloca = self.builder.buildAlloca(tp_type, "pool.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            };
+            if (std.mem.eql(u8, method.method_name, "spawn")) {
+                return self.emitThreadPoolSpawn(pool_ptr, method);
+            }
+            if (std.mem.eql(u8, method.method_name, "shutdown")) {
+                return self.emitThreadPoolShutdown(pool_ptr);
             }
         }
 
@@ -29104,6 +29275,1110 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "dns.val");
     }
 
+    // ==================== Phase 9.4: Channel builtins ====================
+
+    /// Channel endpoint LLVM type: { ptr } (pointer to shared ChannelInner)
+    fn getChannelEndpointType(self: *Emitter) llvm.TypeRef {
+        var fields = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Get the LLVM type for the heap-allocated ChannelInner struct.
+    /// Layout: { buffer: ptr, capacity: i32, count: i32, head: i32, tail: i32,
+    ///           elem_size: i32, closed: i8, ref_count: i32,
+    ///           mutex: [N x i8], cond_not_empty: [M x i8], cond_not_full: [M x i8] }
+    fn getChannelInnerType(self: *Emitter) llvm.TypeRef {
+        const mutex_size: u32 = if (self.platform.os == .macos) 64 else 40;
+        const cond_size: u32 = 48; // same on macOS and Linux
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // 0: buffer
+            llvm.Types.int32(self.ctx), // 1: capacity
+            llvm.Types.int32(self.ctx), // 2: count
+            llvm.Types.int32(self.ctx), // 3: head
+            llvm.Types.int32(self.ctx), // 4: tail
+            llvm.Types.int32(self.ctx), // 5: elem_size
+            llvm.Types.int8(self.ctx), // 6: closed
+            llvm.Types.int32(self.ctx), // 7: ref_count
+            llvm.Types.array(llvm.Types.int8(self.ctx), mutex_size), // 8: mutex
+            llvm.Types.array(llvm.Types.int8(self.ctx), cond_size), // 9: cond_not_empty
+            llvm.Types.array(llvm.Types.int8(self.ctx), cond_size), // 10: cond_not_full
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    fn getOrDeclarePthreadMutexInit(self: *Emitter) llvm.ValueRef {
+        const fn_name = "pthread_mutex_init";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| return func;
+        var param_types = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx) };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 2, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclarePthreadMutexLock(self: *Emitter) llvm.ValueRef {
+        const fn_name = "pthread_mutex_lock";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| return func;
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclarePthreadMutexUnlock(self: *Emitter) llvm.ValueRef {
+        const fn_name = "pthread_mutex_unlock";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| return func;
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclarePthreadMutexDestroy(self: *Emitter) llvm.ValueRef {
+        const fn_name = "pthread_mutex_destroy";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| return func;
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclarePthreadCondInit(self: *Emitter) llvm.ValueRef {
+        const fn_name = "pthread_cond_init";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| return func;
+        var param_types = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx) };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 2, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclarePthreadCondWait(self: *Emitter) llvm.ValueRef {
+        const fn_name = "pthread_cond_wait";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| return func;
+        var param_types = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx) };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 2, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclarePthreadCondSignal(self: *Emitter) llvm.ValueRef {
+        const fn_name = "pthread_cond_signal";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| return func;
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclarePthreadCondBroadcast(self: *Emitter) llvm.ValueRef {
+        const fn_name = "pthread_cond_broadcast";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| return func;
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclarePthreadCondDestroy(self: *Emitter) llvm.ValueRef {
+        const fn_name = "pthread_cond_destroy";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| return func;
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    /// Emit channel_create(capacity: i32) -> (Sender#[T], Receiver#[T])
+    /// The element type T is determined from the call's type_args.
+    fn emitChannelCreate(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: channel_create is not supported on WebAssembly targets");
+        if (call.args.len != 1) return EmitError.InvalidAST;
+
+        const cap_val = try self.emitExpr(call.args[0]);
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Determine element size from type args
+        var elem_size: u32 = 8; // default to pointer size
+        if (call.type_args) |ta| {
+            if (ta.len == 1) {
+                if (self.type_checker) |tc| {
+                    const tc_mut = @constCast(tc);
+                    const elem_type = tc_mut.resolveTypeExpr(ta[0]) catch {
+                        return EmitError.InvalidAST;
+                    };
+                    elem_size = @intCast(self.getSizeOfKlarType(elem_type));
+                }
+            }
+        }
+
+        const inner_type = self.getChannelInnerType();
+        const endpoint_type = self.getChannelEndpointType();
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+
+        // Allocate ChannelInner on heap
+        const malloc_fn = self.getOrDeclareMalloc();
+        const inner_size: i64 = @intCast(self.getDataLayoutSize(inner_type));
+        const inner_ptr = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(malloc_fn),
+            malloc_fn,
+            &[_]llvm.ValueRef{llvm.Const.int64(self.ctx, inner_size)},
+            "ch.inner",
+        );
+
+        // Zero-initialize the inner struct
+        const memset_fn = self.getOrDeclareMemset();
+        _ = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(memset_fn),
+            memset_fn,
+            &[_]llvm.ValueRef{ inner_ptr, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, inner_size) },
+            "",
+        );
+
+        // Allocate element buffer: malloc(capacity * elem_size)
+        const cap_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, cap_val, llvm.Types.int64(self.ctx), "ch.cap64");
+        const es_i64 = llvm.Const.int64(self.ctx, @intCast(elem_size));
+        const buf_size = llvm.c.LLVMBuildMul(self.builder.ref, cap_i64, es_i64, "ch.bufsz");
+        const buf_ptr = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(malloc_fn),
+            malloc_fn,
+            &[_]llvm.ValueRef{buf_size},
+            "ch.buf",
+        );
+
+        // Store fields
+        const buf_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 0, "ch.f_buf");
+        _ = self.builder.buildStore(buf_ptr, buf_field);
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 1, "ch.f_cap");
+        _ = self.builder.buildStore(cap_val, cap_field);
+        // count=0, head=0, tail=0 already zeroed by memset
+        const esz_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 5, "ch.f_esz");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, @intCast(elem_size)), esz_field);
+        // closed=0 already zeroed
+        const ref_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 7, "ch.f_ref");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 2), ref_field); // 2 refs: sender + receiver
+
+        // Initialize mutex
+        const mutex_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 8, "ch.mutex");
+        const mutex_init_fn = self.getOrDeclarePthreadMutexInit();
+        _ = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(mutex_init_fn),
+            mutex_init_fn,
+            &[_]llvm.ValueRef{ mutex_ptr, null_ptr },
+            "",
+        );
+
+        // Initialize cond vars
+        const cond_init_fn = self.getOrDeclarePthreadCondInit();
+        const cond_ne_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 9, "ch.cond_ne");
+        _ = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(cond_init_fn),
+            cond_init_fn,
+            &[_]llvm.ValueRef{ cond_ne_ptr, null_ptr },
+            "",
+        );
+        const cond_nf_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 10, "ch.cond_nf");
+        _ = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(cond_init_fn),
+            cond_init_fn,
+            &[_]llvm.ValueRef{ cond_nf_ptr, null_ptr },
+            "",
+        );
+
+        // Build result tuple: (Sender{ptr}, Receiver{ptr})
+        var tuple_fields = [_]llvm.TypeRef{ endpoint_type, endpoint_type };
+        const tuple_type = llvm.Types.struct_(self.ctx, &tuple_fields, false);
+        const tuple_alloca = self.builder.buildAlloca(tuple_type, "ch.tuple");
+
+        // Sender = { inner_ptr }
+        const sender_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, tuple_type, tuple_alloca, 0, "ch.sender");
+        const sender_inner = llvm.c.LLVMBuildStructGEP2(self.builder.ref, endpoint_type, sender_ptr, 0, "ch.s_ptr");
+        _ = self.builder.buildStore(inner_ptr, sender_inner);
+
+        // Receiver = { inner_ptr }
+        const receiver_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, tuple_type, tuple_alloca, 1, "ch.receiver");
+        const receiver_inner = llvm.c.LLVMBuildStructGEP2(self.builder.ref, endpoint_type, receiver_ptr, 0, "ch.r_ptr");
+        _ = self.builder.buildStore(inner_ptr, receiver_inner);
+
+        _ = func;
+        _ = i32_type;
+        _ = i8_type;
+        return self.builder.buildLoad(tuple_type, tuple_alloca, "ch.val");
+    }
+
+    /// Get the size of an LLVM type according to the data layout.
+    fn getDataLayoutSize(self: *Emitter, ty: llvm.TypeRef) u64 {
+        // Use LLVM's ABI size to get accurate sizes
+        const data_layout = llvm.c.LLVMGetModuleDataLayout(self.module.ref);
+        if (data_layout) |dl| {
+            return llvm.c.LLVMABISizeOfType(dl, ty);
+        }
+        // Fallback: estimate based on struct field count
+        return 256;
+    }
+
+    /// Emit channel_send(sender, value) -> void
+    /// Blocking send: locks mutex, waits if buffer full, copies value, signals.
+    fn emitChannelSend(self: *Emitter, sender_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        if (method.args.len != 1) return EmitError.InvalidAST;
+
+        const value = try self.emitExpr(method.args[0]);
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const inner_type = self.getChannelInnerType();
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Get channel inner pointer from sender
+        // sender_ptr is an alloca holding just a ptr (due to tuple destructuring flattening)
+        const inner_ptr = self.builder.buildLoad(ptr_type, sender_ptr, "chs.inner");
+
+        // Get element size for memcpy
+        const esz_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 5, "chs.esz_p");
+        const elem_size = self.builder.buildLoad(i32_type, esz_ptr, "chs.esz");
+
+        // Store value to temp alloca for memcpy
+        const val_type = llvm.c.LLVMTypeOf(value);
+        const val_alloca = self.builder.buildAlloca(val_type, "chs.val");
+        _ = self.builder.buildStore(value, val_alloca);
+
+        // Get mutex and cond var pointers
+        const mutex_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 8, "chs.mutex");
+        const cond_ne_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 9, "chs.cnd_ne");
+        const cond_nf_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 10, "chs.cnd_nf");
+
+        // Lock mutex
+        const lock_fn = self.getOrDeclarePthreadMutexLock();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(lock_fn), lock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+
+        // Wait loop: while count == capacity && !closed
+        const loop_check_bb = llvm.appendBasicBlock(self.ctx, func, "chs.lcheck");
+        const loop_wait_bb = llvm.appendBasicBlock(self.ctx, func, "chs.lwait");
+        const loop_done_bb = llvm.appendBasicBlock(self.ctx, func, "chs.ldone");
+        _ = self.builder.buildBr(loop_check_bb);
+
+        self.builder.positionAtEnd(loop_check_bb);
+        const count_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 2, "chs.cnt_p");
+        const count = self.builder.buildLoad(i32_type, count_ptr, "chs.cnt");
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 1, "chs.cap_p");
+        const cap = self.builder.buildLoad(i32_type, cap_ptr, "chs.cap");
+        const full = self.builder.buildICmp(llvm.c.LLVMIntEQ, count, cap, "chs.full");
+        const closed_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 6, "chs.cls_p");
+        const closed = self.builder.buildLoad(i8_type, closed_ptr, "chs.cls");
+        const not_closed = self.builder.buildICmp(llvm.c.LLVMIntEQ, closed, llvm.Const.int8(self.ctx, 0), "chs.nclsd");
+        const should_wait = llvm.c.LLVMBuildAnd(self.builder.ref, full, not_closed, "chs.wait");
+        _ = self.builder.buildCondBr(should_wait, loop_wait_bb, loop_done_bb);
+
+        // Wait on not_full condition
+        self.builder.positionAtEnd(loop_wait_bb);
+        const wait_fn = self.getOrDeclarePthreadCondWait();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(wait_fn), wait_fn, &[_]llvm.ValueRef{ cond_nf_ptr, mutex_ptr }, "");
+        _ = self.builder.buildBr(loop_check_bb);
+
+        // Copy value to buffer
+        self.builder.positionAtEnd(loop_done_bb);
+        const buf_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 0, "chs.buf_p");
+        const buf = self.builder.buildLoad(ptr_type, buf_ptr, "chs.buf");
+        const tail_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 4, "chs.tail_p");
+        const tail = self.builder.buildLoad(i32_type, tail_ptr, "chs.tail");
+        const offset = llvm.c.LLVMBuildMul(self.builder.ref, tail, elem_size, "chs.off");
+        var chs_gep_idx = [_]llvm.ValueRef{offset};
+        const dest = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, buf, &chs_gep_idx, 1, "chs.dest");
+
+        // memcpy(dest, &value, elem_size)
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        const esz_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, elem_size, llvm.Types.int64(self.ctx), "chs.esz64");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &[_]llvm.ValueRef{ dest, val_alloca, esz_i64 }, "");
+
+        // tail = (tail + 1) % capacity
+        const new_tail = llvm.c.LLVMBuildAdd(self.builder.ref, tail, llvm.Const.int32(self.ctx, 1), "chs.ntail");
+        const cap2 = self.builder.buildLoad(i32_type, cap_ptr, "chs.cap2");
+        const wrapped_tail = llvm.c.LLVMBuildSRem(self.builder.ref, new_tail, cap2, "chs.wtail");
+        _ = self.builder.buildStore(wrapped_tail, tail_ptr);
+
+        // count++
+        const count2 = self.builder.buildLoad(i32_type, count_ptr, "chs.cnt2");
+        const new_count = llvm.c.LLVMBuildAdd(self.builder.ref, count2, llvm.Const.int32(self.ctx, 1), "chs.ncnt");
+        _ = self.builder.buildStore(new_count, count_ptr);
+
+        // Signal not_empty
+        const signal_fn = self.getOrDeclarePthreadCondSignal();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(signal_fn), signal_fn, &[_]llvm.ValueRef{cond_ne_ptr}, "");
+
+        // Unlock mutex
+        const unlock_fn = self.getOrDeclarePthreadMutexUnlock();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(unlock_fn), unlock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+
+        return llvm.c.LLVMGetUndef(llvm.Types.void_(self.ctx));
+    }
+
+    /// Emit channel_recv(receiver) -> ?T
+    /// Blocking recv: locks mutex, waits if buffer empty and not closed, copies value.
+    /// Returns Some(value) if got a value, None if channel is closed and empty.
+    fn emitChannelRecv(self: *Emitter, receiver_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const inner_type = self.getChannelInnerType();
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i1_type = llvm.Types.int1(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Get channel inner pointer from receiver
+        // receiver_ptr is an alloca holding just a ptr (due to tuple destructuring flattening)
+        const inner_ptr = self.builder.buildLoad(ptr_type, receiver_ptr, "chr.inner");
+
+        // Determine element LLVM type from the local value flags or type checker
+        var elem_llvm_type: llvm.TypeRef = i32_type; // default
+        if (method.object == .identifier) {
+            if (self.named_values.get(method.object.identifier.name)) |local| {
+                if (local.channel_element_type) |elem_type| {
+                    elem_llvm_type = self.typeToLLVM(elem_type);
+                }
+            }
+        }
+        if (elem_llvm_type == i32_type) {
+            // Fallback to type checker
+            if (self.type_checker) |tc| {
+                const tc_mut = @constCast(tc);
+                const obj_type = tc_mut.checkExpr(method.object);
+                if (obj_type == .receiver) {
+                    elem_llvm_type = self.typeToLLVM(obj_type.receiver.element);
+                }
+            }
+        }
+
+        // Build Optional type: { i1, T }
+        var opt_fields = [_]llvm.TypeRef{ i1_type, elem_llvm_type };
+        const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
+        const result_alloca = self.builder.buildAlloca(opt_type, "chr.result");
+
+        // Get mutex and cond var pointers
+        const mutex_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 8, "chr.mutex");
+        const cond_ne_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 9, "chr.cnd_ne");
+        const cond_nf_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 10, "chr.cnd_nf");
+
+        // Lock mutex
+        const lock_fn = self.getOrDeclarePthreadMutexLock();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(lock_fn), lock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+
+        // Wait loop: while count == 0 && !closed
+        const loop_check_bb = llvm.appendBasicBlock(self.ctx, func, "chr.lcheck");
+        const loop_wait_bb = llvm.appendBasicBlock(self.ctx, func, "chr.lwait");
+        const loop_done_bb = llvm.appendBasicBlock(self.ctx, func, "chr.ldone");
+        const got_value_bb = llvm.appendBasicBlock(self.ctx, func, "chr.gotval");
+        const none_bb = llvm.appendBasicBlock(self.ctx, func, "chr.none");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "chr.cont");
+        _ = self.builder.buildBr(loop_check_bb);
+
+        self.builder.positionAtEnd(loop_check_bb);
+        const count_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 2, "chr.cnt_p");
+        const count = self.builder.buildLoad(i32_type, count_ptr, "chr.cnt");
+        const empty = self.builder.buildICmp(llvm.c.LLVMIntEQ, count, llvm.Const.int32(self.ctx, 0), "chr.empty");
+        const closed_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 6, "chr.cls_p");
+        const closed = self.builder.buildLoad(i8_type, closed_ptr, "chr.cls");
+        const not_closed = self.builder.buildICmp(llvm.c.LLVMIntEQ, closed, llvm.Const.int8(self.ctx, 0), "chr.nclsd");
+        const should_wait = llvm.c.LLVMBuildAnd(self.builder.ref, empty, not_closed, "chr.wait");
+        _ = self.builder.buildCondBr(should_wait, loop_wait_bb, loop_done_bb);
+
+        // Wait on not_empty condition
+        self.builder.positionAtEnd(loop_wait_bb);
+        const wait_fn = self.getOrDeclarePthreadCondWait();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(wait_fn), wait_fn, &[_]llvm.ValueRef{ cond_ne_ptr, mutex_ptr }, "");
+        _ = self.builder.buildBr(loop_check_bb);
+
+        // Done waiting: check if we have a value or channel is closed+empty
+        self.builder.positionAtEnd(loop_done_bb);
+        const count2 = self.builder.buildLoad(i32_type, count_ptr, "chr.cnt2");
+        const has_value = self.builder.buildICmp(llvm.c.LLVMIntSGT, count2, llvm.Const.int32(self.ctx, 0), "chr.hasval");
+        _ = self.builder.buildCondBr(has_value, got_value_bb, none_bb);
+
+        // Got value: copy from buffer
+        self.builder.positionAtEnd(got_value_bb);
+        const buf_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 0, "chr.buf_p");
+        const buf = self.builder.buildLoad(ptr_type, buf_ptr, "chr.buf");
+        const head_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 3, "chr.head_p");
+        const head = self.builder.buildLoad(i32_type, head_ptr, "chr.head");
+        const esz_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 5, "chr.esz_p");
+        const elem_size = self.builder.buildLoad(i32_type, esz_ptr, "chr.esz");
+        const offset = llvm.c.LLVMBuildMul(self.builder.ref, head, elem_size, "chr.off");
+        var chr_gep_idx = [_]llvm.ValueRef{offset};
+        const src = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, buf, &chr_gep_idx, 1, "chr.src");
+
+        // Load value from buffer (cast src to proper type and load)
+        const typed_src = src; // already a byte pointer, we'll memcpy to result
+        const val_alloca = self.builder.buildAlloca(elem_llvm_type, "chr.val");
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        const esz_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, elem_size, llvm.Types.int64(self.ctx), "chr.esz64");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &[_]llvm.ValueRef{ val_alloca, typed_src, esz_i64 }, "");
+        const loaded_val = self.builder.buildLoad(elem_llvm_type, val_alloca, "chr.loaded");
+
+        // head = (head + 1) % capacity
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 1, "chr.cap_p");
+        const cap = self.builder.buildLoad(i32_type, cap_ptr, "chr.cap");
+        const new_head = llvm.c.LLVMBuildAdd(self.builder.ref, head, llvm.Const.int32(self.ctx, 1), "chr.nhead");
+        const wrapped_head = llvm.c.LLVMBuildSRem(self.builder.ref, new_head, cap, "chr.whead");
+        _ = self.builder.buildStore(wrapped_head, head_ptr);
+
+        // count--
+        const count3 = self.builder.buildLoad(i32_type, count_ptr, "chr.cnt3");
+        const new_count = llvm.c.LLVMBuildSub(self.builder.ref, count3, llvm.Const.int32(self.ctx, 1), "chr.ncnt");
+        _ = self.builder.buildStore(new_count, count_ptr);
+
+        // Signal not_full
+        const signal_fn = self.getOrDeclarePthreadCondSignal();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(signal_fn), signal_fn, &[_]llvm.ValueRef{cond_nf_ptr}, "");
+
+        // Unlock mutex
+        const unlock_fn = self.getOrDeclarePthreadMutexUnlock();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(unlock_fn), unlock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+
+        // Store Some(value) result
+        const some_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_alloca, 0, "chr.stag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), some_tag);
+        const some_val = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_alloca, 1, "chr.sval");
+        _ = self.builder.buildStore(loaded_val, some_val);
+        _ = self.builder.buildBr(cont_bb);
+
+        // None path: channel closed and empty
+        self.builder.positionAtEnd(none_bb);
+        // Unlock mutex
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(unlock_fn), unlock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+        const none_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_alloca, 0, "chr.ntag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), none_tag);
+        _ = self.builder.buildBr(cont_bb);
+
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(opt_type, result_alloca, "chr.val");
+    }
+
+    /// Emit channel_close(sender_or_receiver) -> void
+    /// Sets the closed flag and wakes all waiters.
+    fn emitChannelClose(self: *Emitter, endpoint_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const inner_type = self.getChannelInnerType();
+        const i8_type = llvm.Types.int8(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Get channel inner pointer
+        // endpoint_ptr is an alloca holding just a ptr
+        const inner_ptr = self.builder.buildLoad(ptr_type, endpoint_ptr, "chc.inner");
+
+        // Get mutex and cond var pointers
+        const mutex_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 8, "chc.mutex");
+        const cond_ne_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 9, "chc.cnd_ne");
+        const cond_nf_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 10, "chc.cnd_nf");
+
+        // Lock mutex
+        const lock_fn = self.getOrDeclarePthreadMutexLock();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(lock_fn), lock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+
+        // Set closed = 1
+        const closed_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 6, "chc.cls_p");
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 1), closed_ptr);
+
+        // Broadcast to all waiters
+        const broadcast_fn = self.getOrDeclarePthreadCondBroadcast();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(broadcast_fn), broadcast_fn, &[_]llvm.ValueRef{cond_ne_ptr}, "");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(broadcast_fn), broadcast_fn, &[_]llvm.ValueRef{cond_nf_ptr}, "");
+
+        // Unlock mutex
+        const unlock_fn = self.getOrDeclarePthreadMutexUnlock();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(unlock_fn), unlock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+
+        _ = i8_type;
+        return llvm.c.LLVMGetUndef(llvm.Types.void_(self.ctx));
+    }
+
+    /// Check if an expression is a Sender type.
+    fn isSenderExpr(self: *Emitter, expr: ast.Expr) bool {
+        if (expr == .identifier) {
+            if (self.named_values.get(expr.identifier.name)) |local| {
+                if (local.is_sender) return true;
+            }
+        }
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            return expr_type == .sender;
+        }
+        return false;
+    }
+
+    /// Check if an expression is a Receiver type.
+    fn isReceiverExpr(self: *Emitter, expr: ast.Expr) bool {
+        if (expr == .identifier) {
+            if (self.named_values.get(expr.identifier.name)) |local| {
+                if (local.is_receiver) return true;
+            }
+        }
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            return expr_type == .receiver;
+        }
+        return false;
+    }
+
+    // ==================== ThreadPool Implementation ====================
+
+    /// Check if a type expression refers to ThreadPool.
+    fn isTypeThreadPool(self: *Emitter, type_expr: ast.TypeExpr) bool {
+        _ = self;
+        if (type_expr == .named) {
+            return std.mem.eql(u8, type_expr.named.name, "ThreadPool");
+        }
+        return false;
+    }
+
+    /// Check if an expression is a ThreadPool type.
+    fn isThreadPoolExpr(self: *Emitter, expr: ast.Expr) bool {
+        if (expr == .identifier) {
+            if (self.named_values.get(expr.identifier.name)) |local| {
+                if (local.is_thread_pool) return true;
+            }
+        }
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            return expr_type == .thread_pool;
+        }
+        return false;
+    }
+
+    /// Get the LLVM struct type for the heap-allocated ThreadPoolInner.
+    /// Layout:
+    ///   0: queue_head: ptr (WorkItem linked list head)
+    ///   1: queue_tail: ptr (WorkItem linked list tail)
+    ///   2: mutex: [N x i8] (pthread_mutex_t)
+    ///   3: work_cond: [M x i8] (pthread_cond_t) - signal workers
+    ///   4: done_cond: [M x i8] (pthread_cond_t) - signal shutdown waiter
+    ///   5: threads: ptr (array of pthread_t)
+    ///   6: num_threads: i32
+    ///   7: shutdown: i8
+    ///   8: pending_count: i32
+    fn getThreadPoolInnerType(self: *Emitter) llvm.TypeRef {
+        const mutex_size: u32 = if (self.platform.os == .macos) 64 else 40;
+        const cond_size: u32 = 48;
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // 0: queue_head
+            llvm.Types.pointer(self.ctx), // 1: queue_tail
+            llvm.Types.array(llvm.Types.int8(self.ctx), mutex_size), // 2: mutex
+            llvm.Types.array(llvm.Types.int8(self.ctx), cond_size), // 3: work_cond
+            llvm.Types.array(llvm.Types.int8(self.ctx), cond_size), // 4: done_cond
+            llvm.Types.pointer(self.ctx), // 5: threads
+            llvm.Types.int32(self.ctx), // 6: num_threads
+            llvm.Types.int8(self.ctx), // 7: shutdown
+            llvm.Types.int32(self.ctx), // 8: pending_count
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Get the LLVM struct type for WorkItem.
+    /// Layout: { fn_ptr: ptr, env_ptr: ptr, next: ptr }
+    fn getWorkItemType(self: *Emitter) llvm.TypeRef {
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // 0: fn_ptr
+            llvm.Types.pointer(self.ctx), // 1: env_ptr
+            llvm.Types.pointer(self.ctx), // 2: next
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Declare pthread_create(thread, attr, start_routine, arg) -> i32
+    fn getOrDeclarePthreadCreate(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "pthread_create")) |f| return f;
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, ptr_type, ptr_type, ptr_type };
+        const fn_type = llvm.Types.function(llvm.Types.int32(self.ctx), &param_types, false);
+        return llvm.addFunction(self.module, "pthread_create", fn_type);
+    }
+
+    /// Declare pthread_join(thread, retval) -> i32
+    fn getOrDeclarePthreadJoin(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "pthread_join")) |f| return f;
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, ptr_type };
+        const fn_type = llvm.Types.function(llvm.Types.int32(self.ctx), &param_types, false);
+        return llvm.addFunction(self.module, "pthread_join", fn_type);
+    }
+
+    /// Get or create the worker thread function: __klar_threadpool_worker(pool_inner: ptr) -> ptr
+    /// Worker loop:
+    ///   lock mutex
+    ///   while (queue_head == null && !shutdown) { cond_wait(work_cond, mutex) }
+    ///   if (shutdown && queue_head == null) { unlock; return null }
+    ///   dequeue item from head
+    ///   unlock mutex
+    ///   call item.fn_ptr(item.env_ptr)
+    ///   free(item)
+    ///   lock mutex
+    ///   pending_count -= 1
+    ///   if (pending_count == 0) { cond_signal(done_cond) }
+    ///   unlock mutex
+    ///   goto loop
+    fn getOrDeclareThreadPoolWorker(self: *Emitter) EmitError!llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "__klar_threadpool_worker")) |f| return f;
+
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const inner_type = self.getThreadPoolInnerType();
+        const work_item_type = self.getWorkItemType();
+
+        // Worker function: ptr -> ptr
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.Types.function(ptr_type, &param_types, false);
+        const worker_fn = llvm.addFunction(self.module, "__klar_threadpool_worker", fn_type);
+
+        // Save current emitter state
+        const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        const saved_func = self.current_function;
+        const saved_terminator = self.has_terminator;
+
+        self.current_function = worker_fn;
+        self.has_terminator = false;
+
+        // Create basic blocks
+        const entry_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "entry");
+        const loop_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "loop");
+        const wait_check_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "wait.check");
+        const wait_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "wait");
+        const dequeue_check_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "dequeue.check");
+        const exit_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "exit");
+        const dequeue_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "dequeue");
+        const exec_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "exec");
+
+        const pool_inner = llvm.c.LLVMGetParam(worker_fn, 0);
+
+        // Get pthread function references
+        const lock_fn = self.getOrDeclarePthreadMutexLock();
+        const unlock_fn = self.getOrDeclarePthreadMutexUnlock();
+        const cond_wait_fn = self.getOrDeclarePthreadCondWait();
+        const cond_signal_fn = self.getOrDeclarePthreadCondSignal();
+        const free_fn = self.getOrCreateFreeFn();
+
+        // Entry: compute GEP helpers and jump to loop
+        self.builder.positionAtEnd(entry_bb);
+        const mutex_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, pool_inner, 2, "w.mutex");
+        const work_cond_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, pool_inner, 3, "w.wcond");
+        const done_cond_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, pool_inner, 4, "w.dcond");
+        _ = self.builder.buildBr(loop_bb);
+
+        // Loop: lock mutex, check condition
+        self.builder.positionAtEnd(loop_bb);
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(lock_fn), lock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+        _ = self.builder.buildBr(wait_check_bb);
+
+        // Wait check: while (queue_head == null && !shutdown) wait
+        self.builder.positionAtEnd(wait_check_bb);
+        const head_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, pool_inner, 0, "w.head_p");
+        const head_val = self.builder.buildLoad(ptr_type, head_ptr, "w.head");
+        const head_null = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, head_val, llvm.c.LLVMConstPointerNull(ptr_type), "w.hd_null");
+        const shutdown_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, pool_inner, 7, "w.sd_p");
+        const shutdown_val = self.builder.buildLoad(i8_type, shutdown_ptr, "w.sd");
+        const not_shutdown = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, shutdown_val, llvm.Const.int8(self.ctx, 0), "w.nsd");
+        const should_wait = llvm.c.LLVMBuildAnd(self.builder.ref, head_null, not_shutdown, "w.wait");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, should_wait, wait_bb, dequeue_check_bb);
+
+        // Wait: cond_wait then re-check
+        self.builder.positionAtEnd(wait_bb);
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(cond_wait_fn), cond_wait_fn, &[_]llvm.ValueRef{ work_cond_ptr, mutex_ptr }, "");
+        _ = self.builder.buildBr(wait_check_bb);
+
+        // Dequeue check: if shutdown && queue empty, exit
+        self.builder.positionAtEnd(dequeue_check_bb);
+        const head_val2 = self.builder.buildLoad(ptr_type, head_ptr, "w.head2");
+        const head_null2 = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, head_val2, llvm.c.LLVMConstPointerNull(ptr_type), "w.hd_null2");
+        const shutdown_val2 = self.builder.buildLoad(i8_type, shutdown_ptr, "w.sd2");
+        const is_shutdown = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntNE, shutdown_val2, llvm.Const.int8(self.ctx, 0), "w.issd");
+        const should_exit = llvm.c.LLVMBuildAnd(self.builder.ref, head_null2, is_shutdown, "w.exit");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, should_exit, exit_bb, dequeue_bb);
+
+        // Exit: unlock and return null
+        self.builder.positionAtEnd(exit_bb);
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(unlock_fn), unlock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+        _ = llvm.c.LLVMBuildRet(self.builder.ref, llvm.c.LLVMConstPointerNull(ptr_type));
+
+        // Dequeue: remove item from head of linked list
+        self.builder.positionAtEnd(dequeue_bb);
+        const item_ptr = self.builder.buildLoad(ptr_type, head_ptr, "w.item");
+        // head = item.next
+        const next_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, work_item_type, item_ptr, 2, "w.next_p");
+        const next_val = self.builder.buildLoad(ptr_type, next_ptr, "w.next");
+        _ = self.builder.buildStore(next_val, head_ptr);
+        // If head became null, also set tail to null
+        const new_head_null = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, next_val, llvm.c.LLVMConstPointerNull(ptr_type), "w.nhn");
+        const tail_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, pool_inner, 1, "w.tail_p");
+        const set_tail_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "set.tail");
+        const unlock_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "unlock");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, new_head_null, set_tail_bb, unlock_bb);
+
+        self.builder.positionAtEnd(set_tail_bb);
+        _ = self.builder.buildStore(llvm.c.LLVMConstPointerNull(ptr_type), tail_ptr);
+        _ = self.builder.buildBr(unlock_bb);
+
+        // Unlock mutex before executing the task
+        self.builder.positionAtEnd(unlock_bb);
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(unlock_fn), unlock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+        // Load fn_ptr and env_ptr from work item
+        const fn_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, work_item_type, item_ptr, 0, "w.fn_p");
+        const fn_ptr_val = self.builder.buildLoad(ptr_type, fn_ptr_ptr, "w.fn");
+        const env_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, work_item_type, item_ptr, 1, "w.env_p");
+        const env_ptr_val = self.builder.buildLoad(ptr_type, env_ptr_ptr, "w.env");
+        _ = self.builder.buildBr(exec_bb);
+
+        // Exec: call the task function, free the work item, update pending count
+        self.builder.positionAtEnd(exec_bb);
+        // Call fn_ptr(env_ptr) - closure calling convention: first arg is env
+        // Use i32 return type (closures typically return i32; result is discarded)
+        var task_param_types = [_]llvm.TypeRef{ptr_type};
+        const task_fn_type = llvm.Types.function(i32_type, &task_param_types, false);
+        _ = self.builder.buildCall(task_fn_type, fn_ptr_val, &[_]llvm.ValueRef{env_ptr_val}, "");
+        // Free the work item
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &[_]llvm.ValueRef{item_ptr}, "");
+        // Lock mutex, decrement pending_count, signal done if 0
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(lock_fn), lock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+        const pending_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, pool_inner, 8, "w.pend_p");
+        const pending_val = self.builder.buildLoad(i32_type, pending_ptr, "w.pend");
+        const new_pending = llvm.c.LLVMBuildSub(self.builder.ref, pending_val, llvm.Const.int32(self.ctx, 1), "w.npend");
+        _ = self.builder.buildStore(new_pending, pending_ptr);
+        // If pending == 0, signal done_cond
+        const is_zero = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, new_pending, llvm.Const.int32(self.ctx, 0), "w.zero");
+        const signal_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "signal");
+        const cont_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "cont");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_zero, signal_bb, cont_bb);
+
+        self.builder.positionAtEnd(signal_bb);
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(cond_signal_fn), cond_signal_fn, &[_]llvm.ValueRef{done_cond_ptr}, "");
+        _ = self.builder.buildBr(cont_bb);
+
+        self.builder.positionAtEnd(cont_bb);
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(unlock_fn), unlock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+        _ = self.builder.buildBr(loop_bb);
+
+        // Restore emitter state
+        self.builder.positionAtEnd(saved_bb);
+        self.current_function = saved_func;
+        self.has_terminator = saved_terminator;
+
+        return worker_fn;
+    }
+
+    /// Emit ThreadPool.new(num_threads: i32) -> ThreadPool
+    fn emitThreadPoolNew(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: ThreadPool is not supported on WebAssembly targets");
+        if (method.args.len != 1) return EmitError.InvalidAST;
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const inner_type = self.getThreadPoolInnerType();
+
+        // Evaluate num_threads argument
+        const num_threads = try self.emitExpr(method.args[0]);
+
+        // Allocate ThreadPoolInner on heap
+        const malloc_fn = self.getOrCreateMallocFn();
+        const inner_size = self.getDataLayoutSize(inner_type);
+        const inner_ptr = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(malloc_fn),
+            malloc_fn,
+            &[_]llvm.ValueRef{llvm.Const.int64(self.ctx, @intCast(inner_size))},
+            "tp.inner",
+        );
+
+        // Zero-initialize the struct
+        const memset_fn = self.getOrDeclareMemset();
+        _ = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(memset_fn),
+            memset_fn,
+            &[_]llvm.ValueRef{ inner_ptr, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, @intCast(inner_size)) },
+            "",
+        );
+
+        // Set queue_head = null (already 0 from memset)
+        // Set queue_tail = null (already 0 from memset)
+
+        // Init mutex
+        const mutex_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 2, "tp.mutex");
+        const mutex_init_fn = self.getOrDeclarePthreadMutexInit();
+        _ = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(mutex_init_fn),
+            mutex_init_fn,
+            &[_]llvm.ValueRef{ mutex_ptr, llvm.c.LLVMConstPointerNull(ptr_type) },
+            "",
+        );
+
+        // Init work_cond
+        const work_cond_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 3, "tp.wcond");
+        const cond_init_fn = self.getOrDeclarePthreadCondInit();
+        _ = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(cond_init_fn),
+            cond_init_fn,
+            &[_]llvm.ValueRef{ work_cond_ptr, llvm.c.LLVMConstPointerNull(ptr_type) },
+            "",
+        );
+
+        // Init done_cond
+        const done_cond_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 4, "tp.dcond");
+        _ = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(cond_init_fn),
+            cond_init_fn,
+            &[_]llvm.ValueRef{ done_cond_ptr, llvm.c.LLVMConstPointerNull(ptr_type) },
+            "",
+        );
+
+        // Store num_threads
+        const num_threads_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 6, "tp.nt_p");
+        _ = self.builder.buildStore(num_threads, num_threads_ptr);
+
+        // Set shutdown = 0, pending_count = 0 (already 0 from memset)
+
+        // Allocate threads array: malloc(num_threads * sizeof(pthread_t))
+        // pthread_t is 8 bytes (pointer) on both macOS and Linux 64-bit
+        const num_threads_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, num_threads, llvm.Types.int64(self.ctx), "tp.nt64");
+        const thread_size = llvm.Const.int64(self.ctx, 8);
+        const threads_alloc_size = llvm.c.LLVMBuildMul(self.builder.ref, num_threads_i64, thread_size, "tp.tsz");
+        const threads_ptr = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(malloc_fn),
+            malloc_fn,
+            &[_]llvm.ValueRef{threads_alloc_size},
+            "tp.threads",
+        );
+        const threads_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 5, "tp.tf_p");
+        _ = self.builder.buildStore(threads_ptr, threads_field_ptr);
+
+        // Get worker function
+        const worker_fn = try self.getOrDeclareThreadPoolWorker();
+        const pthread_create_fn = self.getOrDeclarePthreadCreate();
+
+        // Spawn threads in a loop
+        // for i in 0..num_threads: pthread_create(&threads[i], null, worker_fn, pool_inner)
+        const loop_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tp.spawn.loop");
+        const body_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tp.spawn.body");
+        const done_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tp.spawn.done");
+
+        // Initialize counter
+        const counter = buildEntryBlockAlloca(self, i32_type, "tp.i");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), counter);
+        _ = self.builder.buildBr(loop_bb);
+
+        // Loop header: check i < num_threads
+        self.builder.positionAtEnd(loop_bb);
+        const i_val = self.builder.buildLoad(i32_type, counter, "tp.i_val");
+        const cmp = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntSLT, i_val, num_threads, "tp.cmp");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, cmp, body_bb, done_bb);
+
+        // Loop body: pthread_create
+        self.builder.positionAtEnd(body_bb);
+        const i_val2 = self.builder.buildLoad(i32_type, counter, "tp.i2");
+        var gep_idx = [_]llvm.ValueRef{i_val2};
+        const thread_slot = llvm.c.LLVMBuildGEP2(self.builder.ref, ptr_type, threads_ptr, &gep_idx, 1, "tp.slot");
+        _ = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(pthread_create_fn),
+            pthread_create_fn,
+            &[_]llvm.ValueRef{
+                thread_slot,
+                llvm.c.LLVMConstPointerNull(ptr_type),
+                worker_fn,
+                inner_ptr,
+            },
+            "",
+        );
+        // i++
+        const next_i = llvm.c.LLVMBuildAdd(self.builder.ref, i_val2, llvm.Const.int32(self.ctx, 1), "tp.next_i");
+        _ = self.builder.buildStore(next_i, counter);
+        _ = self.builder.buildBr(loop_bb);
+
+        // Done: return the ThreadPool struct { inner_ptr }
+        self.builder.positionAtEnd(done_bb);
+
+        // Return as raw ptr (ThreadPool stores { ptr } but will be flattened during assignment)
+        _ = i8_type;
+        return inner_ptr;
+    }
+
+    /// Emit pool.spawn(task_fn) -> void
+    /// Enqueues a work item: extracts fn_ptr and env_ptr from the closure,
+    /// creates a WorkItem, and adds it to the queue.
+    fn emitThreadPoolSpawn(self: *Emitter, pool_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        if (method.args.len != 1) return EmitError.InvalidAST;
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const inner_type = self.getThreadPoolInnerType();
+        const work_item_type = self.getWorkItemType();
+
+        // Get pool inner pointer
+        const inner_ptr = self.builder.buildLoad(ptr_type, pool_ptr, "tps.inner");
+
+        // Emit the closure argument
+        const closure_val = try self.emitExpr(method.args[0]);
+        const closure_struct_type = self.getClosureStructType();
+
+        // Store closure to alloca so we can GEP into it
+        const closure_alloca = self.builder.buildAlloca(closure_struct_type, "tps.cls");
+        _ = self.builder.buildStore(closure_val, closure_alloca);
+
+        // Extract fn_ptr and env_ptr from closure { fn_ptr, env_ptr }
+        var fn_gep_idx = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 0) };
+        const fn_ptr_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, closure_struct_type, closure_alloca, &fn_gep_idx, 2, "tps.fn_p");
+        const fn_ptr_val = self.builder.buildLoad(ptr_type, fn_ptr_ptr, "tps.fn");
+        var env_gep_idx = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 1) };
+        const env_ptr_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, closure_struct_type, closure_alloca, &env_gep_idx, 2, "tps.env_p");
+        const env_ptr_val = self.builder.buildLoad(ptr_type, env_ptr_ptr, "tps.env");
+
+        // Allocate WorkItem on heap
+        const malloc_fn = self.getOrCreateMallocFn();
+        const wi_size = self.getDataLayoutSize(work_item_type);
+        const wi_ptr = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(malloc_fn),
+            malloc_fn,
+            &[_]llvm.ValueRef{llvm.Const.int64(self.ctx, @intCast(wi_size))},
+            "tps.wi",
+        );
+
+        // Set WorkItem fields
+        const wi_fn_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, work_item_type, wi_ptr, 0, "tps.wi_fn");
+        _ = self.builder.buildStore(fn_ptr_val, wi_fn_ptr);
+        const wi_env_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, work_item_type, wi_ptr, 1, "tps.wi_env");
+        _ = self.builder.buildStore(env_ptr_val, wi_env_ptr);
+        const wi_next_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, work_item_type, wi_ptr, 2, "tps.wi_next");
+        _ = self.builder.buildStore(llvm.c.LLVMConstPointerNull(ptr_type), wi_next_ptr);
+
+        // Lock mutex
+        const mutex_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 2, "tps.mutex");
+        const lock_fn = self.getOrDeclarePthreadMutexLock();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(lock_fn), lock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+
+        // pending_count++
+        const pending_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 8, "tps.pend_p");
+        const pending_val = self.builder.buildLoad(i32_type, pending_ptr, "tps.pend");
+        const new_pending = llvm.c.LLVMBuildAdd(self.builder.ref, pending_val, llvm.Const.int32(self.ctx, 1), "tps.npend");
+        _ = self.builder.buildStore(new_pending, pending_ptr);
+
+        // Enqueue: if tail == null { head = item; tail = item } else { tail.next = item; tail = item }
+        const tail_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 1, "tps.tail_p");
+        const tail_val = self.builder.buildLoad(ptr_type, tail_ptr, "tps.tail");
+        const tail_null = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, tail_val, llvm.c.LLVMConstPointerNull(ptr_type), "tps.tn");
+
+        const empty_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tps.empty");
+        const nonempty_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tps.nonempty");
+        const enqueue_done_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tps.eq_done");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, tail_null, empty_bb, nonempty_bb);
+
+        // Empty queue: head = item, tail = item
+        self.builder.positionAtEnd(empty_bb);
+        const head_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 0, "tps.head_p");
+        _ = self.builder.buildStore(wi_ptr, head_ptr);
+        _ = self.builder.buildStore(wi_ptr, tail_ptr);
+        _ = self.builder.buildBr(enqueue_done_bb);
+
+        // Non-empty queue: tail.next = item, tail = item
+        self.builder.positionAtEnd(nonempty_bb);
+        const old_tail_next = llvm.c.LLVMBuildStructGEP2(self.builder.ref, work_item_type, tail_val, 2, "tps.otn");
+        _ = self.builder.buildStore(wi_ptr, old_tail_next);
+        _ = self.builder.buildStore(wi_ptr, tail_ptr);
+        _ = self.builder.buildBr(enqueue_done_bb);
+
+        // Signal work_cond and unlock
+        self.builder.positionAtEnd(enqueue_done_bb);
+        const work_cond_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 3, "tps.wcond");
+        const cond_signal_fn = self.getOrDeclarePthreadCondSignal();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(cond_signal_fn), cond_signal_fn, &[_]llvm.ValueRef{work_cond_ptr}, "");
+
+        const unlock_fn = self.getOrDeclarePthreadMutexUnlock();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(unlock_fn), unlock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+
+        return llvm.c.LLVMGetUndef(llvm.Types.void_(self.ctx));
+    }
+
+    /// Emit pool.shutdown() -> void
+    /// Sets shutdown flag, broadcasts to wake all workers, waits for pending tasks,
+    /// then joins all threads.
+    fn emitThreadPoolShutdown(self: *Emitter, pool_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const inner_type = self.getThreadPoolInnerType();
+
+        // Get pool inner pointer
+        const inner_ptr = self.builder.buildLoad(ptr_type, pool_ptr, "tpsd.inner");
+
+        // Lock mutex
+        const mutex_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 2, "tpsd.mutex");
+        const lock_fn = self.getOrDeclarePthreadMutexLock();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(lock_fn), lock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+
+        // Set shutdown = 1
+        const shutdown_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 7, "tpsd.sd_p");
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 1), shutdown_ptr);
+
+        // Broadcast work_cond to wake all workers
+        const work_cond_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 3, "tpsd.wcond");
+        const broadcast_fn = self.getOrDeclarePthreadCondBroadcast();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(broadcast_fn), broadcast_fn, &[_]llvm.ValueRef{work_cond_ptr}, "");
+
+        // Wait loop: while (pending_count > 0) cond_wait(done_cond, mutex)
+        const done_cond_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 4, "tpsd.dcond");
+        const wait_check_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tpsd.wchk");
+        const wait_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tpsd.wait");
+        const join_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tpsd.join");
+        _ = self.builder.buildBr(wait_check_bb);
+
+        self.builder.positionAtEnd(wait_check_bb);
+        const pending_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 8, "tpsd.pend_p");
+        const pending_val = self.builder.buildLoad(i32_type, pending_ptr, "tpsd.pend");
+        const has_pending = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntSGT, pending_val, llvm.Const.int32(self.ctx, 0), "tpsd.hp");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, has_pending, wait_bb, join_bb);
+
+        self.builder.positionAtEnd(wait_bb);
+        const cond_wait_fn = self.getOrDeclarePthreadCondWait();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(cond_wait_fn), cond_wait_fn, &[_]llvm.ValueRef{ done_cond_ptr, mutex_ptr }, "");
+        _ = self.builder.buildBr(wait_check_bb);
+
+        // Unlock mutex
+        self.builder.positionAtEnd(join_bb);
+        const unlock_fn = self.getOrDeclarePthreadMutexUnlock();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(unlock_fn), unlock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+
+        // Join all threads
+        const threads_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 5, "tpsd.tf_p");
+        const threads_ptr = self.builder.buildLoad(ptr_type, threads_field_ptr, "tpsd.threads");
+        const num_threads_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 6, "tpsd.nt_p");
+        const num_threads = self.builder.buildLoad(i32_type, num_threads_ptr, "tpsd.nt");
+        const pthread_join_fn = self.getOrDeclarePthreadJoin();
+
+        // Loop: for i in 0..num_threads: pthread_join(threads[i], null)
+        const join_loop_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tpsd.jloop");
+        const join_body_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tpsd.jbody");
+        const join_done_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tpsd.jdone");
+
+        const join_counter = buildEntryBlockAlloca(self, i32_type, "tpsd.ji");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), join_counter);
+        _ = self.builder.buildBr(join_loop_bb);
+
+        self.builder.positionAtEnd(join_loop_bb);
+        const ji_val = self.builder.buildLoad(i32_type, join_counter, "tpsd.ji_v");
+        const ji_cmp = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntSLT, ji_val, num_threads, "tpsd.ji_cmp");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, ji_cmp, join_body_bb, join_done_bb);
+
+        self.builder.positionAtEnd(join_body_bb);
+        const ji_val2 = self.builder.buildLoad(i32_type, join_counter, "tpsd.ji2");
+        var join_gep_idx = [_]llvm.ValueRef{ji_val2};
+        const thread_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, ptr_type, threads_ptr, &join_gep_idx, 1, "tpsd.tp");
+        const thread_val = self.builder.buildLoad(ptr_type, thread_ptr, "tpsd.tv");
+        _ = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(pthread_join_fn),
+            pthread_join_fn,
+            &[_]llvm.ValueRef{ thread_val, llvm.c.LLVMConstPointerNull(ptr_type) },
+            "",
+        );
+        const next_ji = llvm.c.LLVMBuildAdd(self.builder.ref, ji_val2, llvm.Const.int32(self.ctx, 1), "tpsd.nji");
+        _ = self.builder.buildStore(next_ji, join_counter);
+        _ = self.builder.buildBr(join_loop_bb);
+
+        self.builder.positionAtEnd(join_done_bb);
+        _ = i8_type;
+        return llvm.c.LLVMGetUndef(llvm.Types.void_(self.ctx));
+    }
+
     // ==================== C Function Declarations for Filesystem ====================
 
     fn getOrDeclareAccess(self: *Emitter) llvm.ValueRef {
@@ -34952,6 +36227,10 @@ pub const Emitter = struct {
             .map => map_constants.map_struct_size,
             // Set: { entries: ptr, len: i32, cap: i32, tombstones: i32 } = 8 + 4 + 4 + 4 = 20 bytes
             .set => 20,
+            // Channel types: { ptr } = 8 bytes (pointer to shared ChannelInner)
+            .sender, .receiver => 8,
+            // ThreadPool: { ptr } = 8 bytes (pointer to ThreadPoolInner)
+            .thread_pool => 8,
             .string_data => 8, // outer String struct { header_ptr } = 8 bytes (heap-indirected)
             .path => 8, // Path wraps String: { header_ptr } = 8 bytes (heap-indirected)
             .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle => 8, // handles/pointers
@@ -35293,6 +36572,15 @@ pub const Emitter = struct {
                     llvm.Types.int32(self.ctx), // capacity
                     llvm.Types.int32(self.ctx), // tombstone_count
                 };
+                return llvm.Types.struct_(self.ctx, &fields, false);
+            },
+            .sender, .receiver => {
+                // Channel endpoints: { ptr } (pointer to shared ChannelInner)
+                return self.getChannelEndpointType();
+            },
+            .thread_pool => {
+                // ThreadPool: { ptr } (pointer to ThreadPoolInner)
+                var fields = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
                 return llvm.Types.struct_(self.ctx, &fields, false);
             },
             .string_data => {

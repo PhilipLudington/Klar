@@ -1,0 +1,132 @@
+fn fail(test_num: i32, msg: string) -> i32 {
+    print("FAIL test ")
+    print(test_num.to_string().as_str())
+    print(": ")
+    println(msg)
+    return test_num
+}
+
+fn main() -> i32 {
+
+    // Test 1: create and shutdown empty pool
+    let pool1: ThreadPool = ThreadPool.new(2)
+    pool1.shutdown()
+    println("ok 1 - create and shutdown empty pool")
+
+    // Test 2: spawn a single task (uses channel to verify execution)
+    let pair2: (Sender#[i32], Receiver#[i32]) = channel_create#[i32](4)
+    let tx2: Sender#[i32] = pair2.0
+    let rx2: Receiver#[i32] = pair2.1
+    let pool2: ThreadPool = ThreadPool.new(2)
+    let task2: fn() -> i32 = || -> i32 {
+        tx2.send(42)
+        return 0
+    }
+    pool2.spawn(task2)
+    pool2.shutdown()
+    let v2: i32 = rx2.recv() ?? -1
+    if v2 != 42 {
+        return fail(2, "expected 42 from task")
+    }
+    tx2.close()
+    println("ok 2 - task executes and sends value")
+
+    // Test 3: spawn multiple tasks, all execute
+    let pair3: (Sender#[i32], Receiver#[i32]) = channel_create#[i32](16)
+    let tx3: Sender#[i32] = pair3.0
+    let rx3: Receiver#[i32] = pair3.1
+    let pool3: ThreadPool = ThreadPool.new(2)
+    let task3a: fn() -> i32 = || -> i32 {
+        tx3.send(10)
+        return 0
+    }
+    let task3b: fn() -> i32 = || -> i32 {
+        tx3.send(20)
+        return 0
+    }
+    let task3c: fn() -> i32 = || -> i32 {
+        tx3.send(30)
+        return 0
+    }
+    pool3.spawn(task3a)
+    pool3.spawn(task3b)
+    pool3.spawn(task3c)
+    pool3.shutdown()
+    // All 3 tasks should have completed
+    var sum: i32 = 0
+    sum = sum + (rx3.recv() ?? 0)
+    sum = sum + (rx3.recv() ?? 0)
+    sum = sum + (rx3.recv() ?? 0)
+    if sum != 60 {
+        return fail(3, "expected sum 60 from tasks")
+    }
+    tx3.close()
+    println("ok 3 - multiple tasks all execute")
+
+    // Test 4: pool with 1 thread serializes tasks
+    let pair4: (Sender#[i32], Receiver#[i32]) = channel_create#[i32](16)
+    let tx4: Sender#[i32] = pair4.0
+    let rx4: Receiver#[i32] = pair4.1
+    let pool4: ThreadPool = ThreadPool.new(1)
+    let task4a: fn() -> i32 = || -> i32 {
+        tx4.send(1)
+        return 0
+    }
+    let task4b: fn() -> i32 = || -> i32 {
+        tx4.send(2)
+        return 0
+    }
+    let task4c: fn() -> i32 = || -> i32 {
+        tx4.send(3)
+        return 0
+    }
+    pool4.spawn(task4a)
+    pool4.spawn(task4b)
+    pool4.spawn(task4c)
+    pool4.shutdown()
+    // With 1 thread, tasks execute in order (FIFO queue)
+    let a: i32 = rx4.recv() ?? -1
+    let b: i32 = rx4.recv() ?? -1
+    let c: i32 = rx4.recv() ?? -1
+    if a != 1 {
+        return fail(4, "expected 1 first")
+    }
+    if b != 2 {
+        return fail(4, "expected 2 second")
+    }
+    if c != 3 {
+        return fail(4, "expected 3 third")
+    }
+    tx4.close()
+    println("ok 4 - single-thread pool serializes tasks")
+
+    // Test 5: many tasks with higher thread count
+    let pair5: (Sender#[i32], Receiver#[i32]) = channel_create#[i32](32)
+    let tx5: Sender#[i32] = pair5.0
+    let rx5: Receiver#[i32] = pair5.1
+    let pool5: ThreadPool = ThreadPool.new(4)
+    let task5: fn() -> i32 = || -> i32 {
+        tx5.send(1)
+        return 0
+    }
+    var i: i32 = 0
+    while i < 10 {
+        pool5.spawn(task5)
+        i = i + 1
+    }
+    pool5.shutdown()
+    var count: i32 = 0
+    var j: i32 = 0
+    while j < 10 {
+        count = count + (rx5.recv() ?? 0)
+        j = j + 1
+    }
+    if count != 10 {
+        return fail(5, "expected 10 tasks completed")
+    }
+    tx5.close()
+    println("ok 5 - 10 tasks with 4 threads")
+
+    println("All ThreadPool tests passed")
+    return 0
+}

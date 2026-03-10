@@ -1,0 +1,86 @@
+fn fail(test_num: i32, msg: string) -> i32 {
+    print("FAIL test ")
+    print(test_num.to_string().as_str())
+    print(": ")
+    println(msg)
+    return test_num
+}
+
+fn main() -> i32 {
+
+    // Test 1: channel_create returns a (Sender, Receiver) tuple
+    let pair: (Sender#[i32], Receiver#[i32]) = channel_create#[i32](4)
+    let tx: Sender#[i32] = pair.0
+    let rx: Receiver#[i32] = pair.1
+    println("ok 1 - channel_create")
+
+    // Test 2: send and recv single value
+    tx.send(42)
+    let v1: ?i32 = rx.recv()
+    let val1: i32 = v1 ?? -1
+    if val1 != 42 {
+        return fail(2, "expected 42")
+    }
+    println("ok 2 - send/recv single value")
+
+    // Test 3: send multiple values, recv in FIFO order
+    tx.send(10)
+    tx.send(20)
+    tx.send(30)
+    let a: i32 = rx.recv() ?? -1
+    let b: i32 = rx.recv() ?? -1
+    let c: i32 = rx.recv() ?? -1
+    if a != 10 {
+        return fail(3, "expected 10")
+    }
+    if b != 20 {
+        return fail(3, "expected 20")
+    }
+    if c != 30 {
+        return fail(3, "expected 30")
+    }
+    println("ok 3 - FIFO ordering")
+
+    // Test 4: fill buffer to capacity
+    tx.send(1)
+    tx.send(2)
+    tx.send(3)
+    tx.send(4)
+    // Buffer is now full (capacity 4)
+    let d: i32 = rx.recv() ?? -1
+    let e: i32 = rx.recv() ?? -1
+    let f: i32 = rx.recv() ?? -1
+    let g: i32 = rx.recv() ?? -1
+    if d != 1 or e != 2 or f != 3 or g != 4 {
+        return fail(4, "buffer contents mismatch")
+    }
+    println("ok 4 - fill buffer to capacity")
+
+    // Test 5: close channel, recv returns None on empty
+    tx.close()
+    let v5: ?i32 = rx.recv()
+    if v5 != None {
+        return fail(5, "expected None after close")
+    }
+    println("ok 5 - recv None after close")
+
+    // Test 6: channel with string type
+    let pair2: (Sender#[string], Receiver#[string]) = channel_create#[string](2)
+    let tx2: Sender#[string] = pair2.0
+    let rx2: Receiver#[string] = pair2.1
+    tx2.send("hello")
+    tx2.send("world")
+    let s1: string = rx2.recv() ?? "fail"
+    let s2: string = rx2.recv() ?? "fail"
+    if s1 != "hello" {
+        return fail(6, "expected hello")
+    }
+    if s2 != "world" {
+        return fail(6, "expected world")
+    }
+    tx2.close()
+    println("ok 6 - string channel")
+
+    println("All channel tests passed")
+    return 0
+}
