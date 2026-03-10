@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 
-# Bootstrap Stage 2 — Phase 8.6.4
+# Bootstrap Stage 2 — Phase 8.6.5 (Fixed-Point Validation)
 #
 # Builds Stage 1 (selfhost compiled by Zig), runs Stage 1's emit-typed-ast-multi
 # on selfhost/main.kl, feeds the result to the Zig backend with --typed-ast-input
-# to produce Stage 2, then validates Stage 2 by comparing output against Stage 1
-# on a test corpus.
+# to produce Stage 2, then validates Stage 2 by:
+#   1. Comparing single-file emission against Stage 1 on a test corpus
+#   2. Fixed-point validation: Stage 2 emit-typed-ast-multi == Stage 1 output
 #
 # Usage: ./scripts/run-bootstrap-stage2.sh [--verbose] [--skip-build]
 
@@ -45,7 +46,7 @@ trap 'rm -rf "$BOOTSTRAP_TMPDIR"' EXIT INT TERM HUP QUIT
 echo ""
 echo "╔════════════════════════════════════════════════════════════════╗"
 echo "║           Bootstrap Stage 2: Multi-Module Pipeline            ║"
-echo "║                       Phase 8.6.4                             ║"
+echo "║               Phase 8.6.5: Fixed-Point Validation             ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
 
@@ -260,6 +261,56 @@ fi
 
 echo ""
 
+# ─── Fixed-Point Validation: Stage 1 vs Stage 2 multi-module output ──────────
+
+echo -e "${BOLD}Step 6: Fixed-point validation (multi-module AST comparison)${NC}"
+echo "────────────────────────────────────────────────────────────────"
+
+S1_MULTI_JSON="$BOOTSTRAP_TMPDIR/s1_multi.json"
+S2_MULTI_JSON="$BOOTSTRAP_TMPDIR/s2_multi.json"
+
+echo -n "  Stage 1 emit-typed-ast-multi selfhost/main.kl ... "
+s1_multi_exit=0
+"$STAGE1_MAIN" emit-typed-ast-multi "$SELFHOST_DIR/main.kl" > "$S1_MULTI_JSON" 2>/dev/null || s1_multi_exit=$?
+if [ $s1_multi_exit -eq 0 ] && [ -s "$S1_MULTI_JSON" ]; then
+    S1_SIZE=$(wc -c < "$S1_MULTI_JSON" | tr -d ' ')
+    echo -e "${GREEN}✓${NC} (${S1_SIZE} bytes)"
+else
+    echo -e "${RED}FAILED${NC}"
+    FIXED_POINT="skip"
+fi
+
+echo -n "  Stage 2 emit-typed-ast-multi selfhost/main.kl ... "
+s2_multi_exit=0
+"$STAGE2_MAIN" emit-typed-ast-multi "$SELFHOST_DIR/main.kl" > "$S2_MULTI_JSON" 2>/dev/null || s2_multi_exit=$?
+if [ $s2_multi_exit -eq 0 ] && [ -s "$S2_MULTI_JSON" ]; then
+    S2_SIZE=$(wc -c < "$S2_MULTI_JSON" | tr -d ' ')
+    echo -e "${GREEN}✓${NC} (${S2_SIZE} bytes)"
+else
+    echo -e "${RED}FAILED${NC}"
+    FIXED_POINT="skip"
+fi
+
+if [ "${FIXED_POINT:-}" != "skip" ]; then
+    S1_HASH=$(shasum -a 256 "$S1_MULTI_JSON" | awk '{print $1}')
+    S2_HASH=$(shasum -a 256 "$S2_MULTI_JSON" | awk '{print $1}')
+    echo -n "  Comparing SHA-256 hashes ... "
+    if [ "$S1_HASH" = "$S2_HASH" ]; then
+        echo -e "${GREEN}✓ FIXED POINT ACHIEVED${NC}"
+        echo "    SHA-256: $S1_HASH"
+        FIXED_POINT="pass"
+    else
+        echo -e "${RED}✗ MISMATCH${NC}"
+        echo "    Stage 1: $S1_HASH"
+        echo "    Stage 2: $S2_HASH"
+        FIXED_POINT="fail"
+    fi
+else
+    echo -e "  ${YELLOW}⚠ Skipped (emission failed)${NC}"
+fi
+
+echo ""
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 
 TESTED=$((PASS + FAIL))
@@ -280,6 +331,15 @@ echo -e "    Match:   ${GREEN}$PASS/$TESTED${NC}"
 if [ $FAIL -gt 0 ]; then
     echo -e "    Fail:    ${RED}$FAIL/$TESTED${NC}"
 fi
+echo ""
+echo -e "  ${BOLD}Fixed-Point Validation:${NC}"
+if [ "${FIXED_POINT:-}" = "pass" ]; then
+    echo -e "    Result:  ${GREEN}✓ Stage 1 == Stage 2 (byte-identical multi-module AST)${NC}"
+elif [ "${FIXED_POINT:-}" = "fail" ]; then
+    echo -e "    Result:  ${RED}✗ Stage 1 ≠ Stage 2 (multi-module AST differs)${NC}"
+else
+    echo -e "    Result:  ${YELLOW}⚠ Skipped${NC}"
+fi
 
 if [ $FAIL -gt 0 ]; then
     echo ""
@@ -290,7 +350,12 @@ if [ $FAIL -gt 0 ]; then
 fi
 
 echo ""
-if [ $FAIL -eq 0 ] && [ $TESTED -gt 0 ]; then
+if [ $FAIL -eq 0 ] && [ $TESTED -gt 0 ] && [ "${FIXED_POINT:-}" = "pass" ]; then
+    echo -e "${GREEN}${BOLD}✓ BOOTSTRAP STAGE 2 PASSED (FIXED POINT)${NC}"
+    echo "  Stage 2 binary produces byte-identical typed AST to Stage 1."
+    echo "  The selfhost compiler successfully compiles itself."
+    exit 0
+elif [ $FAIL -eq 0 ] && [ $TESTED -gt 0 ]; then
     echo -e "${GREEN}${BOLD}✓ BOOTSTRAP STAGE 2 PASSED${NC}"
     echo "  Stage 2 binary produces identical output to Stage 1 on $TESTED test files."
     exit 0
