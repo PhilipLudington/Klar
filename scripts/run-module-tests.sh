@@ -676,6 +676,29 @@ else
     echo "⊘ net (test not found, skipping)"
 fi
 
+# Test 26: YAML library (stdlib/yaml.kl)
+echo "--- yaml: YAML library (stdlib/yaml.kl) ---"
+temp_bin="/tmp/klar_module_yaml"
+if [ -d "$TEST_DIR/yaml" ]; then
+    if $KLAR build $TEST_DIR/yaml/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ yaml (exit: $result)"
+            record_success "yaml"
+        else
+            echo "✗ yaml (expected: 0, got: $result)"
+            record_failure "yaml" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ yaml (build failed)"
+        record_failure "yaml" "build failed"
+    fi
+else
+    echo "⊘ yaml (test not found, skipping)"
+fi
+
 TOTAL=$((PASSED + FAILED))
 
 # Write results JSON
