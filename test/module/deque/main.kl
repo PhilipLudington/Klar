@@ -1,0 +1,302 @@
+import stdlib.deque.*
+
+fn fail(test_num: i32, msg: string) -> i32 {
+    print("FAIL test ")
+    print(test_num.to_string().as_str())
+    print(": ")
+    println(msg)
+    return test_num
+}
+
+fn check_some(opt: ?i32, expected: i32, test_num: i32, msg: string) -> i32 {
+    match opt {
+        Some(v) => {
+            if v != expected {
+                return fail(test_num, msg)
+            }
+            return 0
+        }
+        None => { return fail(test_num, msg) }
+    }
+}
+
+fn check_none(opt: ?i32, test_num: i32, msg: string) -> i32 {
+    match opt {
+        Some(v) => { return fail(test_num, msg) }
+        None => { return 0 }
+    }
+}
+
+fn main() -> i32 {
+    var rc: i32 = 0
+
+    // Test 1: empty deque
+    var d: Deque = Deque.new()
+    if d.size() != 0 {
+        return fail(1, "empty deque size != 0")
+    }
+    if not d.is_empty() {
+        return fail(1, "empty deque not is_empty")
+    }
+
+    // Test 2: push_back and pop_front (FIFO order)
+    d.push_back(10)
+    d.push_back(20)
+    d.push_back(30)
+    if d.size() != 3 {
+        return fail(2, "size != 3 after 3 push_back")
+    }
+    rc = check_some(d.pop_front(), 10, 2, "pop_front != 10")
+    if rc != 0 { return rc }
+    rc = check_some(d.pop_front(), 20, 2, "pop_front != 20")
+    if rc != 0 { return rc }
+    rc = check_some(d.pop_front(), 30, 2, "pop_front != 30")
+    if rc != 0 { return rc }
+    if d.size() != 0 {
+        return fail(2, "size != 0 after popping all")
+    }
+
+    // Test 3: push_front and pop_back (FIFO order reversed)
+    d.push_front(10)
+    d.push_front(20)
+    d.push_front(30)
+    if d.size() != 3 {
+        return fail(3, "size != 3 after 3 push_front")
+    }
+    rc = check_some(d.pop_back(), 10, 3, "pop_back != 10")
+    if rc != 0 { return rc }
+    rc = check_some(d.pop_back(), 20, 3, "pop_back != 20")
+    if rc != 0 { return rc }
+    rc = check_some(d.pop_back(), 30, 3, "pop_back != 30")
+    if rc != 0 { return rc }
+
+    // Test 4: pop from empty deque returns None
+    rc = check_none(d.pop_front(), 4, "pop_front on empty != None")
+    if rc != 0 { return rc }
+    rc = check_none(d.pop_back(), 4, "pop_back on empty != None")
+    if rc != 0 { return rc }
+
+    // Test 5: mixed push_front and push_back
+    var d5: Deque = Deque.new()
+    d5.push_back(2)
+    d5.push_back(3)
+    d5.push_front(1)
+    d5.push_front(0)
+    // Expected order: 0, 1, 2, 3
+    if d5.size() != 4 {
+        return fail(5, "size != 4")
+    }
+    rc = check_some(d5.pop_front(), 0, 5, "first != 0")
+    if rc != 0 { return rc }
+    rc = check_some(d5.pop_front(), 1, 5, "second != 1")
+    if rc != 0 { return rc }
+    rc = check_some(d5.pop_front(), 2, 5, "third != 2")
+    if rc != 0 { return rc }
+    rc = check_some(d5.pop_front(), 3, 5, "fourth != 3")
+    if rc != 0 { return rc }
+
+    // Test 6: wrap-around behavior
+    var d6: Deque = Deque.new()
+    var i6: i32 = 0
+    while i6 < 6 {
+        d6.push_back(i6)
+        i6 = i6 + 1
+    }
+    // Pop 4 from front (advances head)
+    var j6: i32 = 0
+    while j6 < 4 {
+        let tmp6: ?i32 = d6.pop_front()
+        j6 = j6 + 1
+    }
+    // Now head is at index 4, size is 2 (values 4, 5)
+    // Push 6 more to wrap around
+    var k6: i32 = 6
+    while k6 < 12 {
+        d6.push_back(k6)
+        k6 = k6 + 1
+    }
+    // Should have 8 elements: 4, 5, 6, 7, 8, 9, 10, 11
+    if d6.size() != 8 {
+        return fail(6, "wrap-around size != 8")
+    }
+    rc = check_some(d6.pop_front(), 4, 6, "wrap-around front != 4")
+    if rc != 0 { return rc }
+    rc = check_some(d6.pop_back(), 11, 6, "wrap-around back != 11")
+    if rc != 0 { return rc }
+
+    // Test 7: capacity growth
+    var d7: Deque = Deque.new()
+    let initial_cap: i32 = d7.capacity()
+    if initial_cap != 8 {
+        return fail(7, "initial capacity != 8")
+    }
+    // Push more than initial capacity to trigger growth
+    var i7: i32 = 0
+    while i7 < 9 {
+        d7.push_back(i7 * 10)
+        i7 = i7 + 1
+    }
+    if d7.capacity() <= 8 {
+        return fail(7, "capacity did not grow beyond 8")
+    }
+    if d7.size() != 9 {
+        return fail(7, "size != 9 after growth")
+    }
+    // Verify all elements are intact
+    var i7b: i32 = 0
+    while i7b < 9 {
+        rc = check_some(d7.get(i7b), i7b * 10, 7, "element corrupted after growth")
+        if rc != 0 { return rc }
+        i7b = i7b + 1
+    }
+
+    // Test 8: get by index
+    var d8: Deque = Deque.new()
+    d8.push_back(100)
+    d8.push_back(200)
+    d8.push_back(300)
+    rc = check_some(d8.get(0), 100, 8, "get(0) != 100")
+    if rc != 0 { return rc }
+    rc = check_some(d8.get(2), 300, 8, "get(2) != 300")
+    if rc != 0 { return rc }
+    rc = check_none(d8.get(3), 8, "get(3) should be None")
+    if rc != 0 { return rc }
+    rc = check_none(d8.get(-1), 8, "get(-1) should be None")
+    if rc != 0 { return rc }
+
+    // Test 9: peek_front and peek_back
+    var d9: Deque = Deque.new()
+    rc = check_none(d9.peek_front(), 9, "peek_front on empty != None")
+    if rc != 0 { return rc }
+    rc = check_none(d9.peek_back(), 9, "peek_back on empty != None")
+    if rc != 0 { return rc }
+    d9.push_back(42)
+    d9.push_back(99)
+    rc = check_some(d9.peek_front(), 42, 9, "peek_front != 42")
+    if rc != 0 { return rc }
+    rc = check_some(d9.peek_back(), 99, 9, "peek_back != 99")
+    if rc != 0 { return rc }
+    // Peek doesn't remove
+    if d9.size() != 2 {
+        return fail(9, "peek changed size")
+    }
+
+    // Test 10: clear
+    var d10: Deque = Deque.new()
+    d10.push_back(1)
+    d10.push_back(2)
+    d10.push_back(3)
+    d10.clear()
+    if d10.size() != 0 {
+        return fail(10, "size != 0 after clear")
+    }
+    if not d10.is_empty() {
+        return fail(10, "not is_empty after clear")
+    }
+    // Can still use after clear
+    d10.push_back(42)
+    rc = check_some(d10.pop_front(), 42, 10, "push after clear != 42")
+    if rc != 0 { return rc }
+
+    // Test 11: to_list
+    var d11: Deque = Deque.new()
+    d11.push_back(10)
+    d11.push_back(20)
+    d11.push_front(5)
+    let lst: List#[i32] = d11.to_list()
+    if lst.len() != 3 {
+        return fail(11, "to_list len != 3")
+    }
+    if lst[0] != 5 {
+        return fail(11, "to_list[0] != 5")
+    }
+    if lst[1] != 10 {
+        return fail(11, "to_list[1] != 10")
+    }
+    if lst[2] != 20 {
+        return fail(11, "to_list[2] != 20")
+    }
+
+    // Test 12: contains
+    var d12: Deque = Deque.new()
+    d12.push_back(7)
+    d12.push_back(14)
+    d12.push_back(21)
+    if not d12.contains(14) {
+        return fail(12, "contains(14) should be true")
+    }
+    if d12.contains(15) {
+        return fail(12, "contains(15) should be false")
+    }
+
+    // Test 13: large dataset (1000 entries)
+    var d13: Deque = Deque.new()
+    var i13: i32 = 0
+    while i13 < 1000 {
+        d13.push_back(i13)
+        i13 = i13 + 1
+    }
+    if d13.size() != 1000 {
+        return fail(13, "large dataset size != 1000")
+    }
+    rc = check_some(d13.peek_front(), 0, 13, "large dataset front != 0")
+    if rc != 0 { return rc }
+    rc = check_some(d13.peek_back(), 999, 13, "large dataset back != 999")
+    if rc != 0 { return rc }
+    // Pop all from front and verify order
+    var i13b: i32 = 0
+    while i13b < 1000 {
+        rc = check_some(d13.pop_front(), i13b, 13, "large dataset order wrong")
+        if rc != 0 { return rc }
+        i13b = i13b + 1
+    }
+
+    // Test 14: alternating push_front/push_back
+    var d14: Deque = Deque.new()
+    d14.push_front(3)
+    d14.push_back(4)
+    d14.push_front(2)
+    d14.push_back(5)
+    d14.push_front(1)
+    d14.push_back(6)
+    // Expected: 1, 2, 3, 4, 5, 6
+    var i14: i32 = 0
+    while i14 < 6 {
+        rc = check_some(d14.pop_front(), i14 + 1, 14, "alternating order wrong")
+        if rc != 0 { return rc }
+        i14 = i14 + 1
+    }
+
+    // Test 15: growth with wrapped data preserved
+    var d15: Deque = Deque.new()
+    var i15: i32 = 0
+    while i15 < 6 {
+        d15.push_back(i15)
+        i15 = i15 + 1
+    }
+    var j15: i32 = 0
+    while j15 < 5 {
+        let tmp15: ?i32 = d15.pop_front()
+        j15 = j15 + 1
+    }
+    // head is at 5, size is 1 (value 5)
+    // Push enough to wrap and trigger growth
+    var k15: i32 = 6
+    while k15 < 16 {
+        d15.push_back(k15)
+        k15 = k15 + 1
+    }
+    // Should have 11 elements: 5, 6, 7, ..., 15
+    if d15.size() != 11 {
+        return fail(15, "growth with wrap size != 11")
+    }
+    var m15: i32 = 0
+    while m15 < 11 {
+        rc = check_some(d15.pop_front(), m15 + 5, 15, "growth with wrap order wrong")
+        if rc != 0 { return rc }
+        m15 = m15 + 1
+    }
+
+    println("All tests passed")
+    return 0
+}

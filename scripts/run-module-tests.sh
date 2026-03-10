@@ -605,6 +605,29 @@ else
     echo "⊘ btree_map (test not found, skipping)"
 fi
 
+# Test 23: Deque library (stdlib/deque.kl)
+echo "--- deque: Deque double-ended queue (stdlib/deque.kl) ---"
+temp_bin="/tmp/klar_module_deque"
+if [ -d "$TEST_DIR/deque" ]; then
+    if $KLAR build $TEST_DIR/deque/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ deque (exit: $result)"
+            record_success "deque"
+        else
+            echo "✗ deque (expected: 0, got: $result)"
+            record_failure "deque" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ deque (build failed)"
+        record_failure "deque" "build failed"
+    fi
+else
+    echo "⊘ deque (test not found, skipping)"
+fi
+
 TOTAL=$((PASSED + FAILED))
 
 # Write results JSON
