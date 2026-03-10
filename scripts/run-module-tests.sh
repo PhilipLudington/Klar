@@ -651,6 +651,31 @@ else
     echo "⊘ priority_queue (test not found, skipping)"
 fi
 
+# Test 25: UDP and DNS networking
+echo "--- net: UDP socket and DNS builtins ---"
+temp_bin="/tmp/klar_module_net"
+if [[ "$OS" == "Windows_NT" ]]; then
+    echo "⊘ net (skipped on Windows — socket builtins fail to link)"
+elif [ -d "$TEST_DIR/net" ]; then
+    if $KLAR build $TEST_DIR/net/main.kl -o "$temp_bin" 2>/dev/null; then
+        run_with_timeout 30 "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ net (exit: $result)"
+            record_success "net"
+        else
+            echo "✗ net (expected: 0, got: $result)"
+            record_failure "net" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ net (build failed)"
+        record_failure "net" "build failed"
+    fi
+else
+    echo "⊘ net (test not found, skipping)"
+fi
+
 TOTAL=$((PASSED + FAILED))
 
 # Write results JSON

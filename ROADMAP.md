@@ -260,9 +260,9 @@ Before Phase 9, these must be true:
 - [ ] Module tests for each collection
 
 ### 9.2: Networking
-- [ ] UDP socket builtins: udp_bind, udp_send_to, udp_recv_from
-- [ ] DNS resolution builtin: dns_lookup(hostname) -> List#[string]
-- [ ] Module tests for UDP and DNS
+- [x] UDP socket builtins: udp_bind, udp_send_to, udp_recv_from, udp_close + UdpSocket/UdpMessage structs
+- [x] DNS resolution builtin: dns_lookup(hostname) -> Result#[string, IoError]
+- [x] Module tests for UDP and DNS (test/module/net/main.kl, 8 tests)
 
 ### 9.3: Serialization
 - [ ] YAML parser/stringify (`stdlib/yaml.kl`)

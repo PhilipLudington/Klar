@@ -2283,6 +2283,110 @@ pub const TypeChecker = struct {
         });
 
         // ====================================================================
+        // Phase 9.2: UDP socket and DNS builtins
+        // ====================================================================
+
+        // UdpSocket struct type: { fd: i32 }
+        const udp_socket_fields = try self.allocator.dupe(types.StructField, &[_]types.StructField{
+            .{ .name = "fd", .type_ = self.type_builder.i32Type(), .is_pub = true },
+        });
+        const udp_socket_struct = try self.allocator.create(types.StructType);
+        udp_socket_struct.* = .{
+            .name = "UdpSocket",
+            .type_params = &.{},
+            .fields = udp_socket_fields,
+            .traits = &.{},
+            .is_copy = true,
+        };
+        try self.generic_struct_types.append(self.allocator, udp_socket_struct);
+        const udp_socket_type: types.Type = .{ .struct_ = udp_socket_struct };
+        try self.current_scope.define(.{
+            .name = "UdpSocket",
+            .type_ = udp_socket_type,
+            .kind = .type_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // UdpMessage struct type: { data: string, addr: string, port: i32 }
+        const udp_message_fields = try self.allocator.dupe(types.StructField, &[_]types.StructField{
+            .{ .name = "data", .type_ = self.type_builder.stringType(), .is_pub = true },
+            .{ .name = "addr", .type_ = self.type_builder.stringType(), .is_pub = true },
+            .{ .name = "port", .type_ = self.type_builder.i32Type(), .is_pub = true },
+        });
+        const udp_message_struct = try self.allocator.create(types.StructType);
+        udp_message_struct.* = .{
+            .name = "UdpMessage",
+            .type_params = &.{},
+            .fields = udp_message_fields,
+            .traits = &.{},
+            .is_copy = true,
+        };
+        try self.generic_struct_types.append(self.allocator, udp_message_struct);
+        const udp_message_type: types.Type = .{ .struct_ = udp_message_struct };
+        try self.current_scope.define(.{
+            .name = "UdpMessage",
+            .type_ = udp_message_type,
+            .kind = .type_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // udp_bind(addr: string, port: i32) -> Result#[UdpSocket, IoError]
+        const udp_bind_ret = try self.type_builder.resultType(udp_socket_type, self.type_builder.ioErrorType());
+        const udp_bind_fn_type = try self.type_builder.functionType(&.{ self.type_builder.stringType(), self.type_builder.i32Type() }, udp_bind_ret);
+        try self.current_scope.define(.{
+            .name = "udp_bind",
+            .type_ = udp_bind_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // udp_send_to(socket: UdpSocket, data: string, addr: string, port: i32) -> Result#[i32, IoError]
+        const udp_send_to_ret = try self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType());
+        const udp_send_to_fn_type = try self.type_builder.functionType(&.{ udp_socket_type, self.type_builder.stringType(), self.type_builder.stringType(), self.type_builder.i32Type() }, udp_send_to_ret);
+        try self.current_scope.define(.{
+            .name = "udp_send_to",
+            .type_ = udp_send_to_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // udp_recv_from(socket: UdpSocket, max_bytes: i32) -> Result#[UdpMessage, IoError]
+        const udp_recv_from_ret = try self.type_builder.resultType(udp_message_type, self.type_builder.ioErrorType());
+        const udp_recv_from_fn_type = try self.type_builder.functionType(&.{ udp_socket_type, self.type_builder.i32Type() }, udp_recv_from_ret);
+        try self.current_scope.define(.{
+            .name = "udp_recv_from",
+            .type_ = udp_recv_from_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // udp_close(socket: UdpSocket) -> void
+        const udp_close_fn_type = try self.type_builder.functionType(&.{udp_socket_type}, self.type_builder.voidType());
+        try self.current_scope.define(.{
+            .name = "udp_close",
+            .type_ = udp_close_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // dns_lookup(hostname: string) -> Result#[string, IoError]
+        const dns_lookup_ret = try self.type_builder.resultType(self.type_builder.stringType(), self.type_builder.ioErrorType());
+        const dns_lookup_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, dns_lookup_ret);
+        try self.current_scope.define(.{
+            .name = "dns_lookup",
+            .type_ = dns_lookup_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // ====================================================================
         // Register builtin trait implementations for I/O types
         // ====================================================================
 

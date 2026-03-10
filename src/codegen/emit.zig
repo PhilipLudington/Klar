@@ -1268,6 +1268,35 @@ pub const Emitter = struct {
                 .field_names = ts_field_names,
             }) catch return EmitError.OutOfMemory;
         }
+
+        // UdpSocket: { fd: i32 }
+        if (!self.struct_types.contains("UdpSocket")) {
+            const us_type = self.getTcpFdStructType(); // Same layout: { i32 }
+            const us_field_indices = self.allocator.dupe(u32, &[_]u32{0}) catch return EmitError.OutOfMemory;
+            const us_field_names = self.allocator.dupe([]const u8, &[_][]const u8{"fd"}) catch return EmitError.OutOfMemory;
+            self.struct_types.put("UdpSocket", .{
+                .llvm_type = us_type,
+                .field_indices = us_field_indices,
+                .field_names = us_field_names,
+            }) catch return EmitError.OutOfMemory;
+        }
+
+        // UdpMessage: { data: string (ptr), addr: string (ptr), port: i32 }
+        if (!self.struct_types.contains("UdpMessage")) {
+            var um_fields = [_]llvm.TypeRef{
+                llvm.Types.pointer(self.ctx), // data (string)
+                llvm.Types.pointer(self.ctx), // addr (string)
+                llvm.Types.int32(self.ctx), // port
+            };
+            const um_type = llvm.Types.struct_(self.ctx, &um_fields, false);
+            const um_field_indices = self.allocator.dupe(u32, &[_]u32{ 0, 1, 2 }) catch return EmitError.OutOfMemory;
+            const um_field_names = self.allocator.dupe([]const u8, &[_][]const u8{ "data", "addr", "port" }) catch return EmitError.OutOfMemory;
+            self.struct_types.put("UdpMessage", .{
+                .llvm_type = um_type,
+                .field_indices = um_field_indices,
+                .field_names = um_field_names,
+            }) catch return EmitError.OutOfMemory;
+        }
     }
 
     /// Register a struct declaration for later field name resolution.
@@ -5474,6 +5503,18 @@ pub const Emitter = struct {
                 return self.emitTcpSetNonblocking(call);
             } else if (std.mem.eql(u8, name, "tcp_listener_close")) {
                 return self.emitTcpListenerClose(call);
+            }
+            // Phase 9.2: UDP socket builtins
+            else if (std.mem.eql(u8, name, "udp_bind")) {
+                return self.emitUdpBind(call);
+            } else if (std.mem.eql(u8, name, "udp_send_to")) {
+                return self.emitUdpSendTo(call);
+            } else if (std.mem.eql(u8, name, "udp_recv_from")) {
+                return self.emitUdpRecvFrom(call);
+            } else if (std.mem.eql(u8, name, "udp_close")) {
+                return self.emitUdpClose(call);
+            } else if (std.mem.eql(u8, name, "dns_lookup")) {
+                return self.emitDnsLookup(call);
             }
         }
 
@@ -28455,6 +28496,612 @@ pub const Emitter = struct {
 
         self.builder.positionAtEnd(cont_bb);
         return self.builder.buildLoad(result_type, result_alloca, "tcpnb.val");
+    }
+
+    // ==================== Phase 9.2: UDP Socket and DNS Builtins ====================
+
+    const SOCK_DGRAM: u32 = 2; // Same on macOS and Linux
+    const IPPROTO_UDP: u32 = 17; // Same on all platforms
+
+    /// LLVM struct type for UdpMessage: { data: ptr, addr: ptr, port: i32 }
+    fn getUdpMessageStructType(self: *Emitter) llvm.TypeRef {
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // data (string)
+            llvm.Types.pointer(self.ctx), // addr (string)
+            llvm.Types.int32(self.ctx), // port
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Result#[UdpMessage, IoError]
+    fn getUdpMessageResultType(self: *Emitter) llvm.TypeRef {
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag
+            self.getUdpMessageStructType(), // UdpMessage
+            self.getIoErrorStructType(), // IoError
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    fn getOrDeclareSendto(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "sendto")) |func| return func;
+        // ssize_t sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addrlen)
+        var param_types = [_]llvm.TypeRef{
+            llvm.Types.int32(self.ctx), // sockfd
+            llvm.Types.pointer(self.ctx), // buf
+            llvm.Types.int64(self.ctx), // len
+            llvm.Types.int32(self.ctx), // flags
+            llvm.Types.pointer(self.ctx), // dest_addr
+            llvm.Types.int32(self.ctx), // addrlen
+        };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int64(self.ctx), &param_types, 6, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "sendto", fn_type);
+    }
+
+    fn getOrDeclareRecvfrom(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "recvfrom")) |func| return func;
+        // ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *src_addr, socklen_t *addrlen)
+        var param_types = [_]llvm.TypeRef{
+            llvm.Types.int32(self.ctx), // sockfd
+            llvm.Types.pointer(self.ctx), // buf
+            llvm.Types.int64(self.ctx), // len
+            llvm.Types.int32(self.ctx), // flags
+            llvm.Types.pointer(self.ctx), // src_addr
+            llvm.Types.pointer(self.ctx), // addrlen
+        };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int64(self.ctx), &param_types, 6, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "recvfrom", fn_type);
+    }
+
+    fn getOrDeclareInetNtop(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "inet_ntop")) |func| return func;
+        // const char *inet_ntop(int af, const void *src, char *dst, socklen_t size)
+        var param_types = [_]llvm.TypeRef{
+            llvm.Types.int32(self.ctx), // af
+            llvm.Types.pointer(self.ctx), // src
+            llvm.Types.pointer(self.ctx), // dst
+            llvm.Types.int32(self.ctx), // size
+        };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.pointer(self.ctx), &param_types, 4, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "inet_ntop", fn_type);
+    }
+
+    fn getOrDeclareNtohs(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "ntohs")) |func| return func;
+        var param_types = [_]llvm.TypeRef{llvm.Types.int16(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int16(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "ntohs", fn_type);
+    }
+
+    fn getOrDeclareGetaddrinfo(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "getaddrinfo")) |func| return func;
+        // int getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res)
+        var param_types = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // node
+            llvm.Types.pointer(self.ctx), // service
+            llvm.Types.pointer(self.ctx), // hints
+            llvm.Types.pointer(self.ctx), // res
+        };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 4, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "getaddrinfo", fn_type);
+    }
+
+    fn getOrDeclareFreeaddrinfo(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "freeaddrinfo")) |func| return func;
+        // void freeaddrinfo(struct addrinfo *res)
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.void_(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "freeaddrinfo", fn_type);
+    }
+
+    /// Get the addrinfo struct type. Field ordering differs by platform:
+    /// macOS: { flags, family, socktype, protocol, addrlen, canonname, addr, next }
+    /// Linux: { flags, family, socktype, protocol, addrlen, addr, canonname, next }
+    fn getAddrinfoType(self: *Emitter) llvm.TypeRef {
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.int32(self.ctx), // ai_flags
+            llvm.Types.int32(self.ctx), // ai_family
+            llvm.Types.int32(self.ctx), // ai_socktype
+            llvm.Types.int32(self.ctx), // ai_protocol
+            llvm.Types.int32(self.ctx), // ai_addrlen (socklen_t = u32)
+            llvm.Types.pointer(self.ctx), // macOS: ai_canonname, Linux: ai_addr
+            llvm.Types.pointer(self.ctx), // macOS: ai_addr, Linux: ai_canonname
+            llvm.Types.pointer(self.ctx), // ai_next
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Get the GEP index for ai_addr in the platform-specific addrinfo layout.
+    fn getAddrinfoAddrIndex(self: *Emitter) u32 {
+        return if (self.platform.os == .macos) 6 else 5;
+    }
+
+    /// Emit udp_bind(addr: string, port: i32) -> Result#[UdpSocket, IoError]
+    fn emitUdpBind(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: udp_bind is not supported on WebAssembly targets");
+        if (call.args.len != 2) return EmitError.InvalidAST;
+
+        const host_val = try self.emitExpr(call.args[0]);
+        const port_val = try self.emitExpr(call.args[1]);
+
+        const i32_type = llvm.Types.int32(self.ctx);
+        const fd_type = self.getTcpFdStructType(); // Same layout: { i32 }
+        const result_type = self.getTcpFdResultType(); // Result#[{i32}, IoError]
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const result_alloca = self.builder.buildAlloca(result_type, "udpb.result");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "udpb.cont");
+
+        // socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        const socket_fn = self.getOrDeclareSocket();
+        const sock_fd = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(socket_fn), socket_fn, &[_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, AF_INET),
+            llvm.Const.int32(self.ctx, SOCK_DGRAM),
+            llvm.Const.int32(self.ctx, IPPROTO_UDP),
+        }, "udpb.fd");
+
+        const sock_fail = self.builder.buildICmp(llvm.c.LLVMIntSLT, sock_fd, llvm.Const.int32(self.ctx, 0), "udpb.sfail");
+        const sock_ok_bb = llvm.appendBasicBlock(self.ctx, func, "udpb.sok");
+        const sock_err_bb = llvm.appendBasicBlock(self.ctx, func, "udpb.serr");
+        _ = self.builder.buildCondBr(sock_fail, sock_err_bb, sock_ok_bb);
+
+        // Socket error
+        self.builder.positionAtEnd(sock_err_bb);
+        const se_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "udpb.se_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), se_tag);
+        const se_err = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "udpb.se_err");
+        self.emitErrnoToIoError(se_err);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Socket ok: set SO_REUSEADDR
+        self.builder.positionAtEnd(sock_ok_bb);
+        const opt_alloca = self.builder.buildAlloca(i32_type, "udpb.opt");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 1), opt_alloca);
+
+        const SOL_SOCKET: i32 = if (self.platform.os == .macos) @as(i32, @bitCast(@as(u32, 0xFFFF))) else 1;
+        const SO_REUSEADDR: i32 = if (self.platform.os == .macos) 4 else 2;
+
+        const setsockopt_fn = self.getOrDeclareSetsockopt();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(setsockopt_fn), setsockopt_fn, &[_]llvm.ValueRef{
+            sock_fd,
+            llvm.Const.int32(self.ctx, SOL_SOCKET),
+            llvm.Const.int32(self.ctx, SO_REUSEADDR),
+            opt_alloca,
+            llvm.Const.int32(self.ctx, 4),
+        }, "");
+
+        // Build sockaddr_in
+        const addr_type = self.getSockaddrInType();
+        const addr_alloca = self.builder.buildAlloca(addr_type, "udpb.addr");
+        const memset_fn = self.getOrDeclareMemset();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ addr_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, 16) }, "");
+
+        self.emitSockaddrSetFamily(addr_type, addr_alloca);
+
+        // sin_port = htons(port)
+        const htons_fn = self.getOrDeclareHtons();
+        const port_i16 = llvm.c.LLVMBuildTrunc(self.builder.ref, port_val, llvm.Types.int16(self.ctx), "udpb.port16");
+        const port_net = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(htons_fn), htons_fn, &[_]llvm.ValueRef{port_i16}, "udpb.pnet");
+        const port_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addr_type, addr_alloca, self.getSockaddrPortIndex(), "udpb.port");
+        _ = self.builder.buildStore(port_net, port_ptr);
+
+        // sin_addr: inet_pton
+        const sin_addr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addr_type, addr_alloca, self.getSockaddrAddrIndex(), "udpb.sinaddr");
+        const inet_pton_fn = self.getOrDeclareInetPton();
+        const pton_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(inet_pton_fn), inet_pton_fn, &[_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, AF_INET),
+            host_val,
+            sin_addr_ptr,
+        }, "udpb.pton");
+
+        const pton_fail = self.builder.buildICmp(llvm.c.LLVMIntSLE, pton_result, llvm.Const.int32(self.ctx, 0), "udpb.pton_fail");
+        const pton_ok_bb = llvm.appendBasicBlock(self.ctx, func, "udpb.pok");
+        const pton_err_bb = llvm.appendBasicBlock(self.ctx, func, "udpb.perr");
+        _ = self.builder.buildCondBr(pton_fail, pton_err_bb, pton_ok_bb);
+
+        // inet_pton error: close socket
+        self.builder.positionAtEnd(pton_err_bb);
+        {
+            const close_fn_p = self.getOrDeclareClose();
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_fn_p), close_fn_p, &[_]llvm.ValueRef{sock_fd}, "");
+            const pe_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "udpb.pe_tag");
+            _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), pe_tag);
+            const pe_err = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "udpb.pe_err");
+            self.emitErrnoToIoError(pe_err);
+            _ = self.builder.buildBr(cont_bb);
+        }
+
+        // bind
+        self.builder.positionAtEnd(pton_ok_bb);
+        const bind_fn = self.getOrDeclareBind();
+        const bind_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(bind_fn), bind_fn, &[_]llvm.ValueRef{
+            sock_fd,
+            addr_alloca,
+            llvm.Const.int32(self.ctx, 16),
+        }, "udpb.bind");
+
+        const bind_fail = self.builder.buildICmp(llvm.c.LLVMIntSLT, bind_result, llvm.Const.int32(self.ctx, 0), "udpb.bfail");
+        const bind_ok_bb = llvm.appendBasicBlock(self.ctx, func, "udpb.bok");
+        const bind_err_bb = llvm.appendBasicBlock(self.ctx, func, "udpb.berr");
+        _ = self.builder.buildCondBr(bind_fail, bind_err_bb, bind_ok_bb);
+
+        // Bind error: close socket
+        self.builder.positionAtEnd(bind_err_bb);
+        {
+            const close_fn = self.getOrDeclareClose();
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_fn), close_fn, &[_]llvm.ValueRef{sock_fd}, "");
+            const be_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "udpb.be_tag");
+            _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), be_tag);
+            const be_err = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "udpb.be_err");
+            self.emitErrnoToIoError(be_err);
+            _ = self.builder.buildBr(cont_bb);
+        }
+
+        // Success: return Ok(UdpSocket { fd: sock_fd })
+        self.builder.positionAtEnd(bind_ok_bb);
+        const ok_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "udpb.ok_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), ok_tag);
+        const ok_val = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "udpb.ok_val");
+        const fd_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fd_type, ok_val, 0, "udpb.fd_f");
+        _ = self.builder.buildStore(sock_fd, fd_field);
+        _ = self.builder.buildBr(cont_bb);
+
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "udpb.val");
+    }
+
+    /// Emit udp_send_to(socket: UdpSocket, data: string, addr: string, port: i32) -> Result#[i32, IoError]
+    fn emitUdpSendTo(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: udp_send_to is not supported on WebAssembly targets");
+        if (call.args.len != 4) return EmitError.InvalidAST;
+
+        const socket_val = try self.emitExpr(call.args[0]);
+        const data_val = try self.emitExpr(call.args[1]);
+        const addr_val = try self.emitExpr(call.args[2]);
+        const port_val = try self.emitExpr(call.args[3]);
+
+        const i32_type = llvm.Types.int32(self.ctx);
+        const fd_type = self.getTcpFdStructType();
+        const result_type = self.getI32ResultType();
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const result_alloca = self.builder.buildAlloca(result_type, "udps.result");
+        const socket_alloca = self.builder.buildAlloca(fd_type, "udps.socket");
+        _ = self.builder.buildStore(socket_val, socket_alloca);
+
+        const fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fd_type, socket_alloca, 0, "udps.fd_p");
+        const sock_fd = self.builder.buildLoad(i32_type, fd_ptr, "udps.fd");
+
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "udps.cont");
+
+        // Build destination sockaddr_in
+        const addr_type = self.getSockaddrInType();
+        const dest_alloca = self.builder.buildAlloca(addr_type, "udps.dest");
+        const memset_fn = self.getOrDeclareMemset();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ dest_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, 16) }, "");
+
+        self.emitSockaddrSetFamily(addr_type, dest_alloca);
+
+        const htons_fn = self.getOrDeclareHtons();
+        const port_i16 = llvm.c.LLVMBuildTrunc(self.builder.ref, port_val, llvm.Types.int16(self.ctx), "udps.port16");
+        const port_net = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(htons_fn), htons_fn, &[_]llvm.ValueRef{port_i16}, "udps.pnet");
+        const port_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addr_type, dest_alloca, self.getSockaddrPortIndex(), "udps.port");
+        _ = self.builder.buildStore(port_net, port_ptr);
+
+        const sin_addr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addr_type, dest_alloca, self.getSockaddrAddrIndex(), "udps.sinaddr");
+        const inet_pton_fn = self.getOrDeclareInetPton();
+        const pton_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(inet_pton_fn), inet_pton_fn, &[_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, AF_INET),
+            addr_val,
+            sin_addr_ptr,
+        }, "udps.pton");
+
+        const pton_fail = self.builder.buildICmp(llvm.c.LLVMIntSLE, pton_result, llvm.Const.int32(self.ctx, 0), "udps.pton_fail");
+        const pton_ok_bb = llvm.appendBasicBlock(self.ctx, func, "udps.pok");
+        const pton_err_bb = llvm.appendBasicBlock(self.ctx, func, "udps.perr");
+        _ = self.builder.buildCondBr(pton_fail, pton_err_bb, pton_ok_bb);
+
+        // inet_pton error
+        self.builder.positionAtEnd(pton_err_bb);
+        {
+            const pe_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "udps.pe_tag");
+            _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), pe_tag);
+            const pe_err = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "udps.pe_err");
+            self.emitErrnoToIoError(pe_err);
+            _ = self.builder.buildBr(cont_bb);
+        }
+
+        // sendto
+        self.builder.positionAtEnd(pton_ok_bb);
+        const strlen_fn = self.getOrDeclareStrlen();
+        const data_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &[_]llvm.ValueRef{data_val}, "udps.len");
+
+        const sendto_fn = self.getOrDeclareSendto();
+        const bytes_sent = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(sendto_fn), sendto_fn, &[_]llvm.ValueRef{
+            sock_fd,
+            data_val,
+            data_len,
+            llvm.Const.int32(self.ctx, 0), // flags
+            dest_alloca,
+            llvm.Const.int32(self.ctx, 16), // sizeof(sockaddr_in)
+        }, "udps.ns");
+
+        const send_fail = self.builder.buildICmp(llvm.c.LLVMIntSLT, bytes_sent, llvm.Const.int64(self.ctx, 0), "udps.fail");
+        const ok_bb = llvm.appendBasicBlock(self.ctx, func, "udps.ok");
+        const err_bb = llvm.appendBasicBlock(self.ctx, func, "udps.err");
+        _ = self.builder.buildCondBr(send_fail, err_bb, ok_bb);
+
+        // Ok
+        self.builder.positionAtEnd(ok_bb);
+        const sent_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, bytes_sent, i32_type, "udps.sent32");
+        const ok_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "udps.ok_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), ok_tag);
+        const ok_val = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "udps.ok_val");
+        _ = self.builder.buildStore(sent_i32, ok_val);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Err
+        self.builder.positionAtEnd(err_bb);
+        const err_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "udps.err_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), err_tag);
+        const err_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "udps.err_ptr");
+        self.emitErrnoToIoError(err_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "udps.val");
+    }
+
+    /// Emit udp_recv_from(socket: UdpSocket, max_bytes: i32) -> Result#[UdpMessage, IoError]
+    fn emitUdpRecvFrom(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: udp_recv_from is not supported on WebAssembly targets");
+        if (call.args.len != 2) return EmitError.InvalidAST;
+
+        const socket_val = try self.emitExpr(call.args[0]);
+        const max_bytes_val = try self.emitExpr(call.args[1]);
+
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const fd_type = self.getTcpFdStructType();
+        const msg_type = self.getUdpMessageStructType();
+        const result_type = self.getUdpMessageResultType();
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const result_alloca = self.builder.buildAlloca(result_type, "udpr.result");
+        const socket_alloca = self.builder.buildAlloca(fd_type, "udpr.socket");
+        _ = self.builder.buildStore(socket_val, socket_alloca);
+
+        const fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fd_type, socket_alloca, 0, "udpr.fd_p");
+        const sock_fd = self.builder.buildLoad(i32_type, fd_ptr, "udpr.fd");
+
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "udpr.cont");
+
+        // Validate max_bytes > 0
+        const max_le_zero = self.builder.buildICmp(llvm.c.LLVMIntSLE, max_bytes_val, llvm.Const.int32(self.ctx, 0), "udpr.bad_max");
+        const max_ok_bb = llvm.appendBasicBlock(self.ctx, func, "udpr.max_ok");
+        const max_bad_bb = llvm.appendBasicBlock(self.ctx, func, "udpr.max_bad");
+        _ = self.builder.buildCondBr(max_le_zero, max_bad_bb, max_ok_bb);
+
+        self.builder.positionAtEnd(max_bad_bb);
+        const mb_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "udpr.mb_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), mb_tag);
+        const mb_err = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "udpr.mb_err");
+        self.emitErrnoToIoError(mb_err);
+        _ = self.builder.buildBr(cont_bb);
+
+        self.builder.positionAtEnd(max_ok_bb);
+
+        // Allocate receive buffer
+        const max_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, max_bytes_val, i64_type, "udpr.max64");
+        const buf_size = llvm.c.LLVMBuildAdd(self.builder.ref, max_i64, llvm.Const.int64(self.ctx, 1), "udpr.bufsz");
+        const malloc_fn = self.getOrDeclareMalloc();
+        const buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{buf_size}, "udpr.buf");
+
+        const ok_bb = llvm.appendBasicBlock(self.ctx, func, "udpr.ok");
+        const err_bb = llvm.appendBasicBlock(self.ctx, func, "udpr.err");
+
+        // Check malloc
+        const buf_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, buf, llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx)), "udpr.oom");
+        const malloc_ok_bb = llvm.appendBasicBlock(self.ctx, func, "udpr.malloc_ok");
+        _ = self.builder.buildCondBr(buf_null, err_bb, malloc_ok_bb);
+
+        self.builder.positionAtEnd(malloc_ok_bb);
+
+        // Prepare sender address storage
+        const addr_type = self.getSockaddrInType();
+        const sender_alloca = self.builder.buildAlloca(addr_type, "udpr.sender");
+        const memset_fn = self.getOrDeclareMemset();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ sender_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, 16) }, "");
+
+        const addrlen_alloca = self.builder.buildAlloca(i32_type, "udpr.addrlen");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 16), addrlen_alloca);
+
+        // recvfrom(sock_fd, buf, max_bytes, 0, &sender, &addrlen)
+        const recvfrom_fn = self.getOrDeclareRecvfrom();
+        const bytes_read = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(recvfrom_fn), recvfrom_fn, &[_]llvm.ValueRef{
+            sock_fd,
+            buf,
+            max_i64,
+            llvm.Const.int32(self.ctx, 0),
+            sender_alloca,
+            addrlen_alloca,
+        }, "udpr.nr");
+
+        const read_fail = self.builder.buildICmp(llvm.c.LLVMIntSLT, bytes_read, llvm.Const.int64(self.ctx, 0), "udpr.fail");
+        _ = self.builder.buildCondBr(read_fail, err_bb, ok_bb);
+
+        // Ok: build UdpMessage { data, addr, port }
+        self.builder.positionAtEnd(ok_bb);
+
+        // Null-terminate received data
+        var term_gep = [_]llvm.ValueRef{bytes_read};
+        const term_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, llvm.Types.int8(self.ctx), buf, &term_gep, 1, "udpr.term");
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 0), term_ptr);
+
+        // Convert sender address to string using inet_ntop
+        // Allocate 16 bytes for IPv4 address string (max "255.255.255.255\0")
+        const addr_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{llvm.Const.int64(self.ctx, 16)}, "udpr.abuf");
+        const sin_addr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addr_type, sender_alloca, self.getSockaddrAddrIndex(), "udpr.sinaddr");
+        const inet_ntop_fn = self.getOrDeclareInetNtop();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(inet_ntop_fn), inet_ntop_fn, &[_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, AF_INET),
+            sin_addr_ptr,
+            addr_buf,
+            llvm.Const.int32(self.ctx, 16),
+        }, "udpr.ntop");
+
+        // Extract sender port: ntohs(sender.sin_port)
+        const ntohs_fn = self.getOrDeclareNtohs();
+        const sender_port_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addr_type, sender_alloca, self.getSockaddrPortIndex(), "udpr.sport");
+        const sender_port_net = self.builder.buildLoad(llvm.Types.int16(self.ctx), sender_port_ptr, "udpr.spnet");
+        const sender_port_host = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(ntohs_fn), ntohs_fn, &[_]llvm.ValueRef{sender_port_net}, "udpr.sph");
+        const sender_port_i32 = llvm.c.LLVMBuildZExt(self.builder.ref, sender_port_host, i32_type, "udpr.sp32");
+
+        // Store Ok result
+        const ok_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "udpr.ok_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), ok_tag);
+        const ok_val = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "udpr.ok_val");
+
+        // UdpMessage fields
+        const msg_data = llvm.c.LLVMBuildStructGEP2(self.builder.ref, msg_type, ok_val, 0, "udpr.msg_data");
+        _ = self.builder.buildStore(buf, msg_data);
+        const msg_addr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, msg_type, ok_val, 1, "udpr.msg_addr");
+        _ = self.builder.buildStore(addr_buf, msg_addr);
+        const msg_port = llvm.c.LLVMBuildStructGEP2(self.builder.ref, msg_type, ok_val, 2, "udpr.msg_port");
+        _ = self.builder.buildStore(sender_port_i32, msg_port);
+
+        _ = self.builder.buildBr(cont_bb);
+
+        // Err: free buffer, return error
+        self.builder.positionAtEnd(err_bb);
+        const free_fn = self.getOrDeclareFree();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &[_]llvm.ValueRef{buf}, "");
+        const err_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "udpr.err_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), err_tag);
+        const err_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "udpr.err_ptr");
+        self.emitErrnoToIoError(err_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "udpr.val");
+    }
+
+    /// Emit udp_close(socket: UdpSocket) -> void
+    fn emitUdpClose(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: udp_close is not supported on WebAssembly targets");
+        if (call.args.len != 1) return EmitError.InvalidAST;
+
+        const socket_val = try self.emitExpr(call.args[0]);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const fd_type = self.getTcpFdStructType();
+
+        const socket_alloca = self.builder.buildAlloca(fd_type, "udpcl.socket");
+        _ = self.builder.buildStore(socket_val, socket_alloca);
+
+        const fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fd_type, socket_alloca, 0, "udpcl.fd_p");
+        const sock_fd = self.builder.buildLoad(i32_type, fd_ptr, "udpcl.fd");
+
+        const close_fn = self.getOrDeclareClose();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_fn), close_fn, &[_]llvm.ValueRef{sock_fd}, "");
+
+        return llvm.c.LLVMGetUndef(llvm.Types.void_(self.ctx));
+    }
+
+    /// Emit dns_lookup(hostname: string) -> Result#[string, IoError]
+    /// Returns the first resolved IPv4 address as a string.
+    fn emitDnsLookup(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: dns_lookup is not supported on WebAssembly targets");
+        if (call.args.len != 1) return EmitError.InvalidAST;
+
+        const hostname_val = try self.emitExpr(call.args[0]);
+
+        const result_type = self.getStringResultType();
+        const addrinfo_type = self.getAddrinfoType();
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const result_alloca = self.builder.buildAlloca(result_type, "dns.result");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "dns.cont");
+
+        // Prepare hints: ai_family = AF_INET, ai_socktype = SOCK_STREAM
+        const hints_alloca = self.builder.buildAlloca(addrinfo_type, "dns.hints");
+        const memset_fn = self.getOrDeclareMemset();
+        // Size of addrinfo struct: 4*i32 + i32 + 3*ptr = 20 + 24 = 44 bytes on 64-bit (with padding)
+        // Use a safe overestimate: 48 bytes
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{
+            hints_alloca,
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int64(self.ctx, 48),
+        }, "");
+
+        // hints.ai_family = AF_INET
+        const family_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addrinfo_type, hints_alloca, 1, "dns.fam");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, AF_INET), family_ptr);
+        // hints.ai_socktype = SOCK_STREAM
+        const socktype_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addrinfo_type, hints_alloca, 2, "dns.stype");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, SOCK_STREAM), socktype_ptr);
+
+        // struct addrinfo *res
+        const res_alloca = self.builder.buildAlloca(llvm.Types.pointer(self.ctx), "dns.res");
+        _ = self.builder.buildStore(llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx)), res_alloca);
+
+        // getaddrinfo(hostname, NULL, &hints, &res)
+        const getaddrinfo_fn = self.getOrDeclareGetaddrinfo();
+        const gai_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(getaddrinfo_fn), getaddrinfo_fn, &[_]llvm.ValueRef{
+            hostname_val,
+            llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx)),
+            hints_alloca,
+            res_alloca,
+        }, "dns.gai");
+
+        const gai_fail = self.builder.buildICmp(llvm.c.LLVMIntNE, gai_result, llvm.Const.int32(self.ctx, 0), "dns.fail");
+        const gai_ok_bb = llvm.appendBasicBlock(self.ctx, func, "dns.ok");
+        const gai_err_bb = llvm.appendBasicBlock(self.ctx, func, "dns.err");
+        _ = self.builder.buildCondBr(gai_fail, gai_err_bb, gai_ok_bb);
+
+        // Error: return Err(IoError)
+        self.builder.positionAtEnd(gai_err_bb);
+        const ge_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "dns.ge_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), ge_tag);
+        const ge_err = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "dns.ge_err");
+        self.emitErrnoToIoError(ge_err);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Ok: extract first address
+        self.builder.positionAtEnd(gai_ok_bb);
+        const res_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), res_alloca, "dns.rptr");
+
+        // res->ai_addr (platform-specific field index)
+        const ai_addr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addrinfo_type, res_ptr, self.getAddrinfoAddrIndex(), "dns.aiaddr");
+        const ai_addr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), ai_addr_ptr, "dns.addr");
+
+        // Cast to sockaddr_in*, get sin_addr
+        const addr_type = self.getSockaddrInType();
+        const sin_addr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addr_type, ai_addr, self.getSockaddrAddrIndex(), "dns.sinaddr");
+
+        // inet_ntop to convert to string
+        const malloc_fn = self.getOrDeclareMalloc();
+        const addr_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{llvm.Const.int64(self.ctx, 16)}, "dns.abuf");
+        const inet_ntop_fn = self.getOrDeclareInetNtop();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(inet_ntop_fn), inet_ntop_fn, &[_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, AF_INET),
+            sin_addr_ptr,
+            addr_buf,
+            llvm.Const.int32(self.ctx, 16),
+        }, "dns.ntop");
+
+        // Free the addrinfo list
+        const freeaddrinfo_fn = self.getOrDeclareFreeaddrinfo();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(freeaddrinfo_fn), freeaddrinfo_fn, &[_]llvm.ValueRef{res_ptr}, "");
+
+        // Store Ok result
+        const ok_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "dns.ok_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), ok_tag);
+        const ok_val = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "dns.ok_val");
+        _ = self.builder.buildStore(addr_buf, ok_val);
+        _ = self.builder.buildBr(cont_bb);
+
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "dns.val");
     }
 
     // ==================== C Function Declarations for Filesystem ====================

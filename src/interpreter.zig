@@ -287,6 +287,13 @@ pub const Interpreter = struct {
                 if (v == .builtin) self.allocator.destroy(v.builtin);
             }
         }
+        // Phase 9.2: UDP and DNS builtins
+        const udp_names = [_][]const u8{ "udp_bind", "udp_send_to", "udp_recv_from", "udp_close", "dns_lookup" };
+        for (udp_names) |name| {
+            if (self.global_env.get(name)) |v| {
+                if (v == .builtin) self.allocator.destroy(v.builtin);
+            }
+        }
         self.global_env.deinit();
         self.allocator.destroy(self.global_env);
     }
@@ -433,6 +440,20 @@ pub const Interpreter = struct {
             .{ .name = "tcp_listener_close", .func = &builtinStubTcpVoid },
         };
         for (builtins_phase6) |b| {
+            const fn_obj = try self.allocator.create(values.BuiltinFunction);
+            fn_obj.* = .{ .name = b.name, .func = b.func };
+            try self.global_env.define(b.name, .{ .builtin = fn_obj }, false);
+        }
+
+        // Phase 9.2: UDP socket and DNS builtins
+        const builtins_udp = [_]struct { name: []const u8, func: *const fn (Allocator, []const Value) RuntimeError!Value }{
+            .{ .name = "udp_bind", .func = &builtinStubTcp },
+            .{ .name = "udp_send_to", .func = &builtinStubTcp },
+            .{ .name = "udp_recv_from", .func = &builtinStubTcp },
+            .{ .name = "udp_close", .func = &builtinStubTcpVoid },
+            .{ .name = "dns_lookup", .func = &builtinStubTcp },
+        };
+        for (builtins_udp) |b| {
             const fn_obj = try self.allocator.create(values.BuiltinFunction);
             fn_obj.* = .{ .name = b.name, .func = b.func };
             try self.global_env.define(b.name, .{ .builtin = fn_obj }, false);
