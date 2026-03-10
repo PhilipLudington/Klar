@@ -1,0 +1,250 @@
+import stdlib.btree_map.*
+
+fn fail(test_num: i32, msg: string) -> i32 {
+    print("FAIL test ")
+    print(test_num.to_string().as_str())
+    print(": ")
+    println(msg)
+    return test_num
+}
+
+fn main() -> i32 {
+    // Test 1: empty map
+    var m: BTreeMap = BTreeMap.new()
+    if m.size() != 0 {
+        return fail(1, "empty map size != 0")
+    }
+    if not m.is_empty() {
+        return fail(1, "empty map not is_empty")
+    }
+
+    // Test 2: single insert and get
+    m.insert(5, 50)
+    if m.size() != 1 {
+        return fail(2, "size != 1 after insert")
+    }
+    let v2: ?i32 = m.get(5)
+    match v2 {
+        Some(v) => {
+            if v != 50 {
+                return fail(2, "get(5) != 50")
+            }
+        }
+        None => { return fail(2, "get(5) returned None") }
+    }
+
+    // Test 3: get missing key
+    let v3: ?i32 = m.get(99)
+    match v3 {
+        Some(_) => { return fail(3, "get(99) should be None") }
+        None => {}
+    }
+
+    // Test 4: contains_key
+    if not m.contains_key(5) {
+        return fail(4, "contains_key(5) false")
+    }
+    if m.contains_key(99) {
+        return fail(4, "contains_key(99) true")
+    }
+
+    // Test 5: duplicate key update
+    m.insert(5, 55)
+    if m.size() != 1 {
+        return fail(5, "size changed on duplicate insert")
+    }
+    let v5: ?i32 = m.get(5)
+    match v5 {
+        Some(v) => {
+            if v != 55 {
+                return fail(5, "value not updated")
+            }
+        }
+        None => { return fail(5, "get returned None") }
+    }
+
+    // Test 6: multiple inserts and ordered keys
+    var m2: BTreeMap = BTreeMap.new()
+    m2.insert(30, 3)
+    m2.insert(10, 1)
+    m2.insert(20, 2)
+    m2.insert(50, 5)
+    m2.insert(40, 4)
+    let ks: List#[i32] = m2.keys()
+    if ks.len() != 5 {
+        return fail(6, "keys len != 5")
+    }
+    if ks[0] != 10 {
+        return fail(6, "keys[0] != 10")
+    }
+    if ks[1] != 20 {
+        return fail(6, "keys[1] != 20")
+    }
+    if ks[2] != 30 {
+        return fail(6, "keys[2] != 30")
+    }
+    if ks[3] != 40 {
+        return fail(6, "keys[3] != 40")
+    }
+    if ks[4] != 50 {
+        return fail(6, "keys[4] != 50")
+    }
+
+    // Test 7: values in key order
+    let vs: List#[i32] = m2.values()
+    if vs[0] != 1 {
+        return fail(7, "values[0] != 1")
+    }
+    if vs[4] != 5 {
+        return fail(7, "values[4] != 5")
+    }
+
+    // Test 8: remove existing key
+    let r8: ?i32 = m2.remove(30)
+    match r8 {
+        Some(v) => {
+            if v != 3 {
+                return fail(8, "remove(30) value != 3")
+            }
+        }
+        None => { return fail(8, "remove(30) returned None") }
+    }
+    if m2.size() != 4 {
+        return fail(8, "size != 4 after remove")
+    }
+    if m2.contains_key(30) {
+        return fail(8, "contains_key(30) after remove")
+    }
+
+    // Test 9: remove non-existent key
+    let r9: ?i32 = m2.remove(999)
+    match r9 {
+        Some(_) => { return fail(9, "remove(999) should be None") }
+        None => {}
+    }
+    if m2.size() != 4 {
+        return fail(9, "size changed on remove miss")
+    }
+
+    // Test 10: remove all keys
+    let _r1: ?i32 = m2.remove(10)
+    let _r2: ?i32 = m2.remove(20)
+    let _r3: ?i32 = m2.remove(40)
+    let _r4: ?i32 = m2.remove(50)
+    if m2.size() != 0 {
+        return fail(10, "size != 0 after removing all")
+    }
+    if not m2.is_empty() {
+        return fail(10, "not empty after removing all")
+    }
+
+    // Test 11: insert enough to trigger splits (>3 keys for t=2)
+    var m3: BTreeMap = BTreeMap.new()
+    m3.insert(1, 10)
+    m3.insert(2, 20)
+    m3.insert(3, 30)
+    m3.insert(4, 40)
+    m3.insert(5, 50)
+    m3.insert(6, 60)
+    m3.insert(7, 70)
+    if m3.size() != 7 {
+        return fail(11, "size != 7")
+    }
+    let ks3: List#[i32] = m3.keys()
+    var i: i32 = 0
+    while i < 7 {
+        if ks3[i] != i + 1 {
+            return fail(11, "keys not sorted after splits")
+        }
+        i = i + 1
+    }
+
+    // Test 12: reverse-order insert
+    var m4: BTreeMap = BTreeMap.new()
+    m4.insert(10, 100)
+    m4.insert(9, 90)
+    m4.insert(8, 80)
+    m4.insert(7, 70)
+    m4.insert(6, 60)
+    m4.insert(5, 50)
+    m4.insert(4, 40)
+    m4.insert(3, 30)
+    m4.insert(2, 20)
+    m4.insert(1, 10)
+    let ks4: List#[i32] = m4.keys()
+    if ks4.len() != 10 {
+        return fail(12, "len != 10")
+    }
+    i = 0
+    while i < 10 {
+        if ks4[i] != i + 1 {
+            return fail(12, "reverse insert keys not sorted")
+        }
+        i = i + 1
+    }
+
+    // Test 13: large dataset (1000+ entries)
+    var big: BTreeMap = BTreeMap.new()
+    i = 0
+    while i < 1000 {
+        big.insert(i, i * 10)
+        i = i + 1
+    }
+    if big.size() != 1000 {
+        return fail(13, "big size != 1000")
+    }
+    // Spot check
+    let v13a: ?i32 = big.get(0)
+    match v13a {
+        Some(v) => { if v != 0 { return fail(13, "big.get(0) != 0") } }
+        None => { return fail(13, "big.get(0) None") }
+    }
+    let v13b: ?i32 = big.get(500)
+    match v13b {
+        Some(v) => { if v != 5000 { return fail(13, "big.get(500) != 5000") } }
+        None => { return fail(13, "big.get(500) None") }
+    }
+    let v13c: ?i32 = big.get(999)
+    match v13c {
+        Some(v) => { if v != 9990 { return fail(13, "big.get(999) != 9990") } }
+        None => { return fail(13, "big.get(999) None") }
+    }
+
+    // Test 14: large dataset keys are sorted
+    let bk: List#[i32] = big.keys()
+    if bk.len() != 1000 {
+        return fail(14, "big keys len != 1000")
+    }
+    i = 0
+    while i < 1000 {
+        if bk[i] != i {
+            return fail(14, "big keys not sorted")
+        }
+        i = i + 1
+    }
+
+    // Test 15: large dataset remove
+    i = 0
+    while i < 500 {
+        let _rv: ?i32 = big.remove(i * 2)
+        i = i + 1
+    }
+    if big.size() != 500 {
+        return fail(15, "after removing 500, size != 500")
+    }
+    // Remaining keys should be odd numbers 1,3,5,...,999
+    let remaining: List#[i32] = big.keys()
+    if remaining.len() != 500 {
+        return fail(15, "remaining keys len != 500")
+    }
+    i = 0
+    while i < 500 {
+        if remaining[i] != i * 2 + 1 {
+            return fail(15, "remaining keys wrong")
+        }
+        i = i + 1
+    }
+
+    println("All tests passed")
+    return 0
+}

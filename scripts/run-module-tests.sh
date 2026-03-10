@@ -582,6 +582,29 @@ else
     echo "⊘ http_client (test not found, skipping)"
 fi
 
+# Test 22: BTreeMap library (stdlib/btree_map.kl)
+echo "--- btree_map: BTreeMap ordered key-value store (stdlib/btree_map.kl) ---"
+temp_bin="/tmp/klar_module_btree_map"
+if [ -d "$TEST_DIR/btree_map" ]; then
+    if $KLAR build $TEST_DIR/btree_map/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ btree_map (exit: $result)"
+            record_success "btree_map"
+        else
+            echo "✗ btree_map (expected: 0, got: $result)"
+            record_failure "btree_map" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ btree_map (build failed)"
+        record_failure "btree_map" "build failed"
+    fi
+else
+    echo "⊘ btree_map (test not found, skipping)"
+fi
+
 TOTAL=$((PASSED + FAILED))
 
 # Write results JSON
