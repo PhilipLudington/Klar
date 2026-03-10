@@ -171,7 +171,8 @@ fn assign_op_json(op: AssignOp) -> string {
 // KlarType → JSON Type Representation
 // ═══════════════════════════════════════════════════════════════════════════
 
-pub fn type_to_json(tc: TypeChecker, kt: KlarType) -> string {
+pub fn type_to_json(tc_in: TypeChecker, kt: KlarType) -> string {
+    let tc: TypeChecker = tc_in
     match kt.kind {
         TypeKind::Primitive => {
             let pk: ?PrimitiveKind = get_primitive_kind(kt)
@@ -412,7 +413,8 @@ pub fn type_to_json(tc: TypeChecker, kt: KlarType) -> string {
 // TypeExpr Emitter
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn emit_type_expr(tc: TypeChecker, te_id: TypeExprId) -> string {
+fn emit_type_expr(tc_in: TypeChecker, te_id: TypeExprId) -> string {
+    let tc: TypeChecker = tc_in
     if te_id.id < 0 {
         return "null"
     }
@@ -485,7 +487,8 @@ fn emit_type_expr(tc: TypeChecker, te_id: TypeExprId) -> string {
 // Pattern Emitter
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn emit_pattern(tc: TypeChecker, pid: PatternId) -> string {
+fn emit_pattern(tc_in: TypeChecker, pid: PatternId) -> string {
+    let tc: TypeChecker = tc_in
     if pid.id < 0 {
         return "null"
     }
@@ -578,7 +581,8 @@ fn emit_pattern(tc: TypeChecker, pid: PatternId) -> string {
 // Expression Emitter
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn emit_resolved_type(tc: TypeChecker, eid: ExprId) -> string {
+fn emit_resolved_type(tc_in: TypeChecker, eid: ExprId) -> string {
+    let tc: TypeChecker = tc_in
     if eid.id < 0 { return "" }
     let kt: KlarType = get_expr_type(tc, eid.id)
     // Only emit resolved_type if it's not unknown
@@ -586,7 +590,8 @@ fn emit_resolved_type(tc: TypeChecker, eid: ExprId) -> string {
     return ",\"resolved_type\":" + type_to_json(tc, kt)
 }
 
-pub fn emit_expr(tc: TypeChecker, eid: ExprId) -> string {
+pub fn emit_expr(tc_in: TypeChecker, eid: ExprId) -> string {
+    let tc: TypeChecker = tc_in
     if eid.id < 0 {
         return "null"
     }
@@ -874,7 +879,8 @@ pub fn emit_expr(tc: TypeChecker, eid: ExprId) -> string {
 // Statement Emitter
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn emit_stmt(tc: TypeChecker, sid: StmtId) -> string {
+fn emit_stmt(tc_in: TypeChecker, sid: StmtId) -> string {
+    let tc: TypeChecker = tc_in
     if sid.id < 0 {
         return "null"
     }
@@ -967,7 +973,8 @@ fn emit_stmt(tc: TypeChecker, sid: StmtId) -> string {
     }
 }
 
-fn emit_match_arm(tc: TypeChecker, arm: MatchArm) -> string {
+fn emit_match_arm(tc_in: TypeChecker, arm: MatchArm) -> string {
+    let tc: TypeChecker = tc_in
     var s: string = "{\"pattern\":" + emit_pattern(tc, arm.pattern)
     if has_expr(arm.guard) {
         s = s + ",\"guard\":" + emit_expr(tc, arm.guard)
@@ -979,7 +986,8 @@ fn emit_match_arm(tc: TypeChecker, arm: MatchArm) -> string {
     return s + "}"
 }
 
-fn emit_expr_as_raw_block(tc: TypeChecker, eid: ExprId) -> string {
+fn emit_expr_as_raw_block(tc_in: TypeChecker, eid: ExprId) -> string {
+    let tc: TypeChecker = tc_in
     if eid.id < 0 {
         return "{\"statements\":[],\"final_expr\":null}"
     }
@@ -994,7 +1002,8 @@ fn emit_expr_as_raw_block(tc: TypeChecker, eid: ExprId) -> string {
     }
 }
 
-fn emit_block_stmts(tc: TypeChecker, start: i32, count: i32) -> string {
+fn emit_block_stmts(tc_in: TypeChecker, start: i32, count: i32) -> string {
+    let tc: TypeChecker = tc_in
     var result: string = ""
     var i: i32 = 0
     while i < count {
@@ -1006,7 +1015,8 @@ fn emit_block_stmts(tc: TypeChecker, start: i32, count: i32) -> string {
     return result
 }
 
-fn emit_block_body(tc: TypeChecker, start: i32, count: i32) -> string {
+fn emit_block_body(tc_in: TypeChecker, start: i32, count: i32) -> string {
+    let tc: TypeChecker = tc_in
     let stmts: string = emit_block_stmts(tc, start, count)
     return "{\"statements\":[" + stmts + "],\"final_expr\":null}"
 }
@@ -1015,7 +1025,8 @@ fn emit_block_body(tc: TypeChecker, start: i32, count: i32) -> string {
 // Shared Helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn emit_fn_param(tc: TypeChecker, fp: FnParam) -> string {
+fn emit_fn_param(tc_in: TypeChecker, fp: FnParam) -> string {
+    let tc: TypeChecker = tc_in
     var s: string = "{\"name\":" + j_str(fp.param_name)
     s = s + ",\"type\":" + emit_type_expr(tc, fp.type_expr)
     s = s + ",\"is_comptime\":false,\"is_out\":" + j_bool(fp.is_mut)
@@ -1027,7 +1038,8 @@ fn emit_fn_param(tc: TypeChecker, fp: FnParam) -> string {
     return s + "}"
 }
 
-fn emit_generic_param(tc: TypeChecker, gp: GenericParam) -> string {
+fn emit_generic_param(tc_in: TypeChecker, gp: GenericParam) -> string {
+    let tc: TypeChecker = tc_in
     var s: string = "{\"name\":" + j_str(gp.param_name) + ",\"bounds\":["
     if has_type_expr(gp.bound) {
         s = s + emit_type_expr(tc, gp.bound)
@@ -1039,7 +1051,8 @@ fn emit_generic_param(tc: TypeChecker, gp: GenericParam) -> string {
 // Declaration Emitter
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn emit_decl(tc: TypeChecker, did: DeclId) -> string {
+fn emit_decl(tc_in: TypeChecker, did: DeclId) -> string {
+    let tc: TypeChecker = tc_in
     if did.id < 0 {
         return "null"
     }
@@ -1101,7 +1114,8 @@ fn emit_decl(tc: TypeChecker, did: DeclId) -> string {
     }
 }
 
-fn emit_function_decl(tc: TypeChecker, data: FunctionDeclData) -> string {
+fn emit_function_decl(tc_in: TypeChecker, data: FunctionDeclData) -> string {
+    let tc: TypeChecker = tc_in
     var s: string = "{\"kind\":\"function\",\"name\":" + j_str(data.fn_name)
     s = s + ",\"is_pub\":" + j_bool(data.is_pub)
     s = s + ",\"is_async\":" + j_bool(data.is_async)
@@ -1148,7 +1162,8 @@ fn emit_function_decl(tc: TypeChecker, data: FunctionDeclData) -> string {
     return s + "}"
 }
 
-fn emit_struct_decl(tc: TypeChecker, data: StructDeclData) -> string {
+fn emit_struct_decl(tc_in: TypeChecker, data: StructDeclData) -> string {
+    let tc: TypeChecker = tc_in
     var s: string = "{\"kind\":\"struct_decl\",\"name\":" + j_str(data.struct_name)
     s = s + ",\"is_pub\":" + j_bool(data.is_pub)
     s = s + ",\"is_extern\":" + j_bool(data.is_extern)
@@ -1180,7 +1195,8 @@ fn emit_struct_decl(tc: TypeChecker, data: StructDeclData) -> string {
     return s + "}"
 }
 
-fn emit_enum_decl(tc: TypeChecker, data: EnumDeclData) -> string {
+fn emit_enum_decl(tc_in: TypeChecker, data: EnumDeclData) -> string {
+    let tc: TypeChecker = tc_in
     var s: string = "{\"kind\":\"enum_decl\",\"name\":" + j_str(data.enum_name)
     s = s + ",\"is_pub\":" + j_bool(data.is_pub)
     s = s + ",\"is_extern\":false,\"repr_type\":null"
@@ -1229,7 +1245,8 @@ fn emit_enum_decl(tc: TypeChecker, data: EnumDeclData) -> string {
     return s + "}"
 }
 
-fn emit_trait_decl(tc: TypeChecker, data: TraitDeclData) -> string {
+fn emit_trait_decl(tc_in: TypeChecker, data: TraitDeclData) -> string {
+    let tc: TypeChecker = tc_in
     var s: string = "{\"kind\":\"trait_decl\",\"name\":" + j_str(data.trait_name)
     s = s + ",\"is_pub\":" + j_bool(data.is_pub)
 
@@ -1272,7 +1289,8 @@ fn emit_trait_decl(tc: TypeChecker, data: TraitDeclData) -> string {
     return s + "}"
 }
 
-fn emit_impl_decl(tc: TypeChecker, data: ImplDeclData) -> string {
+fn emit_impl_decl(tc_in: TypeChecker, data: ImplDeclData) -> string {
+    let tc: TypeChecker = tc_in
     var s: string = "{\"kind\":\"impl_decl\",\"is_unsafe\":false"
 
     // type_params
@@ -1321,7 +1339,8 @@ fn emit_impl_decl(tc: TypeChecker, data: ImplDeclData) -> string {
     return s + "}"
 }
 
-fn emit_import_decl(tc: TypeChecker, data: ImportDeclData) -> string {
+fn emit_import_decl(tc_in: TypeChecker, data: ImportDeclData) -> string {
+    let tc: TypeChecker = tc_in
     var items: string = ""
     var i: i32 = 0
     while i < data.items_count {
@@ -1353,7 +1372,8 @@ fn extract_original_name(mangled: string) -> string {
     return mangled
 }
 
-fn emit_mono_structs(tc: TypeChecker) -> string {
+fn emit_mono_structs(tc_in: TypeChecker) -> string {
+    let tc: TypeChecker = tc_in
     let keys: List#[string] = tc.mono_structs.keys()
     if keys.len() == 0 { return "[]" }
     var result: string = "["
@@ -1394,7 +1414,8 @@ fn emit_mono_structs(tc: TypeChecker) -> string {
     return result + "]"
 }
 
-fn emit_mono_functions(tc: TypeChecker) -> string {
+fn emit_mono_functions(tc_in: TypeChecker) -> string {
+    let tc: TypeChecker = tc_in
     let keys: List#[string] = tc.mono_functions.keys()
     if keys.len() == 0 { return "[]" }
     var result: string = "["
@@ -1473,7 +1494,8 @@ fn emit_mono_functions(tc: TypeChecker) -> string {
     return result + "]"
 }
 
-fn emit_mono_methods(tc: TypeChecker) -> string {
+fn emit_mono_methods(tc_in: TypeChecker) -> string {
+    let tc: TypeChecker = tc_in
     let struct_keys: List#[string] = tc.mono_structs.keys()
     if struct_keys.len() == 0 { return "[]" }
 
@@ -1591,7 +1613,8 @@ fn emit_mono_methods(tc: TypeChecker) -> string {
 // Top-Level Emitter
 // ═══════════════════════════════════════════════════════════════════════════
 
-pub fn emit_typed_ast(tc: TypeChecker, m: AstModule) -> string {
+pub fn emit_typed_ast(tc_in: TypeChecker, m: AstModule) -> string {
+    let tc: TypeChecker = tc_in
     var s: string = "{\"format\":\"typed-ast\",\"version\":1"
 
     // module_decl
@@ -1664,7 +1687,8 @@ pub fn emit_typed_ast(tc: TypeChecker, m: AstModule) -> string {
 
 // Emit a single module's entry for the multi-module envelope.
 // Contains declarations, imports, and file_meta but no monomorphized tables.
-fn emit_module_entry(tc: TypeChecker, m: AstModule, mod_name: string, is_entry: bool) -> string {
+fn emit_module_entry(tc_in: TypeChecker, m: AstModule, mod_name: string, is_entry: bool) -> string {
+    let tc: TypeChecker = tc_in
     var s: string = "{\"name\":" + j_str(mod_name) + ",\"is_entry\":"
     if is_entry { s = s + "true" } else { s = s + "false" }
 
@@ -1739,8 +1763,9 @@ fn emit_module_entry(tc: TypeChecker, m: AstModule, mod_name: string, is_entry: 
 // Emit the multi-module typed AST envelope.
 // Modules are provided as parallel lists (module ASTs, names, is_entry flags).
 // Monomorphized tables are emitted once at the top level (shared across modules).
-pub fn emit_multi_typed_ast(tc: TypeChecker,
+pub fn emit_multi_typed_ast(tc_in: TypeChecker,
     modules: List#[AstModule], names: List#[string], is_entries: List#[bool]) -> string {
+    let tc: TypeChecker = tc_in
     var s: string = "{\"format\":\"typed-ast-multi\",\"version\":1,\"modules\":["
 
     var i: i32 = 0
