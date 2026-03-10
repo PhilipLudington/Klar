@@ -16,7 +16,8 @@ import parser_decl.{parse_module}
 import ast.{AstModule}
 import checker.{TypeChecker, register_builtins, format_error, init_expr_types}
 import checker_decl.{check_module, process_imports, register_declarations,
-    check_declarations, register_module_exports_from_decls}
+    check_declarations, register_module_exports_from_decls,
+    register_module_exports_from_ast}
 import ast_builder.{build_module}
 import emitter.{emit_typed_ast, emit_multi_typed_ast}
 import module_resolver.{ModuleGraph, discover_modules, topological_sort}
@@ -199,26 +200,49 @@ fn cmd_check_multi(path: string) -> i32 {
     var tc: TypeChecker = TypeChecker.new()
     tc = register_builtins(tc)
 
-    // Process each module in topological order
-    var idx: i32 = 0
-    while idx < order.len() {
-        let mid: i32 = order[idx]
-        let mod_name: string = g.names[mid]
-        let mod_json: string = g.json_asts[mid]
+    // Store built modules for the main pass
+    var mod_modules: List#[AstModule] = List.new#[AstModule]()
 
-        // Build AST arenas from JSON (shares TypeChecker arenas)
-        let build_result: (TypeChecker, AstModule) = build_module(tc, mod_json)
+    // ── Pre-pass: Build ASTs and register module exports (names only) ──
+    // This makes all module exports discoverable before checking bodies,
+    // enabling circular import resolution (e.g., parser_expr ↔ parser_stmt).
+    var pre_idx: i32 = 0
+    while pre_idx < order.len() {
+        let pre_mid: i32 = order[pre_idx]
+        let pre_name: string = g.names[pre_mid]
+        let pre_json: string = g.json_asts[pre_mid]
+
+        // Build AST arenas from JSON
+        let build_result: (TypeChecker, AstModule) = build_module(tc, pre_json)
         tc = build_result.0
         let m: AstModule = build_result.1
+        mod_modules.push(m)
 
         // Pre-fill expr_types for this module's expressions
         tc = init_expr_types(tc, tc.exprs.len())
 
+        // Register module exports from AST declarations (type=unknown)
+        if pre_name != "" {
+            tc = register_module_exports_from_ast(tc, pre_name,
+                m.decls_start, m.decls_count)
+        }
+
+        pre_idx = pre_idx + 1
+    }
+
+    // ── Main pass: Process imports, register declarations, check bodies ──
+    // Note: mod_modules[idx] corresponds to order[idx] since both loops
+    // iterate 0..order.len() in sequence and the pre-pass pushes in order.
+    var idx: i32 = 0
+    while idx < order.len() {
+        let mid: i32 = order[idx]
+        let mod_name: string = g.names[mid]
+        let m: AstModule = mod_modules[idx]
+
         // Push module scope (on top of global/builtins scope)
         tc.push_scope()
 
-        // Pass 0: process imports — use imports range, not decls range
-        // (imports are stored separately by build_module)
+        // Pass 0: process imports (all modules now discoverable)
         tc = process_imports(tc, m.imports_start, m.imports_count)
 
         // Pass 1: register type and function declarations
@@ -227,13 +251,13 @@ fn cmd_check_multi(path: string) -> i32 {
         // Pass 2: check function bodies
         tc = check_declarations(tc, m.decls_start, m.decls_count)
 
-        // Register this module's pub exports for downstream modules
+        // Re-register exports with real types (overwrites pre-pass entries)
         if mod_name != "" {
             tc = register_module_exports_from_decls(tc, mod_name,
                 m.decls_start, m.decls_count)
         }
 
-        // Pop module scope (exports are stored in module registry, not scope)
+        // Pop module scope
         tc.pop_scope()
 
         idx = idx + 1
@@ -286,26 +310,47 @@ fn cmd_emit_typed_ast_multi(path: string) -> i32 {
     var mod_names: List#[string] = List.new#[string]()
     var mod_entries: List#[bool] = List.new#[bool]()
 
-    // Process each module in topological order
+    // ── Pre-pass: Build ASTs and register module exports (names only) ──
+    var pre_idx: i32 = 0
+    while pre_idx < order.len() {
+        let pre_mid: i32 = order[pre_idx]
+        let pre_name: string = g.names[pre_mid]
+        let pre_json: string = g.json_asts[pre_mid]
+        let pre_entry: bool = g.is_entry[pre_mid]
+
+        // Build AST arenas from JSON
+        let build_result: (TypeChecker, AstModule) = build_module(tc, pre_json)
+        tc = build_result.0
+        let m: AstModule = build_result.1
+        mod_asts.push(m)
+        mod_names.push(pre_name)
+        mod_entries.push(pre_entry)
+
+        // Pre-fill expr_types
+        tc = init_expr_types(tc, tc.exprs.len())
+
+        // Register module exports from AST (type=unknown)
+        if pre_name != "" {
+            tc = register_module_exports_from_ast(tc, pre_name,
+                m.decls_start, m.decls_count)
+        }
+
+        pre_idx = pre_idx + 1
+    }
+
+    // ── Main pass: Process imports, register declarations, check bodies ──
+    // Note: mod_asts[idx] corresponds to order[idx] since both loops
+    // iterate 0..order.len() in sequence and the pre-pass pushes in order.
     var idx: i32 = 0
     while idx < order.len() {
         let mid: i32 = order[idx]
         let mod_name: string = g.names[mid]
-        let mod_json: string = g.json_asts[mid]
-        let is_entry: bool = g.is_entry[mid]
-
-        // Build AST arenas from JSON (shares TypeChecker arenas)
-        let build_result: (TypeChecker, AstModule) = build_module(tc, mod_json)
-        tc = build_result.0
-        let m: AstModule = build_result.1
-
-        // Pre-fill expr_types for this module's expressions
-        tc = init_expr_types(tc, tc.exprs.len())
+        let m: AstModule = mod_asts[idx]
 
         // Push module scope
         tc.push_scope()
 
-        // Pass 0: process imports
+        // Pass 0: process imports (all modules now discoverable)
         tc = process_imports(tc, m.imports_start, m.imports_count)
 
         // Pass 1: register type and function declarations
@@ -314,7 +359,7 @@ fn cmd_emit_typed_ast_multi(path: string) -> i32 {
         // Pass 2: check function bodies
         tc = check_declarations(tc, m.decls_start, m.decls_count)
 
-        // Register this module's pub exports for downstream modules
+        // Re-register exports with real types
         if mod_name != "" {
             tc = register_module_exports_from_decls(tc, mod_name,
                 m.decls_start, m.decls_count)
@@ -322,11 +367,6 @@ fn cmd_emit_typed_ast_multi(path: string) -> i32 {
 
         // Pop module scope
         tc.pop_scope()
-
-        // Store for emission
-        mod_asts.push(m)
-        mod_names.push(mod_name)
-        mod_entries.push(is_entry)
 
         idx = idx + 1
     }

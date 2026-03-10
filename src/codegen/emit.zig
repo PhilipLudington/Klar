@@ -287,6 +287,9 @@ pub const Emitter = struct {
         llvm_type: llvm.TypeRef,
         field_indices: []const u32,
         field_names: []const []const u8,
+        /// Klar-level type names for each field (e.g., "Token" for a Token-typed field).
+        /// null entries mean the field type is not a named struct/enum.
+        field_type_names: []const ?[]const u8 = &.{},
     };
 
     const LocalValue = struct {
@@ -557,6 +560,9 @@ pub const Emitter = struct {
         while (it.next()) |info| {
             self.allocator.free(info.field_indices);
             self.allocator.free(info.field_names);
+            if (info.field_type_names.len > 0) {
+                self.allocator.free(info.field_type_names);
+            }
         }
         self.struct_types.deinit();
         // Free closure type info allocations
@@ -8675,32 +8681,44 @@ pub const Emitter = struct {
 
     /// Look up the struct type name of a field, if the field is a struct type.
     fn lookupFieldStructTypeName(self: *Emitter, struct_type_name: []const u8, field_name: []const u8) ?[]const u8 {
-        const tc = self.type_checker orelse return null;
-
-        // Search across all module scopes for cross-module struct type resolution
-        if (tc.lookupSymbolAcrossModules(struct_type_name)) |sym| {
-            if (sym.type_ == .struct_) {
-                for (sym.type_.struct_.fields) |field| {
-                    if (std.mem.eql(u8, field.name, field_name)) {
-                        if (field.type_ == .struct_) {
-                            return field.type_.struct_.name;
-                        }
-                        return null;
+        // First check the emitter's own struct type registry (works for typed AST input)
+        if (self.struct_types.get(struct_type_name)) |info| {
+            for (info.field_names, 0..) |name, i| {
+                if (std.mem.eql(u8, name, field_name)) {
+                    if (i < info.field_type_names.len) {
+                        return info.field_type_names[i];
                     }
+                    break;
                 }
             }
         }
 
-        // Try monomorphized structs for generic types
-        var mono_structs = tc.getMonomorphizedStructs();
-        while (mono_structs.next()) |mono| {
-            if (std.mem.eql(u8, mono.mangled_name, struct_type_name)) {
-                for (mono.concrete_type.fields) |field| {
-                    if (std.mem.eql(u8, field.name, field_name)) {
-                        if (field.type_ == .struct_) {
-                            return field.type_.struct_.name;
+        // Fall back to type checker symbol tables
+        if (self.type_checker) |tc| {
+            if (tc.lookupSymbolAcrossModules(struct_type_name)) |sym| {
+                if (sym.type_ == .struct_) {
+                    for (sym.type_.struct_.fields) |field| {
+                        if (std.mem.eql(u8, field.name, field_name)) {
+                            if (field.type_ == .struct_) {
+                                return field.type_.struct_.name;
+                            }
+                            return null;
                         }
-                        return null;
+                    }
+                }
+            }
+
+            // Try monomorphized structs for generic types
+            var mono_structs = tc.getMonomorphizedStructs();
+            while (mono_structs.next()) |mono| {
+                if (std.mem.eql(u8, mono.mangled_name, struct_type_name)) {
+                    for (mono.concrete_type.fields) |field| {
+                        if (std.mem.eql(u8, field.name, field_name)) {
+                            if (field.type_ == .struct_) {
+                                return field.type_.struct_.name;
+                            }
+                            return null;
+                        }
                     }
                 }
             }
@@ -8924,11 +8942,23 @@ pub const Emitter = struct {
         var field_names = try self.allocator.alloc([]const u8, fields.len);
         errdefer self.allocator.free(field_names);
 
+        var field_type_names = try self.allocator.alloc(?[]const u8, fields.len);
+        errdefer self.allocator.free(field_type_names);
+
         for (fields, 0..) |field, i| {
             const field_llvm_type = try self.typeExprToLLVM(field.type_);
             field_types.append(self.allocator, field_llvm_type) catch return EmitError.OutOfMemory;
             field_indices[i] = @intCast(i);
             field_names[i] = field.name;
+            // Extract Klar-level type name for struct/enum field types
+            field_type_names[i] = switch (field.type_) {
+                .named => |n| n.name,
+                .generic_apply => |g| switch (g.base) {
+                    .named => |n| n.name,
+                    else => null,
+                },
+                else => null,
+            };
         }
 
         // Create LLVM struct type
@@ -8941,6 +8971,7 @@ pub const Emitter = struct {
             .llvm_type = struct_type,
             .field_indices = field_indices,
             .field_names = field_names,
+            .field_type_names = field_type_names,
         }) catch return EmitError.OutOfMemory;
 
         return struct_type;

@@ -135,8 +135,9 @@ pub fn loadMultiTypedAst(
         // Build AST module from this module entry's declarations/imports
         const module = ast_from_json.buildModule(arena, mod_obj) catch continue;
 
-        // Register declarations in the checker (accumulates across modules)
-        checker.prepareForNewModule();
+        // Register declarations in the checker's global scope (no module scoping
+        // needed since the typed AST is already type-checked — we just need all
+        // struct/enum/function declarations visible for codegen field resolution)
         checker.checkModuleDeclarations(module);
 
         // Register impl blocks (checkModuleDeclarations skips them)

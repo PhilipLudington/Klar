@@ -234,21 +234,73 @@ pub fn parse_string_literal(p: Parser) -> (Parser, string) {
 }
 
 fn has_unescaped_brace(s: string) -> bool {
-    var i: i32 = 0
-    while i < s.byte_len() {
-        let c: i32 = s.byte_at(i).as#[i32]
-        if c == 92 {
-            // Backslash — skip next char
-            i = i + 2
-            continue
+    // Match the Zig parser's hasValidInterpolation:
+    // 1. Find unescaped '{'
+    // 2. Find matching '}' (handling '\' escapes)
+    // 3. Check that content between braces starts with a valid expression character
+    var pos: i32 = 0
+    var found_valid: bool = false
+    while pos < s.byte_len() {
+        // Find next unescaped '{'
+        var brace_pos: i32 = -1
+        var scan: i32 = pos
+        while scan < s.byte_len() {
+            let c: i32 = s.byte_at(scan).as#[i32]
+            if c == 92 {
+                // Backslash — skip next char
+                scan = scan + 2
+                continue
+            }
+            if c == 123 {
+                brace_pos = scan
+                break
+            }
+            scan = scan + 1
         }
-        if c == 123 {
-            // Unescaped {
-            return true
+        if brace_pos < 0 { break }
+
+        // Find matching '}' handling escape sequences
+        var depth: i32 = 1
+        var search: i32 = brace_pos + 1
+        while search < s.byte_len() and depth > 0 {
+            let ec: i32 = s.byte_at(search).as#[i32]
+            if ec == 92 and search + 1 < s.byte_len() {
+                search = search + 2
+                continue
+            }
+            if ec == 123 { depth = depth + 1 }
+            if ec == 125 { depth = depth - 1 }
+            if depth > 0 { search = search + 1 }
         }
-        i = i + 1
+        if depth != 0 {
+            // Unmatched '{' — not valid interpolation
+            return false
+        }
+
+        // Check if content starts with a valid expression character
+        let inner_start: i32 = brace_pos + 1
+        let inner_end: i32 = search
+        var fc_pos: i32 = inner_start
+        // Skip whitespace
+        while fc_pos < inner_end {
+            let wc: i32 = s.byte_at(fc_pos).as#[i32]
+            if wc != 32 and wc != 9 and wc != 10 and wc != 13 { break }
+            fc_pos = fc_pos + 1
+        }
+        if fc_pos < inner_end {
+            let fc: i32 = s.byte_at(fc_pos).as#[i32]
+            // Valid expression starters: a-z, A-Z, _, 0-9, (, ", '
+            let is_letter: bool = (fc >= 97 and fc <= 122) or (fc >= 65 and fc <= 90)
+            let is_digit: bool = fc >= 48 and fc <= 57
+            let is_special: bool = fc == 95 or fc == 40 or fc == 34 or fc == 39
+            if is_letter or is_digit or is_special {
+                found_valid = true
+            }
+        }
+
+        pos = search + 1
     }
-    return false
+    return found_valid
 }
 
 fn parse_interpolated_string_parts(p: Parser, content: string) -> (Parser, string) {

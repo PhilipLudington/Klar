@@ -185,6 +185,12 @@ fn check_interpolated_string(tc: TypeChecker, data: InterpolatedStringData) -> (
 // ─── Identifier ─────────────────────────────────────────────────────
 
 fn check_identifier(tc: TypeChecker, data: IdentifierData) -> (TypeChecker, KlarType) {
+    // Handle None enum variant (bare identifier, not a function call)
+    if data.ident_name == "None" {
+        let r: (TypeChecker, KlarType) = make_optional_type(tc, type_unknown())
+        return r
+    }
+
     let found: ?SymbolInfo = lookup(tc, data.ident_name)
     match found {
         Some(info) => {
@@ -1073,10 +1079,22 @@ fn check_index(tc: TypeChecker, data: IndexData) -> (TypeChecker, KlarType) {
         return (c, type_error())
     }
 
-    // Index must be integer
-    if not type_is_integer(idx_type) and not is_error_type(idx_type) {
-        c = add_typed_error(c, ErrorKind::InvalidIndex, data.span,
-            "index must be integer, got " + type_display(idx_type))
+    // Index must be integer (skip check for unknown types from cyclic imports)
+    if not type_is_integer(idx_type) and not is_error_type(idx_type)
+        and not type_eq_simple(idx_type, type_unknown()) {
+        // Also tolerate ?unknown (optional of unknown from cyclic imports)
+        var suppress: bool = false
+        if type_kind_name(idx_type.kind) == "Optional" {
+            let wd: WrapperData = c.type_wrappers[idx_type.payload]
+            let inner: KlarType = get_resolved_type(c, wd.inner.id)
+            if type_eq_simple(inner, type_unknown()) {
+                suppress = true
+            }
+        }
+        if not suppress {
+            c = add_typed_error(c, ErrorKind::InvalidIndex, data.span,
+                "index must be integer, got " + type_display(idx_type))
+        }
     }
 
     match obj_type.kind {

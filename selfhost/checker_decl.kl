@@ -978,6 +978,61 @@ pub fn register_module_exports_from_decls(tc: TypeChecker, module_name: string,
     return c
 }
 
+/// Pre-register module exports from AST declarations (names only, type=unknown).
+/// Used in the pre-pass to make all module exports discoverable before
+/// checking bodies, enabling circular import resolution.
+/// The main pass must call register_module_exports_from_decls afterward
+/// to overwrite these stubs with real types (begin_module_exports resets
+/// the module start pointer, making pre-pass entries unreachable).
+pub fn register_module_exports_from_ast(tc: TypeChecker, module_name: string,
+    decls_start: i32, decls_count: i32) -> TypeChecker {
+    var c: TypeChecker = tc
+    c = begin_module_exports(c, module_name)
+
+    var i: i32 = 0
+    while i < decls_count {
+        let decl: Decl = c.decls[decls_start + i]
+        match decl {
+            Decl::Function(data) => {
+                if data.is_pub {
+                    c = register_module_export(c, module_name, data.fn_name, type_unknown(), 0)
+                }
+            }
+            Decl::StructDecl(data) => {
+                if data.is_pub {
+                    c = register_module_export(c, module_name, data.struct_name, type_unknown(), 1)
+                }
+            }
+            Decl::EnumDecl(data) => {
+                if data.is_pub {
+                    c = register_module_export(c, module_name, data.enum_name, type_unknown(), 2)
+                }
+            }
+            Decl::TraitDecl(data) => {
+                if data.is_pub {
+                    c = register_module_export(c, module_name, data.trait_name, type_unknown(), 3)
+                }
+            }
+            Decl::ConstDecl(data) => {
+                if data.is_pub {
+                    c = register_module_export(c, module_name, data.const_name, type_unknown(), 4)
+                }
+            }
+            Decl::TypeAlias(data) => {
+                if data.is_pub {
+                    // kind=1 (struct) matches register_module_exports_from_decls convention
+                    c = register_module_export(c, module_name, data.alias_name, type_unknown(), 1)
+                }
+            }
+            _ => {}
+        }
+        i = i + 1
+    }
+
+    c = end_module_exports(c, module_name)
+    return c
+}
+
 // ─── Smoke Test ─────────────────────────────────────────────────────
 
 fn main() -> i32 {

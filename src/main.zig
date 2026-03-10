@@ -3228,7 +3228,8 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             emitter.setModulePrefix(module_prefixes.items[i]);
             emitter.emitModuleBodies(mod_to_emit) catch |err| {
                 var buf: [512]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "Codegen error: {s}\n", .{@errorName(err)}) catch "Codegen error\n";
+                const prefix_name = module_prefixes.items[i] orelse "(entry)";
+                const msg = std.fmt.bufPrint(&buf, "Codegen error in module '{s}': {s}\n", .{ prefix_name, @errorName(err) }) catch "Codegen error\n";
                 try stderr.writeAll(msg);
                 return;
             };

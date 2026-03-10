@@ -549,8 +549,16 @@ fn buildExpr(arena: Allocator, val: Value) anyerror!ast.Expr {
                 const sv = getString(po, "value") orelse return JsonAstError.MissingField;
                 parts[i] = .{ .string = try dupeStr(arena, sv) };
             } else if (std.mem.eql(u8, part_kind, "expr")) {
-                const ev = try buildExpr(arena, po.get("value") orelse return JsonAstError.MissingField);
-                parts[i] = .{ .expr = ev };
+                const val_node = po.get("value") orelse return JsonAstError.MissingField;
+                if (val_node == .null) {
+                    // Selfhost emitter may emit null for unresolved expressions;
+                    // substitute an empty string literal as placeholder.
+                    // TODO: remove once selfhost emitter handles all expression types
+                    parts[i] = .{ .string = try dupeStr(arena, "") };
+                } else {
+                    const ev = try buildExpr(arena, val_node);
+                    parts[i] = .{ .expr = ev };
+                }
             } else {
                 return JsonAstError.UnknownKind;
             }

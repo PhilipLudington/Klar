@@ -152,6 +152,9 @@ fn check_string_method(tc: TypeChecker, method_name: string,
     if method_name == "starts_with" and args_count == 1 { return (tc, type_bool()) }
     if method_name == "ends_with" and args_count == 1 { return (tc, type_bool()) }
 
+    // () -> string (no-op on primitive string, converts String to string)
+    if method_name == "as_str" and args_count == 0 { return (tc, type_string()) }
+
     // () -> string
     if method_name == "trim" and args_count == 0 { return (tc, type_string()) }
     if method_name == "trim_start" and args_count == 0 { return (tc, type_string()) }

@@ -2171,6 +2171,11 @@ pub fn register_builtins(tc: TypeChecker) -> TypeChecker {
     c = rstdin.0
     c = define_builtin(c, "stdin", rstdin.1)
 
+    // fs_exists(path: string) -> bool
+    let rfse: (TypeChecker, KlarType) = make_fn_type_1(c, type_string(), type_bool())
+    c = rfse.0
+    c = define_builtin(c, "fs_exists", rfse.1)
+
     // fs_stat(path: string) -> Result#[FileStat, IoError] (use unknown types)
     let rfs1a: (TypeChecker, KlarType) = make_result_type(c, type_unknown(), type_unknown())
     c = rfs1a.0
