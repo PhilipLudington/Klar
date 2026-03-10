@@ -1,0 +1,304 @@
+import stdlib.priority_queue.*
+
+fn fail(test_num: i32, msg: string) -> i32 {
+    print("FAIL test ")
+    print(test_num.to_string().as_str())
+    print(": ")
+    println(msg)
+    return test_num
+}
+
+fn check_some(opt: ?i32, expected: i32, test_num: i32, msg: string) -> i32 {
+    match opt {
+        Some(v) => {
+            if v != expected {
+                return fail(test_num, msg)
+            }
+            return 0
+        }
+        None => { return fail(test_num, msg) }
+    }
+}
+
+fn check_none(opt: ?i32, test_num: i32, msg: string) -> i32 {
+    match opt {
+        Some(v) => { return fail(test_num, msg) }
+        None => { return 0 }
+    }
+}
+
+fn main() -> i32 {
+    var rc: i32 = 0
+
+    // Test 1: empty priority queue
+    var pq: PriorityQueue = PriorityQueue.new()
+    if pq.size() != 0 {
+        return fail(1, "empty pq size != 0")
+    }
+    if not pq.is_empty() {
+        return fail(1, "empty pq not is_empty")
+    }
+
+    // Test 2: peek on empty returns None
+    let p2: ?i32 = pq.peek()
+    rc = check_none(p2, 2, "peek on empty != None")
+    if rc != 0 { return rc }
+
+    // Test 3: pop on empty returns None
+    let p3: ?i32 = pq.pop()
+    rc = check_none(p3, 3, "pop on empty != None")
+    if rc != 0 { return rc }
+
+    // Test 4: push and peek returns minimum
+    pq.push(30)
+    pq.push(10)
+    pq.push(20)
+    if pq.size() != 3 {
+        return fail(4, "size != 3 after 3 pushes")
+    }
+    let p4: ?i32 = pq.peek()
+    rc = check_some(p4, 10, 4, "peek != 10 (minimum)")
+    if rc != 0 { return rc }
+    if pq.size() != 3 {
+        return fail(4, "peek changed size")
+    }
+
+    // Test 5: pop returns elements in sorted order
+    let p5a: ?i32 = pq.pop()
+    rc = check_some(p5a, 10, 5, "first pop != 10")
+    if rc != 0 { return rc }
+    let p5b: ?i32 = pq.pop()
+    rc = check_some(p5b, 20, 5, "second pop != 20")
+    if rc != 0 { return rc }
+    let p5c: ?i32 = pq.pop()
+    rc = check_some(p5c, 30, 5, "third pop != 30")
+    if rc != 0 { return rc }
+    let p5d: ?i32 = pq.pop()
+    rc = check_none(p5d, 5, "pop after empty != None")
+    if rc != 0 { return rc }
+
+    // Test 6: mixed inserts and pops
+    var pq6: PriorityQueue = PriorityQueue.new()
+    pq6.push(50)
+    pq6.push(30)
+    let p6a: ?i32 = pq6.pop()
+    rc = check_some(p6a, 30, 6, "pop != 30")
+    if rc != 0 { return rc }
+    pq6.push(10)
+    pq6.push(40)
+    let p6b: ?i32 = pq6.pop()
+    rc = check_some(p6b, 10, 6, "pop != 10 after interleave")
+    if rc != 0 { return rc }
+    let p6c: ?i32 = pq6.pop()
+    rc = check_some(p6c, 40, 6, "pop != 40")
+    if rc != 0 { return rc }
+    let p6d: ?i32 = pq6.pop()
+    rc = check_some(p6d, 50, 6, "pop != 50")
+    if rc != 0 { return rc }
+
+    // Test 7: duplicate values
+    var pq7: PriorityQueue = PriorityQueue.new()
+    pq7.push(5)
+    pq7.push(5)
+    pq7.push(5)
+    if pq7.size() != 3 {
+        return fail(7, "size != 3 with duplicates")
+    }
+    let p7a: ?i32 = pq7.pop()
+    rc = check_some(p7a, 5, 7, "first dup pop != 5")
+    if rc != 0 { return rc }
+    let p7b: ?i32 = pq7.pop()
+    rc = check_some(p7b, 5, 7, "second dup pop != 5")
+    if rc != 0 { return rc }
+    let p7c: ?i32 = pq7.pop()
+    rc = check_some(p7c, 5, 7, "third dup pop != 5")
+    if rc != 0 { return rc }
+
+    // Test 8: negative values
+    var pq8: PriorityQueue = PriorityQueue.new()
+    pq8.push(10)
+    pq8.push(-5)
+    pq8.push(0)
+    pq8.push(-20)
+    pq8.push(3)
+    let p8a: ?i32 = pq8.pop()
+    rc = check_some(p8a, -20, 8, "pop != -20 (negative min)")
+    if rc != 0 { return rc }
+    let p8b: ?i32 = pq8.pop()
+    rc = check_some(p8b, -5, 8, "pop != -5")
+    if rc != 0 { return rc }
+    let p8c: ?i32 = pq8.pop()
+    rc = check_some(p8c, 0, 8, "pop != 0")
+    if rc != 0 { return rc }
+    let p8d: ?i32 = pq8.pop()
+    rc = check_some(p8d, 3, 8, "pop != 3")
+    if rc != 0 { return rc }
+    let p8e: ?i32 = pq8.pop()
+    rc = check_some(p8e, 10, 8, "pop != 10")
+    if rc != 0 { return rc }
+
+    // Test 9: single element
+    var pq9: PriorityQueue = PriorityQueue.new()
+    pq9.push(42)
+    let p9a: ?i32 = pq9.peek()
+    rc = check_some(p9a, 42, 9, "peek single != 42")
+    if rc != 0 { return rc }
+    let p9b: ?i32 = pq9.pop()
+    rc = check_some(p9b, 42, 9, "pop single != 42")
+    if rc != 0 { return rc }
+    if not pq9.is_empty() {
+        return fail(9, "not empty after single pop")
+    }
+
+    // Test 10: already sorted input
+    var pq10: PriorityQueue = PriorityQueue.new()
+    pq10.push(1)
+    pq10.push(2)
+    pq10.push(3)
+    pq10.push(4)
+    pq10.push(5)
+    let p10a: ?i32 = pq10.pop()
+    rc = check_some(p10a, 1, 10, "sorted pop != 1")
+    if rc != 0 { return rc }
+    let p10b: ?i32 = pq10.pop()
+    rc = check_some(p10b, 2, 10, "sorted pop != 2")
+    if rc != 0 { return rc }
+    let p10c: ?i32 = pq10.pop()
+    rc = check_some(p10c, 3, 10, "sorted pop != 3")
+    if rc != 0 { return rc }
+
+    // Test 11: reverse sorted input
+    var pq11: PriorityQueue = PriorityQueue.new()
+    pq11.push(5)
+    pq11.push(4)
+    pq11.push(3)
+    pq11.push(2)
+    pq11.push(1)
+    let p11a: ?i32 = pq11.pop()
+    rc = check_some(p11a, 1, 11, "reverse pop != 1")
+    if rc != 0 { return rc }
+    let p11b: ?i32 = pq11.pop()
+    rc = check_some(p11b, 2, 11, "reverse pop != 2")
+    if rc != 0 { return rc }
+    let p11c: ?i32 = pq11.pop()
+    rc = check_some(p11c, 3, 11, "reverse pop != 3")
+    if rc != 0 { return rc }
+    let p11d: ?i32 = pq11.pop()
+    rc = check_some(p11d, 4, 11, "reverse pop != 4")
+    if rc != 0 { return rc }
+    let p11e: ?i32 = pq11.pop()
+    rc = check_some(p11e, 5, 11, "reverse pop != 5")
+    if rc != 0 { return rc }
+
+    // Test 12: clear
+    var pq12: PriorityQueue = PriorityQueue.new()
+    pq12.push(10)
+    pq12.push(20)
+    pq12.push(30)
+    pq12.clear()
+    if pq12.size() != 0 {
+        return fail(12, "size != 0 after clear")
+    }
+    if not pq12.is_empty() {
+        return fail(12, "not is_empty after clear")
+    }
+    let p12: ?i32 = pq12.peek()
+    rc = check_none(p12, 12, "peek after clear != None")
+    if rc != 0 { return rc }
+    pq12.push(99)
+    let p12b: ?i32 = pq12.pop()
+    rc = check_some(p12b, 99, 12, "push after clear != 99")
+    if rc != 0 { return rc }
+
+    // Test 13: contains
+    var pq13: PriorityQueue = PriorityQueue.new()
+    pq13.push(7)
+    pq13.push(14)
+    pq13.push(21)
+    if not pq13.contains(14) {
+        return fail(13, "contains(14) should be true")
+    }
+    if pq13.contains(15) {
+        return fail(13, "contains(15) should be false")
+    }
+    if not pq13.contains(7) {
+        return fail(13, "contains(7) should be true")
+    }
+
+    // Test 14: to_sorted_list
+    var pq14: PriorityQueue = PriorityQueue.new()
+    pq14.push(30)
+    pq14.push(10)
+    pq14.push(50)
+    pq14.push(20)
+    pq14.push(40)
+    let sorted: List#[i32] = pq14.to_sorted_list()
+    if sorted.len() != 5 {
+        return fail(14, "to_sorted_list len != 5")
+    }
+    if sorted[0] != 10 {
+        return fail(14, "sorted[0] != 10")
+    }
+    if sorted[1] != 20 {
+        return fail(14, "sorted[1] != 20")
+    }
+    if sorted[2] != 30 {
+        return fail(14, "sorted[2] != 30")
+    }
+    if sorted[3] != 40 {
+        return fail(14, "sorted[3] != 40")
+    }
+    if sorted[4] != 50 {
+        return fail(14, "sorted[4] != 50")
+    }
+    if pq14.size() != 5 {
+        return fail(14, "original pq modified by to_sorted_list")
+    }
+
+    // Test 15: large dataset (1000 entries, reverse order)
+    var pq15: PriorityQueue = PriorityQueue.new()
+    var i15: i32 = 999
+    while i15 >= 0 {
+        pq15.push(i15)
+        i15 = i15 - 1
+    }
+    if pq15.size() != 1000 {
+        return fail(15, "large dataset size != 1000")
+    }
+    let p15: ?i32 = pq15.peek()
+    rc = check_some(p15, 0, 15, "large dataset peek != 0")
+    if rc != 0 { return rc }
+    var i15b: i32 = 0
+    while i15b < 1000 {
+        let v15: ?i32 = pq15.pop()
+        rc = check_some(v15, i15b, 15, "large dataset order wrong")
+        if rc != 0 { return rc }
+        i15b = i15b + 1
+    }
+
+    // Test 16: push after pop maintains heap property
+    var pq16: PriorityQueue = PriorityQueue.new()
+    pq16.push(100)
+    pq16.push(50)
+    pq16.push(75)
+    let p16a: ?i32 = pq16.pop()
+    rc = check_some(p16a, 50, 16, "pop != 50")
+    if rc != 0 { return rc }
+    pq16.push(25)
+    pq16.push(60)
+    let p16b: ?i32 = pq16.pop()
+    rc = check_some(p16b, 25, 16, "pop != 25 after re-push")
+    if rc != 0 { return rc }
+    let p16c: ?i32 = pq16.pop()
+    rc = check_some(p16c, 60, 16, "pop != 60")
+    if rc != 0 { return rc }
+    let p16d: ?i32 = pq16.pop()
+    rc = check_some(p16d, 75, 16, "pop != 75")
+    if rc != 0 { return rc }
+    let p16e: ?i32 = pq16.pop()
+    rc = check_some(p16e, 100, 16, "pop != 100")
+    if rc != 0 { return rc }
+
+    println("All tests passed")
+    return 0
+}

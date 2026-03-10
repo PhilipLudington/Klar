@@ -1,0 +1,158 @@
+module stdlib.priority_queue
+
+pub struct PriorityQueue {
+    data: List#[i32],
+    cfg: List#[i32],
+}
+
+impl PriorityQueue {
+    pub fn new() -> PriorityQueue {
+        let init_cap: i32 = 8
+        var data: List#[i32] = List.new#[i32]()
+        var i: i32 = 0
+        while i < init_cap {
+            data.push(0)
+            i = i + 1
+        }
+        var cfg: List#[i32] = List.new#[i32]()
+        cfg.push(0)
+        cfg.push(init_cap)
+        return PriorityQueue { data: data, cfg: cfg }
+    }
+
+    pub fn size(self: PriorityQueue) -> i32 {
+        return self.cfg[0]
+    }
+
+    pub fn is_empty(self: PriorityQueue) -> bool {
+        return self.cfg[0] == 0
+    }
+
+    pub fn peek(self: PriorityQueue) -> ?i32 {
+        if self.cfg[0] == 0 {
+            return None
+        }
+        return Some(self.data[0])
+    }
+
+    fn grow(self: PriorityQueue) -> void {
+        let old_cap: i32 = self.cfg[1]
+        let new_cap: i32 = old_cap * 2
+        var i: i32 = 0
+        while i < old_cap {
+            self.data.push(0)
+            i = i + 1
+        }
+        self.cfg[1] = new_cap
+    }
+
+    fn sift_up(self: PriorityQueue, idx: i32) -> void {
+        var i: i32 = idx
+        while i > 0 {
+            let parent: i32 = (i - 1) / 2
+            if self.data[i] < self.data[parent] {
+                let tmp: i32 = self.data[i]
+                self.data[i] = self.data[parent]
+                self.data[parent] = tmp
+                i = parent
+            } else {
+                i = 0
+            }
+        }
+    }
+
+    fn sift_down(self: PriorityQueue, idx: i32) -> void {
+        let sz: i32 = self.cfg[0]
+        var i: i32 = idx
+        var running: bool = true
+        while running {
+            let left: i32 = 2 * i + 1
+            let right: i32 = 2 * i + 2
+            var smallest: i32 = i
+
+            if left < sz {
+                if self.data[left] < self.data[smallest] {
+                    smallest = left
+                }
+            }
+            if right < sz {
+                if self.data[right] < self.data[smallest] {
+                    smallest = right
+                }
+            }
+
+            if smallest == i {
+                running = false
+            } else {
+                let tmp: i32 = self.data[i]
+                self.data[i] = self.data[smallest]
+                self.data[smallest] = tmp
+                i = smallest
+            }
+        }
+    }
+
+    pub fn push(self: PriorityQueue, value: i32) -> void {
+        let sz: i32 = self.cfg[0]
+        if sz == self.cfg[1] {
+            self.grow()
+        }
+        self.data[sz] = value
+        self.cfg[0] = sz + 1
+        self.sift_up(sz)
+    }
+
+    pub fn pop(self: PriorityQueue) -> ?i32 {
+        let sz: i32 = self.cfg[0]
+        if sz == 0 {
+            return None
+        }
+        let min_val: i32 = self.data[0]
+        let new_size: i32 = sz - 1
+        if new_size > 0 {
+            self.data[0] = self.data[new_size]
+        }
+        self.cfg[0] = new_size
+        if new_size > 0 {
+            self.sift_down(0)
+        }
+        return Some(min_val)
+    }
+
+    pub fn clear(self: PriorityQueue) -> void {
+        self.cfg[0] = 0
+    }
+
+    pub fn to_sorted_list(self: PriorityQueue) -> List#[i32] {
+        var copy: PriorityQueue = PriorityQueue.new()
+        let sz: i32 = self.cfg[0]
+        var i: i32 = 0
+        while i < sz {
+            copy.push(self.data[i])
+            i = i + 1
+        }
+        var result: List#[i32] = List.new#[i32]()
+        var remaining: i32 = copy.size()
+        while remaining > 0 {
+            let val: ?i32 = copy.pop()
+            match val {
+                Some(v) => { result.push(v) }
+                None => {}
+            }
+            remaining = copy.size()
+        }
+        return result
+    }
+
+    pub fn contains(self: PriorityQueue, value: i32) -> bool {
+        let sz: i32 = self.cfg[0]
+        var i: i32 = 0
+        while i < sz {
+            if self.data[i] == value {
+                return true
+            }
+            i = i + 1
+        }
+        return false
+    }
+}

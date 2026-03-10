@@ -628,6 +628,29 @@ else
     echo "⊘ deque (test not found, skipping)"
 fi
 
+# Test 24: PriorityQueue library (stdlib/priority_queue.kl)
+echo "--- priority_queue: PriorityQueue min-heap (stdlib/priority_queue.kl) ---"
+temp_bin="/tmp/klar_module_priority_queue"
+if [ -d "$TEST_DIR/priority_queue" ]; then
+    if $KLAR build $TEST_DIR/priority_queue/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ priority_queue (exit: $result)"
+            record_success "priority_queue"
+        else
+            echo "✗ priority_queue (expected: 0, got: $result)"
+            record_failure "priority_queue" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ priority_queue (build failed)"
+        record_failure "priority_queue" "build failed"
+    fi
+else
+    echo "⊘ priority_queue (test not found, skipping)"
+fi
+
 TOTAL=$((PASSED + FAILED))
 
 # Write results JSON
