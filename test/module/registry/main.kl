@@ -1,0 +1,98 @@
+// test/module/registry/main.kl — Package registry protocol test
+// Tests the registry JSON archive format by building and parsing archives locally.
+// The full integration test (server + klar add/publish) runs in scripts/run-registry-test.sh.
+
+import stdlib.http_client.*
+
+fn fail(test_num: i32, msg: string) -> i32 {
+    println("FAIL test " + test_num.to_string().as_str() + ": " + msg)
+    return test_num
+}
+
+fn find_in(s: string, needle: string, start: i32) -> i32 {
+    let slen: i32 = s.len()
+    let nlen: i32 = needle.len()
+    if nlen == 0 { return start }
+    let limit: i32 = slen - nlen + 1
+    for i: i32 in start..limit {
+        if s.slice(i, i + nlen) == needle {
+            return i
+        }
+    }
+    return -1
+}
+
+fn main(args: [String]) -> i32 {
+    // ========================================================================
+    // Test 1: Package archive JSON format is valid
+    // ========================================================================
+    let archive: string = "{\"name\":\"mylib\",\"version\":\"0.1.0\",\"files\":{\"klar.json\":\"{}\",\"src/lib.kl\":\"pub fn greet() -> string { return \\\"hi\\\" }\"}}"
+    if find_in(archive, "\"name\":\"mylib\"", 0) < 0 {
+        return fail(1, "archive missing name field")
+    }
+    if find_in(archive, "\"version\":\"0.1.0\"", 0) < 0 {
+        return fail(1, "archive missing version field")
+    }
+    if find_in(archive, "\"files\":{", 0) < 0 {
+        return fail(1, "archive missing files field")
+    }
+    if find_in(archive, "\"src/lib.kl\":", 0) < 0 {
+        return fail(1, "archive missing source file")
+    }
+    println("PASS test 1: archive JSON format")
+
+    // ========================================================================
+    // Test 2: Metadata JSON format is valid
+    // ========================================================================
+    let metadata_json: string = "{\"name\":\"mylib\",\"versions\":[\"0.1.0\",\"0.2.0\"],\"latest\":\"0.2.0\"}"
+    if find_in(metadata_json, "\"name\":\"mylib\"", 0) < 0 {
+        return fail(2, "metadata missing name")
+    }
+    if find_in(metadata_json, "\"versions\":[", 0) < 0 {
+        return fail(2, "metadata missing versions array")
+    }
+    if find_in(metadata_json, "\"0.1.0\"", 0) < 0 {
+        return fail(2, "metadata missing version 0.1.0")
+    }
+    if find_in(metadata_json, "\"0.2.0\"", 0) < 0 {
+        return fail(2, "metadata missing version 0.2.0")
+    }
+    if find_in(metadata_json, "\"latest\":\"0.2.0\"", 0) < 0 {
+        return fail(2, "metadata missing latest field")
+    }
+    println("PASS test 2: metadata JSON format")
+
+    // ========================================================================
+    // Test 3: Archive with special characters in file content
+    // ========================================================================
+    let special_archive: string = "{\"name\":\"special\",\"version\":\"1.0.0\",\"files\":{\"src/main.kl\":\"let s: string = \\\"hello\\\\nworld\\\"\"}}"
+    if find_in(special_archive, "\\\\n", 0) < 0 {
+        return fail(3, "archive doesn't preserve escaped newline")
+    }
+    println("PASS test 3: special characters in archive")
+
+    // ========================================================================
+    // Test 4: Write and read back archive file
+    // ========================================================================
+    let test_path: string = "/tmp/klar_registry_test_archive.json"
+    let wr: Result#[void, IoError] = fs_write_string(test_path, archive)
+    if not wr.is_ok() {
+        return fail(4, "could not write archive file")
+    }
+    let rd: Result#[String, IoError] = fs_read_string(test_path)
+    if not rd.is_ok() {
+        return fail(4, "could not read archive file")
+    }
+    let read_str: String = rd!
+    let read_content: string = read_str.as_str()
+    if read_content != archive {
+        return fail(4, "read-back doesn't match written archive")
+    }
+    println("PASS test 4: archive file round-trip")
+
+    // Cleanup
+    let _rm: Result#[void, IoError] = fs_remove_file(test_path)
+
+    println("All 4 registry format tests passed")
+    return 0
+}

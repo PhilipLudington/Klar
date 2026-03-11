@@ -743,6 +743,27 @@ else
     echo "⊘ threadpool (test not found, skipping)"
 fi
 
+echo "--- registry: Package registry format ---"
+temp_bin="/tmp/klar_module_registry"
+if [ -d "$TEST_DIR/registry" ]; then
+    if $KLAR build $TEST_DIR/registry/main.kl -o "$temp_bin" 2>/dev/null; then
+        run_with_timeout 30 "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ $result -eq 0 ]; then
+            echo "✓ registry (exit: $result)"
+            record_success "registry"
+        else
+            echo "✗ registry (expected: 0, got: $result)"
+            record_failure "registry" "expected 0, got $result"
+        fi
+    else
+        echo "✗ registry (build failed)"
+        record_failure "registry" "build failed"
+    fi
+else
+    echo "⊘ registry (test not found, skipping)"
+fi
+
 TOTAL=$((PASSED + FAILED))
 
 # Write results JSON

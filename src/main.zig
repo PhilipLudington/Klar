@@ -30,7 +30,9 @@ const ModuleInfo = module_resolver.ModuleInfo;
 const Repl = @import("repl.zig").Repl;
 const manifest = @import("pkg/manifest.zig");
 const lockfile = @import("pkg/lockfile.zig");
+const registry = @import("pkg/registry.zig");
 const formatter = @import("formatter.zig");
+const doc_gen = @import("doc_gen.zig");
 const lsp = @import("lsp.zig");
 const meta_query = @import("meta_query.zig");
 
@@ -809,6 +811,14 @@ pub fn main() !void {
         try initProject(allocator, project_name, is_lib);
     } else if (std.mem.eql(u8, command, "update")) {
         try updateLockfile(allocator);
+    } else if (std.mem.eql(u8, command, "add")) {
+        if (args.len < 3) {
+            try getStdErr().writeAll("Error: missing package name\nUsage: klar add <package> or klar add <package>@<version>\n");
+            return;
+        }
+        try addPackage(allocator, args[2]);
+    } else if (std.mem.eql(u8, command, "publish")) {
+        try publishPackageCommand(allocator);
     } else if (std.mem.eql(u8, command, "test")) {
         var input_path: ?[]const u8 = null;
         var fn_filter: ?[]const u8 = null;
@@ -864,6 +874,8 @@ pub fn main() !void {
         };
     } else if (std.mem.eql(u8, command, "fmt")) {
         try fmtCommand(allocator, args);
+    } else if (std.mem.eql(u8, command, "doc")) {
+        try docCommand(allocator, args);
     } else if (std.mem.eql(u8, command, "meta")) {
         try meta_query.metaCommand(allocator, args);
     } else if (std.mem.eql(u8, command, "lsp")) {
@@ -6307,6 +6319,594 @@ fn updateLockfile(allocator: std.mem.Allocator) !void {
     }
 }
 
+/// Add a package from the registry. Supports "name" or "name@version".
+fn addPackage(allocator: std.mem.Allocator, package_spec: []const u8) !void {
+    const stdout = getStdOut();
+    const stderr = getStdErr();
+
+    // Parse package spec: "name" or "name@version"
+    var package_name: []const u8 = package_spec;
+    var requested_version: ?[]const u8 = null;
+
+    if (std.mem.indexOfScalar(u8, package_spec, '@')) |at_pos| {
+        package_name = package_spec[0..at_pos];
+        requested_version = package_spec[at_pos + 1 ..];
+    }
+
+    if (package_name.len == 0) {
+        try stderr.writeAll("Error: empty package name\n");
+        return;
+    }
+
+    // Load klar.json
+    var loaded_manifest = switch (loadManifestWithErrors(allocator, "klar.json", "add")) {
+        .success => |m| m,
+        .failure => return,
+    };
+    defer loaded_manifest.deinit();
+
+    // Check if already in dependencies
+    if (loaded_manifest.dependencies.contains(package_name)) {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Package '{s}' is already in dependencies\n", .{package_name}) catch "Package already in dependencies\n";
+        try stdout.writeAll(msg);
+        return;
+    }
+
+    // Get registry URL
+    const registry_url_owned = std.process.getEnvVarOwned(allocator, "KLAR_REGISTRY") catch null;
+    defer if (registry_url_owned) |r| allocator.free(r);
+    const registry_url: []const u8 = registry_url_owned orelse "http://localhost:8080";
+
+    // Fetch metadata
+    var metadata = registry.fetchPackageMetadata(allocator, registry_url, package_name) catch |err| {
+        switch (err) {
+            error.PackageNotFound => {
+                var buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error: package '{s}' not found in registry\n", .{package_name}) catch "Error: package not found\n";
+                try stderr.writeAll(msg);
+            },
+            error.ConnectionFailed => try stderr.writeAll("Error: could not connect to package registry\n"),
+            else => try stderr.writeAll("Error: failed to fetch package metadata\n"),
+        }
+        return;
+    };
+    defer metadata.deinit();
+
+    // Resolve version
+    const resolved_version = if (requested_version) |rv| blk: {
+        // Verify requested version exists
+        var found = false;
+        for (metadata.versions) |v| {
+            if (std.mem.eql(u8, v, rv)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Error: version '{s}' not found for package '{s}'\n", .{ rv, package_name }) catch "Error: version not found\n";
+            try stderr.writeAll(msg);
+            return;
+        }
+        break :blk rv;
+    } else metadata.latest;
+
+    // Fetch package archive
+    var archive = registry.fetchPackage(allocator, registry_url, package_name, resolved_version) catch |err| {
+        switch (err) {
+            error.VersionNotFound => try stderr.writeAll("Error: package version not found\n"),
+            else => try stderr.writeAll("Error: failed to download package\n"),
+        }
+        return;
+    };
+    defer archive.deinit();
+
+    // Create deps/{name}/ and write files
+    const deps_dir = std.fmt.allocPrint(allocator, "deps/{s}", .{package_name}) catch {
+        try stderr.writeAll("Error: allocation failed\n");
+        return;
+    };
+    defer allocator.free(deps_dir);
+
+    std.fs.cwd().makePath(deps_dir) catch {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error: could not create directory {s}\n", .{deps_dir}) catch "Error: could not create deps directory\n";
+        try stderr.writeAll(msg);
+        return;
+    };
+
+    // Write each file from the archive
+    for (archive.file_paths, archive.file_contents) |rel_path, content| {
+        const full_path = std.fmt.allocPrint(allocator, "deps/{s}/{s}", .{ package_name, rel_path }) catch continue;
+        defer allocator.free(full_path);
+
+        // Ensure parent directory exists
+        if (std.fs.path.dirname(full_path)) |dir| {
+            std.fs.cwd().makePath(dir) catch {};
+        }
+
+        const file = std.fs.cwd().createFile(full_path, .{}) catch continue;
+        defer file.close();
+        file.writeAll(content) catch {};
+    }
+
+    // Update klar.json: add the dependency
+    updateManifestAddDep(allocator, package_name, resolved_version) catch {
+        try stderr.writeAll("Error: failed to update klar.json\n");
+        return;
+    };
+
+    // Update klar.lock
+    updateLockfileAddDep(allocator, package_name, resolved_version, registry_url, deps_dir) catch {
+        try stderr.writeAll("Warning: could not update klar.lock\n");
+    };
+
+    var buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "Added {s} v{s} to deps/\n", .{ package_name, resolved_version }) catch "Package added\n";
+    try stdout.writeAll(msg);
+}
+
+/// Update klar.json to add a registry dependency.
+/// Reads the existing JSON, finds the dependencies section, and appends the new entry.
+fn updateManifestAddDep(allocator: std.mem.Allocator, name: []const u8, version_str: []const u8) !void {
+    // Read the raw klar.json
+    const file = try std.fs.cwd().openFile("klar.json", .{});
+    defer file.close();
+    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(content);
+
+    // Parse to get structure, then rebuild
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
+    defer parsed.deinit();
+
+    const root = parsed.value;
+    if (root != .object) return error.InvalidJson;
+
+    // Rebuild the JSON manually with the new dependency added
+    var output = std.ArrayListUnmanaged(u8){};
+    defer output.deinit(allocator);
+    const writer = output.writer(allocator);
+
+    try writer.writeAll("{\n");
+
+    // Write package section
+    if (root.object.get("package")) |pkg| {
+        try writer.writeAll("  \"package\": {\n");
+        if (pkg == .object) {
+            var first = true;
+            // Write in consistent order: name, version, entry, then others
+            const ordered_keys = &[_][]const u8{ "name", "version", "entry", "description", "license" };
+            for (ordered_keys) |key| {
+                if (pkg.object.get(key)) |val| {
+                    if (!first) try writer.writeAll(",\n");
+                    first = false;
+                    try writer.print("    \"{s}\": ", .{key});
+                    try writeJsonValue(writer, val);
+                }
+            }
+            // Write authors array if present
+            if (pkg.object.get("authors")) |authors| {
+                if (!first) try writer.writeAll(",\n");
+                first = false;
+                try writer.writeAll("    \"authors\": ");
+                try writeJsonValue(writer, authors);
+            }
+        }
+        try writer.writeAll("\n  },\n");
+    }
+
+    // Write dependencies section with the new entry added
+    try writer.writeAll("  \"dependencies\": {");
+    const has_deps = if (root.object.get("dependencies")) |d| d == .object and d.object.count() > 0 else false;
+
+    if (has_deps) {
+        const deps = root.object.get("dependencies").?.object;
+        var dep_it = deps.iterator();
+        while (dep_it.next()) |entry| {
+            try writer.writeAll("\n    \"");
+            try writeJsonEscapedMain(writer, entry.key_ptr.*);
+            try writer.writeAll("\": ");
+            try writeJsonValue(writer, entry.value_ptr.*);
+            try writer.writeByte(',');
+        }
+    }
+
+    // Add the new dependency
+    try writer.writeAll("\n    \"");
+    try writeJsonEscapedMain(writer, name);
+    try writer.print("\": {{\"version\": \"{s}\"}}", .{version_str});
+    try writer.writeAll("\n  }");
+
+    // Write dev-dependencies if present
+    if (root.object.get("dev-dependencies")) |dev_deps| {
+        try writer.writeAll(",\n  \"dev-dependencies\": ");
+        try writeJsonValue(writer, dev_deps);
+    }
+
+    try writer.writeAll("\n}\n");
+
+    const out_file = try std.fs.cwd().createFile("klar.json", .{});
+    defer out_file.close();
+    try out_file.writeAll(output.items);
+}
+
+/// Write a JSON value (used for manifest serialization).
+fn writeJsonValue(writer: anytype, value: std.json.Value) !void {
+    switch (value) {
+        .string => |s| {
+            try writer.writeByte('"');
+            try writeJsonEscapedMain(writer, s);
+            try writer.writeByte('"');
+        },
+        .integer => |i| try writer.print("{d}", .{i}),
+        .float => |f| try writer.print("{d}", .{f}),
+        .bool => |b| try writer.writeAll(if (b) "true" else "false"),
+        .null => try writer.writeAll("null"),
+        .array => |arr| {
+            try writer.writeByte('[');
+            for (arr.items, 0..) |item, idx| {
+                if (idx > 0) try writer.writeAll(", ");
+                try writeJsonValue(writer, item);
+            }
+            try writer.writeByte(']');
+        },
+        .object => |obj| {
+            try writer.writeByte('{');
+            var first = true;
+            var it = obj.iterator();
+            while (it.next()) |entry| {
+                if (!first) try writer.writeAll(", ");
+                first = false;
+                try writer.writeByte('"');
+                try writeJsonEscapedMain(writer, entry.key_ptr.*);
+                try writer.writeAll("\": ");
+                try writeJsonValue(writer, entry.value_ptr.*);
+            }
+            try writer.writeByte('}');
+        },
+        .number_string => |s| try writer.writeAll(s),
+    }
+}
+
+/// Write a JSON-escaped string (for manifest serialization).
+fn writeJsonEscapedMain(writer: anytype, str: []const u8) !void {
+    for (str) |c| {
+        switch (c) {
+            '\\' => try writer.writeAll("\\\\"),
+            '"' => try writer.writeAll("\\\""),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            0x00...0x08, 0x0B, 0x0C, 0x0E...0x1F => {
+                try writer.print("\\u{x:0>4}", .{c});
+            },
+            else => try writer.writeByte(c),
+        }
+    }
+}
+
+/// Update klar.lock to add a registry dependency.
+fn updateLockfileAddDep(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    version_str: []const u8,
+    registry_url: []const u8,
+    resolved_path: []const u8,
+) !void {
+    // Load existing lockfile or create new
+    var lf = lockfile.loadLockfile(allocator, "klar.lock") catch |err| blk: {
+        if (err == error.FileNotFound) {
+            break :blk lockfile.Lockfile.init(allocator);
+        }
+        return err;
+    };
+    defer lf.deinit();
+
+    // Resolve to absolute path
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const resolved = std.fs.cwd().realpath(resolved_path, &path_buf) catch resolved_path;
+
+    try lf.addDependency(name, .{
+        .source = .registry,
+        .original = registry_url,
+        .resolved = resolved,
+        .version = version_str,
+    });
+
+    try lockfile.saveLockfile(&lf, "klar.lock");
+}
+
+/// Publish the current project to the package registry.
+fn publishPackageCommand(allocator: std.mem.Allocator) !void {
+    const stdout = getStdOut();
+    const stderr = getStdErr();
+
+    // Load klar.json
+    var loaded_manifest = switch (loadManifestWithErrors(allocator, "klar.json", "publish")) {
+        .success => |m| m,
+        .failure => return,
+    };
+    defer loaded_manifest.deinit();
+
+    // Validate required fields
+    if (loaded_manifest.package.name.len == 0) {
+        try stderr.writeAll("Error: package name is required in klar.json\n");
+        return;
+    }
+
+    // Validate name format: [a-z0-9_-]+
+    for (loaded_manifest.package.name) |c| {
+        if (!std.ascii.isLower(c) and !std.ascii.isDigit(c) and c != '_' and c != '-') {
+            try stderr.writeAll("Error: package name must contain only lowercase letters, digits, hyphens, and underscores\n");
+            return;
+        }
+    }
+
+    // Collect source files
+    var file_paths = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (file_paths.items) |p| allocator.free(p);
+        file_paths.deinit(allocator);
+    }
+    var file_contents = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (file_contents.items) |c| allocator.free(c);
+        file_contents.deinit(allocator);
+    }
+
+    // Always include klar.json
+    {
+        const klar_json = std.fs.cwd().openFile("klar.json", .{}) catch {
+            try stderr.writeAll("Error: could not read klar.json\n");
+            return;
+        };
+        defer klar_json.close();
+        const content = klar_json.readToEndAlloc(allocator, 1024 * 1024) catch {
+            try stderr.writeAll("Error: could not read klar.json\n");
+            return;
+        };
+        try file_paths.append(allocator, try allocator.dupe(u8, "klar.json"));
+        try file_contents.append(allocator, content);
+    }
+
+    // Walk the source directory for .kl files
+    const entry_dir = if (loaded_manifest.package.entry) |e|
+        std.fs.path.dirname(e) orelse "src"
+    else
+        "src";
+
+    collectSourceFiles(allocator, entry_dir, &file_paths, &file_contents) catch {
+        try stderr.writeAll("Error: failed to collect source files\n");
+        return;
+    };
+
+    if (file_paths.items.len <= 1) {
+        try stderr.writeAll("Error: no source files found to publish\n");
+        return;
+    }
+
+    // Build version string
+    const version_str = loaded_manifest.package.version.toString(allocator) catch {
+        try stderr.writeAll("Error: invalid version\n");
+        return;
+    };
+    defer allocator.free(version_str);
+
+    // Build archive JSON
+    const archive_json = registry.buildArchiveJson(
+        allocator,
+        loaded_manifest.package.name,
+        version_str,
+        file_paths.items,
+        file_contents.items,
+    ) catch {
+        try stderr.writeAll("Error: failed to build package archive\n");
+        return;
+    };
+    defer allocator.free(archive_json);
+
+    // Get registry URL
+    const registry_url_owned = std.process.getEnvVarOwned(allocator, "KLAR_REGISTRY") catch null;
+    defer if (registry_url_owned) |r| allocator.free(r);
+    const registry_url: []const u8 = registry_url_owned orelse "http://localhost:8080";
+
+    // Publish
+    registry.publishPackage(allocator, registry_url, archive_json) catch |err| {
+        switch (err) {
+            error.PublishFailed => try stderr.writeAll("Error: publish failed (version may already exist)\n"),
+            error.ConnectionFailed => try stderr.writeAll("Error: could not connect to package registry\n"),
+            else => try stderr.writeAll("Error: failed to publish package\n"),
+        }
+        return;
+    };
+
+    var buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "Published {s} v{s}\n", .{ loaded_manifest.package.name, version_str }) catch "Package published\n";
+    try stdout.writeAll(msg);
+}
+
+/// Recursively collect .kl source files from a directory.
+fn collectSourceFiles(
+    allocator: std.mem.Allocator,
+    dir_path: []const u8,
+    paths: *std.ArrayListUnmanaged([]const u8),
+    contents: *std.ArrayListUnmanaged([]const u8),
+) !void {
+    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
+    defer dir.close();
+
+    var walker = try dir.walk(allocator);
+    defer walker.deinit();
+
+    while (try walker.next()) |entry| {
+        if (entry.kind != .file) continue;
+
+        // Only collect .kl files
+        if (!std.mem.endsWith(u8, entry.path, ".kl")) continue;
+
+        // Skip hidden files and build artifacts
+        if (std.mem.startsWith(u8, entry.basename, ".")) continue;
+
+        const rel_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, entry.path });
+        errdefer allocator.free(rel_path);
+
+        // Read file content
+        const file = dir.openFile(entry.path, .{}) catch continue;
+        defer file.close();
+        const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch continue;
+
+        try paths.append(allocator, rel_path);
+        try contents.append(allocator, content);
+    }
+}
+
+/// Generate HTML documentation from Klar source files.
+fn docCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    const stdout = getStdOut();
+    const stderr = getStdErr();
+
+    // Parse arguments: klar doc [path...] [-o output_dir]
+    var paths = std.ArrayListUnmanaged([]const u8){};
+    defer paths.deinit(allocator);
+    var output_dir: []const u8 = "docs/api";
+
+    var i: usize = 2;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "-o")) {
+            if (i + 1 >= args.len) {
+                try stderr.writeAll("Error: missing value for -o\n");
+                return;
+            }
+            output_dir = args[i + 1];
+            i += 1;
+        } else if (!std.mem.startsWith(u8, arg, "-")) {
+            try paths.append(allocator, arg);
+        }
+    }
+
+    // If no paths given, try stdlib/ and src/ directories, or manifest entry
+    if (paths.items.len == 0) {
+        // Auto-discover: look for stdlib/ and src/ directories
+        if (std.fs.cwd().access("stdlib", .{})) |_| {
+            try collectKlFiles(allocator, "stdlib", &paths);
+        } else |_| {}
+
+        if (std.fs.cwd().access("src", .{})) |_| {
+            try collectKlFiles(allocator, "src", &paths);
+        } else |_| {}
+    }
+
+    if (paths.items.len == 0) {
+        try stderr.writeAll("Error: no source files found. Usage: klar doc [file.kl|dir] [-o output_dir]\n");
+        return;
+    }
+
+    // Extract documentation from each file
+    var modules = std.ArrayListUnmanaged(doc_gen.DocModule){};
+    defer modules.deinit(allocator);
+
+    for (paths.items) |path| {
+        // Check if path is a directory or file
+        const stat = std.fs.cwd().statFile(path) catch continue;
+        if (stat.kind == .directory) {
+            var dir_files = std.ArrayListUnmanaged([]const u8){};
+            defer {
+                for (dir_files.items) |p| allocator.free(p);
+                dir_files.deinit(allocator);
+            }
+            try collectKlFiles(allocator, path, &dir_files);
+            for (dir_files.items) |file_path| {
+                try processDocFile(allocator, file_path, &modules);
+            }
+        } else {
+            try processDocFile(allocator, path, &modules);
+        }
+    }
+
+    if (modules.items.len == 0) {
+        try stderr.writeAll("No documented modules found\n");
+        return;
+    }
+
+    // Create output directory
+    std.fs.cwd().makePath(output_dir) catch {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error: could not create output directory: {s}\n", .{output_dir}) catch "Error: could not create output directory\n";
+        try stderr.writeAll(msg);
+        return;
+    };
+
+    // Generate index page
+    const index_html = try doc_gen.generateIndexHtml(allocator, modules.items);
+    defer allocator.free(index_html);
+
+    const index_path = try std.fmt.allocPrint(allocator, "{s}/index.html", .{output_dir});
+    defer allocator.free(index_path);
+
+    const index_file = try std.fs.cwd().createFile(index_path, .{});
+    defer index_file.close();
+    try index_file.writeAll(index_html);
+
+    // Generate per-module pages
+    var doc_count: usize = 0;
+    for (modules.items) |*module| {
+        const html = try doc_gen.generateModuleHtml(allocator, module);
+        defer allocator.free(html);
+
+        const module_path = try std.fmt.allocPrint(allocator, "{s}/{s}.html", .{ output_dir, module.name });
+        defer allocator.free(module_path);
+
+        const module_file = try std.fs.cwd().createFile(module_path, .{});
+        defer module_file.close();
+        try module_file.writeAll(html);
+        doc_count += 1;
+    }
+
+    var buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "Generated documentation: {d} modules in {s}/\n", .{ doc_count, output_dir }) catch "Documentation generated\n";
+    try stdout.writeAll(msg);
+}
+
+/// Read a .kl file and extract its documentation, adding to modules list.
+fn processDocFile(allocator: std.mem.Allocator, path: []const u8, modules: *std.ArrayListUnmanaged(doc_gen.DocModule)) !void {
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return;
+    defer allocator.free(source);
+
+    // Derive module name from file path (e.g., "stdlib/http_server.kl" -> "http_server")
+    const basename = std.fs.path.basename(path);
+    const name = if (std.mem.endsWith(u8, basename, ".kl"))
+        basename[0 .. basename.len - 3]
+    else
+        basename;
+
+    const module = doc_gen.extractDocs(allocator, source, name, path) catch return;
+    if (module.items.len > 0 or module.module_doc.len > 0) {
+        try modules.append(allocator, module);
+    }
+}
+
+/// Collect all .kl files from a directory recursively.
+fn collectKlFiles(allocator: std.mem.Allocator, dir_path: []const u8, out: *std.ArrayListUnmanaged([]const u8)) !void {
+    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
+    defer dir.close();
+
+    var walker = try dir.walk(allocator);
+    defer walker.deinit();
+
+    while (try walker.next()) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.path, ".kl")) continue;
+        if (std.mem.startsWith(u8, entry.basename, ".")) continue;
+
+        const full_path = try std.fs.path.join(allocator, &.{ dir_path, entry.path });
+        try out.append(allocator, full_path);
+    }
+}
+
 fn initProject(allocator: std.mem.Allocator, name_arg: ?[]const u8, is_lib: bool) !void {
     const stdout = getStdOut();
     const stderr = getStdErr();
@@ -6413,6 +7013,9 @@ fn printUsage() !void {
         \\  build [file]         Build project or file to native executable
         \\  run [file]           Build and run project or file
         \\  update               Regenerate klar.lock from klar.json
+        \\  add <package>        Add a dependency from the package registry
+        \\  publish              Publish this package to the registry
+        \\  doc [path] [-o dir]  Generate HTML documentation from source files
         \\  check <file>         Type check a file
         \\    --dump-ownership   Include ownership analysis details
         \\    --partial          Parse with recovery and type-check partial declarations
@@ -6520,6 +7123,8 @@ test {
     _ = @import("bytecode.zig");
     _ = @import("pkg/manifest.zig");
     _ = @import("pkg/lockfile.zig");
+    _ = @import("pkg/registry.zig");
+    _ = @import("doc_gen.zig");
     _ = @import("chunk.zig");
     _ = @import("compiler.zig");
     _ = @import("vm.zig");

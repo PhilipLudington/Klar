@@ -40,17 +40,20 @@ pub const LockfileError = error{
 pub const DependencySource = enum {
     path,
     git,
+    registry,
 
     pub fn toString(self: DependencySource) []const u8 {
         return switch (self) {
             .path => "path",
             .git => "git",
+            .registry => "registry",
         };
     }
 
     pub fn fromString(str: []const u8) ?DependencySource {
         if (std.mem.eql(u8, str, "path")) return .path;
         if (std.mem.eql(u8, str, "git")) return .git;
+        if (std.mem.eql(u8, str, "registry")) return .registry;
         return null;
     }
 };
@@ -275,10 +278,11 @@ fn parseResolvedDependency(allocator: Allocator, value: std.json.Value) !Resolve
     };
     const source = DependencySource.fromString(source_str) orelse return LockfileError.InvalidDependency;
 
-    // Original path/URL is required (stored as "path" or "git" depending on source)
+    // Original path/URL is required (stored as "path", "git", or "registry" depending on source)
     const original_key = switch (source) {
         .path => "path",
         .git => "git",
+        .registry => "registry",
     };
     const original = switch (obj.get(original_key) orelse return LockfileError.InvalidDependency) {
         .string => |s| try allocator.dupe(u8, s),
@@ -359,6 +363,7 @@ pub fn generateLockfile(allocator: Allocator, lf: *const Lockfile) ![]const u8 {
         const key = switch (dep.source) {
             .path => "path",
             .git => "git",
+            .registry => "registry",
         };
         try writer.print("      \"{s}\": \"", .{key});
         try writeJsonEscaped(writer, dep.original);

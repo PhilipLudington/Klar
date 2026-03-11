@@ -105,6 +105,10 @@ pub const Dependency = struct {
     pub fn isGit(self: Dependency) bool {
         return self.git != null;
     }
+
+    pub fn isRegistry(self: Dependency) bool {
+        return self.version != null and self.path == null and self.git == null;
+    }
 };
 
 /// Package metadata section.
