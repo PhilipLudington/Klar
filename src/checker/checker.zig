@@ -2400,8 +2400,7 @@ pub const TypeChecker = struct {
             const channel_elem = self.type_builder.i32Type();
             const sender_t = try self.type_builder.senderType(channel_elem);
             const receiver_t = try self.type_builder.receiverType(channel_elem);
-            const tuple_elems = try self.allocator.dupe(types.Type, &[_]types.Type{ sender_t, receiver_t });
-            const channel_ret = try self.type_builder.tupleType(tuple_elems);
+            const channel_ret = try self.type_builder.tupleType(&[_]types.Type{ sender_t, receiver_t });
             const channel_fn_type = try self.type_builder.functionType(&.{self.type_builder.i32Type()}, channel_ret);
             try self.current_scope.define(.{
                 .name = "channel_create",
