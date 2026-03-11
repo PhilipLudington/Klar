@@ -35,6 +35,7 @@ const formatter = @import("formatter.zig");
 const doc_gen = @import("doc_gen.zig");
 const lsp = @import("lsp.zig");
 const meta_query = @import("meta_query.zig");
+const kira_manifest = @import("interop/kira_manifest.zig");
 
 // Cross-platform IO helpers
 fn getStdOut() std.fs.File {
@@ -819,6 +820,8 @@ pub fn main() !void {
         try addPackage(allocator, args[2]);
     } else if (std.mem.eql(u8, command, "publish")) {
         try publishPackageCommand(allocator);
+    } else if (std.mem.eql(u8, command, "import-kira")) {
+        try kira_manifest.importKiraCommand(allocator, args);
     } else if (std.mem.eql(u8, command, "test")) {
         var input_path: ?[]const u8 = null;
         var fn_filter: ?[]const u8 = null;
@@ -7015,6 +7018,8 @@ fn printUsage() !void {
         \\  update               Regenerate klar.lock from klar.json
         \\  add <package>        Add a dependency from the package registry
         \\  publish              Publish this package to the registry
+        \\  import-kira <json>   Generate Klar extern block from Kira manifest
+        \\    -o <file>            Output file (default: kira_<module>.kl)
         \\  doc [path] [-o dir]  Generate HTML documentation from source files
         \\  check <file>         Type check a file
         \\    --dump-ownership   Include ownership analysis details
@@ -7138,4 +7143,5 @@ test {
     _ = @import("repl.zig");
     _ = @import("lsp.zig");
     _ = @import("meta_query.zig");
+    _ = @import("interop/kira_manifest.zig");
 }
