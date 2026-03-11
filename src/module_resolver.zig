@@ -183,6 +183,13 @@ pub const ModuleResolver = struct {
         // Add the entry file's directory as a search path
         if (std.fs.path.dirname(abs_path)) |dir| {
             try self.addSearchPath(dir);
+
+            // Auto-add deps/ subdirectory for package dependencies and
+            // generated interop files (e.g., from `klar import-kira`)
+            const deps_path = try std.fs.path.join(self.arena.allocator(), &.{ dir, "deps" });
+            if (fileExists(deps_path)) {
+                try self.addSearchPath(deps_path);
+            }
         }
 
         return entry;

@@ -386,8 +386,8 @@ pub fn generateKlarSource(allocator: Allocator, m: *const KiraManifest) ![]u8 {
     for (m.types) |td| {
         switch (td) {
             .sum => |s| {
-                // Emit extern enum for the tag
-                try appendSlice(allocator, &output, "extern enum ");
+                // Emit extern enum for the tag (pub so it's exported for import)
+                try appendSlice(allocator, &output, "pub extern enum ");
                 try appendSlice(allocator, &output, s.name);
                 try appendSlice(allocator, &output, "Tag: i32 {\n");
                 for (s.variants) |v| {
@@ -402,7 +402,7 @@ pub fn generateKlarSource(allocator: Allocator, m: *const KiraManifest) ![]u8 {
                 // Emit extern struct for each variant that has fields
                 for (s.variants) |v| {
                     if (v.fields.len == 0) continue;
-                    try appendSlice(allocator, &output, "extern struct ");
+                    try appendSlice(allocator, &output, "pub extern struct ");
                     try appendSlice(allocator, &output, s.name);
                     try appendSlice(allocator, &output, v.name);
                     try appendSlice(allocator, &output, "Data {\n");
@@ -417,7 +417,7 @@ pub fn generateKlarSource(allocator: Allocator, m: *const KiraManifest) ![]u8 {
                 }
             },
             .product => |p| {
-                try appendSlice(allocator, &output, "extern struct ");
+                try appendSlice(allocator, &output, "pub extern struct ");
                 try appendSlice(allocator, &output, p.name);
                 try appendSlice(allocator, &output, " {\n");
                 for (p.fields) |f| {
@@ -546,9 +546,19 @@ pub fn importKiraCommand(allocator: Allocator, args: []const []const u8) !void {
         }) catch "Generated output file\n";
         try stdout.writeAll(msg);
     } else {
-        // Default output: kira_<module>.kl
+        // Default output: deps/kira_<module>.kl
+        // Create deps/ directory if it doesn't exist
+        std.fs.cwd().makeDir("deps") catch |err| {
+            if (err != error.PathAlreadyExists) {
+                var buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error: could not create deps/ directory: {s}\n", .{@errorName(err)}) catch "Error: could not create deps/ directory\n";
+                try stderr.writeAll(msg);
+                return;
+            }
+        };
+
         var name_buf: [256]u8 = undefined;
-        const default_name = std.fmt.bufPrint(&name_buf, "kira_{s}.kl", .{m.module_name}) catch {
+        const default_name = std.fmt.bufPrint(&name_buf, "deps/kira_{s}.kl", .{m.module_name}) catch {
             try stderr.writeAll("Error: module name too long for default output path\n");
             return;
         };
@@ -747,7 +757,7 @@ test "generateKlarSource with product type" {
     const source = try generateKlarSource(allocator, &m);
     defer allocator.free(source);
 
-    try std.testing.expect(std.mem.indexOf(u8, source, "extern struct Point {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub extern struct Point {") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "    x: f64,") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "    y: f64,") != null);
 }
@@ -769,14 +779,14 @@ test "generateKlarSource with sum type" {
     defer allocator.free(source);
 
     // Tag enum
-    try std.testing.expect(std.mem.indexOf(u8, source, "extern enum ShapeTag: i32 {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub extern enum ShapeTag: i32 {") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "    Circle = 0,") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "    Rectangle = 1,") != null);
 
     // Variant data structs
-    try std.testing.expect(std.mem.indexOf(u8, source, "extern struct ShapeCircleData {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub extern struct ShapeCircleData {") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "    radius: f64,") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "extern struct ShapeRectangleData {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub extern struct ShapeRectangleData {") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "    w: f64,") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "    h: f64,") != null);
 }
@@ -850,15 +860,15 @@ test "round-trip parseManifest then generateKlarSource" {
     try std.testing.expect(std.mem.indexOf(u8, source, "fn noop() -> void") != null);
 
     // Tag enum with all variants
-    try std.testing.expect(std.mem.indexOf(u8, source, "extern enum ColorTag: i32 {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub extern enum ColorTag: i32 {") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "    Red = 0,") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "    Green = 1,") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "    Custom = 2,") != null);
 
     // Only Custom has a data struct (Red and Green have no fields)
-    try std.testing.expect(std.mem.indexOf(u8, source, "extern struct ColorCustomData {") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "extern struct ColorRedData {") == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub extern struct ColorCustomData {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub extern struct ColorRedData {") == null);
 
     // Product type
-    try std.testing.expect(std.mem.indexOf(u8, source, "extern struct Vec2 {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub extern struct Vec2 {") != null);
 }

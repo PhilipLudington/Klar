@@ -9,7 +9,7 @@ For the active milestone plan, see [PLAN.md](PLAN.md).
 
 Klar is a compiled language targeting application-level programming (like C#/Go) with ownership-based memory safety, explicit types, and AI-optimized syntax. The compiler is implemented in Zig with LLVM codegen, a bytecode VM, and a tree-walking interpreter.
 
-Current status: **Phase 10 in progress.** Phases 1–9 complete. Bootstrap achieved. Kira interop 3/4 tasks done.
+Current status: **Phase 10 complete.** Phases 1–10 complete. Bootstrap achieved. Kira interop fully working.
 
 ---
 
@@ -303,7 +303,8 @@ See [PLAN.md](PLAN.md) for full detail.
 
 ---
 
-## Phase 10: Kira Interop — Consume Manifests (In Progress)
+## Phase 10: Kira Interop — Consume Manifests ✅
+**Status:** Complete (2026-03-11)
 
 **Goal:** Klar can read a Kira type manifest (JSON) and auto-generate the extern block, removing the manual copy-paste step.
 
@@ -322,8 +323,8 @@ Reference: [DESIGN.md](DESIGN.md) section "C Interoperability", [docs/advanced/f
 - [x] `klar import-kira <manifest.json> -o <output.kl>` — generates `.kl` file with extern block and extern struct/enum definitions
 - [x] Generated file passes `klar check` (valid Klar syntax)
 
-### 10.4: Module Resolution
-- [ ] Generated `.kl` file integrates with module resolution (`import kira_mylib` finds the generated file)
+### 10.4: Module Resolution ✅
+- [x] Generated `.kl` file integrates with module resolution (`import kira_mylib` finds the generated file) — `import-kira` outputs to `deps/`, module resolver auto-discovers `deps/`, extern block functions exported from modules. 5 integration tests.
 
 ---
 

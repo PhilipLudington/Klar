@@ -4909,6 +4909,19 @@ pub const TypeChecker = struct {
                             try symbols.symbols.put(self.allocator, t.name, sym);
                         }
                     },
+                    .extern_block => |b| {
+                        // Extern functions are implicitly public (FFI bindings)
+                        for (b.functions) |func| {
+                            const func_info = self.current_scope.lookup(func.name) orelse continue;
+                            const sym = ModuleSymbol{
+                                .name = func.name,
+                                .kind = .function,
+                                .type_ = func_info.type_,
+                                .is_pub = true,
+                            };
+                            try symbols.symbols.put(self.allocator, func.name, sym);
+                        }
+                    },
                     else => {},
                 }
             }
