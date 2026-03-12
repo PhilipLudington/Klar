@@ -12,6 +12,7 @@ Klar can consume Kira libraries through automatically generated extern declarati
 - [Pattern Matching on ADTs](#pattern-matching-on-adts)
 - [Type Mapping](#type-mapping)
 - [String Interop](#string-interop)
+- [Build Integration](#build-integration)
 - [Memory Management](#memory-management)
 
 ## Quick Start
@@ -269,6 +270,99 @@ unsafe {
     // Use raw CStr without copying...
 }
 ```
+
+## Build Integration
+
+For projects with Kira dependencies, `klar build` automatically builds the Kira library, compiles its C output, generates the extern block, and links everything into the final binary.
+
+### Project Layout
+
+```
+my-project/
+├── klar.json          # Declares Kira dependencies
+├── main.kl            # Uses: import kira_mathlib.*
+├── build/             # Generated: executables and .o files
+│   ├── myapp
+│   └── kira_mathlib.o
+└── deps/              # Generated: extern block .kl files
+    └── kira_mathlib.kl
+
+../kira-mathlib/       # External Kira library
+└── mathlib.ki
+```
+
+### Configuration
+
+Add a `kira-dependencies` section to `klar.json`:
+
+```json
+{
+  "package": {
+    "name": "myapp",
+    "version": "0.1.0",
+    "entry": "main.kl"
+  },
+  "dependencies": {},
+  "kira-dependencies": {
+    "mathlib": { "path": "../kira-mathlib" }
+  }
+}
+```
+
+Each dependency has a `name` (used for `import kira_<name>`) and a `path` to the Kira project directory. The path can be relative or absolute.
+
+### Build Workflow
+
+```bash
+# Build everything (Kira deps + Klar source + link)
+klar build
+
+# What happens automatically:
+# 1. Finds kira-dependencies in klar.json
+# 2. Runs `kira build --lib` for each Kira dependency
+# 3. Compiles generated C to .o files (via cc)
+# 4. Generates deps/kira_<name>.kl (extern block)
+# 5. Compiles Klar source with import resolution
+# 6. Links Klar + Kira object files into final binary
+```
+
+Subsequent builds use mtime-based caching — if the Kira source hasn't changed, steps 2–4 are skipped.
+
+### Importing
+
+In your Klar source, import the generated module:
+
+```klar
+import kira_mathlib.*
+
+fn main() -> i32 {
+    let result: i32 = unsafe { add(2, 3) }
+    println(result.to_string())
+    return 0
+}
+```
+
+The module name is always `kira_<dependency-name>` from your `klar.json`. The `deps/` directory is added to the module search path automatically — no manual file management needed.
+
+### Cleaning
+
+```bash
+# Remove build artifacts and generated interop files
+klar clean
+```
+
+This removes the `build/` directory (executables, object files) and all `deps/kira_*.kl` files. Non-Kira deps files in `deps/` are preserved. Run `klar build` again to regenerate everything.
+
+### AI Agent Instructions
+
+To set up a Klar project that uses a Kira library:
+
+1. Create `klar.json` with a `kira-dependencies` entry pointing to the Kira project
+2. Write Klar source with `import kira_<name>.*`
+3. Call extern functions inside `unsafe { ... }` blocks (non-string functions) or directly (string-wrapped functions)
+4. Run `klar build` — everything is automatic
+
+Requires: `kira` command in PATH, C compiler (`cc` or `$CC`).
 
 ## Memory Management
 

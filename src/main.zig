@@ -870,6 +870,8 @@ pub fn main() !void {
         try publishPackageCommand(allocator);
     } else if (std.mem.eql(u8, command, "import-kira")) {
         try kira_manifest.importKiraCommand(allocator, args);
+    } else if (std.mem.eql(u8, command, "clean")) {
+        try cleanCommand(allocator);
     } else if (std.mem.eql(u8, command, "test")) {
         var input_path: ?[]const u8 = null;
         var fn_filter: ?[]const u8 = null;
@@ -6670,6 +6672,60 @@ fn updateLockfileAddDep(
 }
 
 /// Publish the current project to the package registry.
+fn cleanCommand(allocator: std.mem.Allocator) !void {
+    const stdout = getStdOut();
+    const stderr = getStdErr();
+    _ = allocator;
+
+    var removed: u32 = 0;
+
+    // Remove build/ directory (compiled executables and Kira object files)
+    if (std.fs.cwd().openDir("build", .{})) |_| {
+        std.fs.cwd().deleteTree("build") catch {
+            stderr.writeAll("Warning: could not remove build/\n") catch {};
+        };
+        removed += 1;
+    } else |_| {}
+
+    // Remove generated Kira interop files from deps/ (kira_*.kl only)
+    if (std.fs.cwd().openDir("deps", .{ .iterate = true })) |*dir_handle| {
+        var dir = dir_handle.*;
+        defer dir.close();
+        var iter = dir.iterate();
+        var kira_files = std.ArrayListUnmanaged([]const u8){};
+        defer {
+            for (kira_files.items) |name| {
+                std.heap.page_allocator.free(name);
+            }
+            kira_files.deinit(std.heap.page_allocator);
+        }
+        // Collect names first, then delete (avoid modifying dir during iteration)
+        while (iter.next() catch null) |entry| {
+            if (entry.kind == .file) {
+                if (std.mem.startsWith(u8, entry.name, "kira_") and std.mem.endsWith(u8, entry.name, ".kl")) {
+                    const name_copy = std.heap.page_allocator.dupe(u8, entry.name) catch continue;
+                    kira_files.append(std.heap.page_allocator, name_copy) catch {
+                        std.heap.page_allocator.free(name_copy);
+                        continue;
+                    };
+                }
+            }
+        }
+        for (kira_files.items) |name| {
+            dir.deleteFile(name) catch {};
+            removed += 1;
+        }
+    } else |_| {}
+
+    if (removed > 0) {
+        var msg_buf: [64]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "Cleaned {d} artifact(s)\n", .{removed}) catch "Cleaned artifacts\n";
+        stdout.writeAll(msg) catch {};
+    } else {
+        stdout.writeAll("Nothing to clean\n") catch {};
+    }
+}
+
 fn publishPackageCommand(allocator: std.mem.Allocator) !void {
     const stdout = getStdOut();
     const stderr = getStdErr();
@@ -7069,6 +7125,7 @@ fn printUsage() !void {
         \\  publish              Publish this package to the registry
         \\  import-kira <json>   Generate Klar extern block from Kira manifest
         \\    -o <file>            Output file (default: kira_<module>.kl)
+        \\  clean                Remove build artifacts and generated interop files
         \\  doc [path] [-o dir]  Generate HTML documentation from source files
         \\  check <file>         Type check a file
         \\    --dump-ownership   Include ownership analysis details
