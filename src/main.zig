@@ -36,6 +36,7 @@ const doc_gen = @import("doc_gen.zig");
 const lsp = @import("lsp.zig");
 const meta_query = @import("meta_query.zig");
 const kira_manifest = @import("interop/kira_manifest.zig");
+const kira_build = @import("interop/kira_build.zig");
 
 // Cross-platform IO helpers
 fn getStdOut() std.fs.File {
@@ -679,6 +680,52 @@ pub fn main() !void {
 
         const search_paths = if (dep_resolution) |dr| dr.paths.items else &[_][]const u8{};
 
+        // Build Kira dependencies (if any declared in klar.json)
+        var kira_result: ?kira_build.KiraBuildResult = null;
+        defer if (kira_result) |*kr| kr.deinit();
+
+        if (loaded_manifest) |m| {
+            if (m.kira_dependencies.count() > 0) {
+                const build_output_dir = if (final_output) |o|
+                    std.fs.path.dirname(o) orelse "build"
+                else
+                    "build";
+                kira_result = kira_build.buildKiraDependencies(
+                    allocator,
+                    m.kira_dependencies,
+                    m.root_dir,
+                    build_output_dir,
+                    getStdErr(),
+                ) catch |err| {
+                    switch (err) {
+                        error.KiraNotFound, error.KiraBuildFailed, error.CCompilerNotFound,
+                        error.CCompileFailed, error.ImportKiraFailed, error.DependencyPathNotFound,
+                        error.EntryFileNotFound => return, // Error already printed
+                        error.OutOfMemory => {
+                            try getStdErr().writeAll("Error: out of memory building Kira dependencies\n");
+                            return;
+                        },
+                    }
+                };
+            }
+        }
+
+        // Merge Kira build results into search paths and extra objects
+        var all_search_paths = std.ArrayListUnmanaged([]const u8){};
+        defer all_search_paths.deinit(allocator);
+        all_search_paths.appendSlice(allocator, search_paths) catch {
+            try getStdErr().writeAll("Error: out of memory\n");
+            return;
+        };
+        if (kira_result) |kr| {
+            all_search_paths.appendSlice(allocator, kr.search_paths.items) catch {
+                try getStdErr().writeAll("Error: out of memory\n");
+                return;
+            };
+        }
+
+        const extra_objects = if (kira_result) |kr| kr.extra_objects.items else &[_][]const u8{};
+
         try buildNative(allocator, final_source, .{
             .output_path = final_output,
             .emit_llvm_ir = emit_llvm,
@@ -691,11 +738,12 @@ pub fn main() !void {
             .target_triple = target_triple,
             .link_libs = link_libs.items,
             .link_paths = link_paths.items,
+            .extra_objects = extra_objects,
             .freestanding = freestanding,
             .entry_point = entry_point,
             .linker_script = linker_script,
             .compile_only = compile_only,
-            .search_paths = search_paths,
+            .search_paths = all_search_paths.items,
         }, ast_input_path, typed_ast_input_path);
     } else if (std.mem.eql(u8, command, "check")) {
         var options = CheckCommandOptions{};
@@ -3473,6 +3521,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     const linker_options = codegen.linker.LinkerOptions{
         .link_libs = options.link_libs,
         .link_paths = options.link_paths,
+        .extra_objects = options.extra_objects,
         .linker_script = options.linker_script,
         .freestanding = options.freestanding,
     };

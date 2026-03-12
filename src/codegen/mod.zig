@@ -85,6 +85,8 @@ pub const CompileOptions = struct {
     compile_only: bool = false,
     /// Additional search paths for module resolution (e.g., from package dependencies).
     search_paths: []const []const u8 = &.{},
+    /// Additional object files to link (e.g., compiled Kira C sources).
+    extra_objects: []const []const u8 = &.{},
 };
 
 /// Convenience re-exports
