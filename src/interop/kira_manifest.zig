@@ -371,6 +371,15 @@ pub fn kiraToKlarType(kira_type: []const u8) []const u8 {
     return kira_type;
 }
 
+/// Returns true if any parameter or the return type is `string` (needs CStr wrapper).
+fn needsStringWrapper(func: FunctionDecl) bool {
+    if (std.mem.eql(u8, func.return_type, "string")) return true;
+    for (func.params) |param| {
+        if (std.mem.eql(u8, param.type_name, "string")) return true;
+    }
+    return false;
+}
+
 /// Generate a Klar `.kl` file from a parsed manifest.
 /// The output contains extern struct/enum declarations and an extern function block.
 pub fn generateKlarSource(allocator: Allocator, m: *const KiraManifest) ![]u8 {
@@ -547,6 +556,9 @@ pub fn generateKlarSource(allocator: Allocator, m: *const KiraManifest) ![]u8 {
     try appendSlice(allocator, &output, "extern {\n");
     for (m.functions) |func| {
         try appendSlice(allocator, &output, "    fn ");
+        if (needsStringWrapper(func)) {
+            try appendSlice(allocator, &output, "__raw_");
+        }
         try appendSlice(allocator, &output, func.name);
         try appendSlice(allocator, &output, "(");
         for (func.params, 0..) |param, i| {
@@ -563,6 +575,59 @@ pub fn generateKlarSource(allocator: Allocator, m: *const KiraManifest) ![]u8 {
     // Always include kira_free
     try appendSlice(allocator, &output, "    fn kira_free(ptr: CPtr#[void]) -> void\n");
     try appendSlice(allocator, &output, "}\n");
+
+    // Emit string wrapper functions
+    for (m.functions) |func| {
+        if (!needsStringWrapper(func)) continue;
+        const returns_string = std.mem.eql(u8, func.return_type, "string");
+        const returns_void = std.mem.eql(u8, func.return_type, "void");
+
+        // pub fn <name>(<params with string→string>) -> <return with string→string>
+        try appendSlice(allocator, &output, "\npub fn ");
+        try appendSlice(allocator, &output, func.name);
+        try appendSlice(allocator, &output, "(");
+        for (func.params, 0..) |param, i| {
+            if (i > 0) try appendSlice(allocator, &output, ", ");
+            try appendSlice(allocator, &output, param.name);
+            try appendSlice(allocator, &output, ": ");
+            if (std.mem.eql(u8, param.type_name, "string")) {
+                try appendSlice(allocator, &output, "string");
+            } else {
+                try appendSlice(allocator, &output, kiraToKlarType(param.type_name));
+            }
+        }
+        try appendSlice(allocator, &output, ") -> ");
+        if (returns_string) {
+            try appendSlice(allocator, &output, "string");
+        } else {
+            try appendSlice(allocator, &output, kiraToKlarType(func.return_type));
+        }
+        try appendSlice(allocator, &output, " {\n");
+
+        // Body: unsafe { __raw_<name>(args...) }
+        try appendSlice(allocator, &output, "    unsafe {\n");
+        if (returns_void) {
+            try appendSlice(allocator, &output, "        __raw_");
+        } else {
+            try appendSlice(allocator, &output, "        return __raw_");
+        }
+        try appendSlice(allocator, &output, func.name);
+        try appendSlice(allocator, &output, "(");
+        for (func.params, 0..) |param, i| {
+            if (i > 0) try appendSlice(allocator, &output, ", ");
+            try appendSlice(allocator, &output, param.name);
+            if (std.mem.eql(u8, param.type_name, "string")) {
+                try appendSlice(allocator, &output, ".as_cstr()");
+            }
+        }
+        try appendSlice(allocator, &output, ")");
+        if (returns_string) {
+            try appendSlice(allocator, &output, ".to_string()");
+        }
+        try appendSlice(allocator, &output, "\n");
+        try appendSlice(allocator, &output, "    }\n");
+        try appendSlice(allocator, &output, "}\n");
+    }
 
     return output.toOwnedSlice(allocator);
 }
@@ -1048,7 +1113,7 @@ test "generateKlarSource ADT mixed unit and data variants" {
     try std.testing.expect(std.mem.indexOf(u8, source, "pub fn shape_tag(s: ref Shape) -> ShapeTag {") != null);
 }
 
-test "generateKlarSource maps string type to CStr" {
+test "generateKlarSource maps string type to CStr with wrapper" {
     const allocator = std.testing.allocator;
     const json =
         \\{"module": "hello", "functions": [
@@ -1061,7 +1126,138 @@ test "generateKlarSource maps string type to CStr" {
     const source = try generateKlarSource(allocator, &m);
     defer allocator.free(source);
 
-    try std.testing.expect(std.mem.indexOf(u8, source, "fn greet(name: CStr) -> CStr") != null);
+    // Raw extern uses __raw_ prefix with CStr types
+    try std.testing.expect(std.mem.indexOf(u8, source, "fn __raw_greet(name: CStr) -> CStr") != null);
+
+    // Wrapper accepts/returns string
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn greet(name: string) -> string {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "return __raw_greet(name.as_cstr()).to_string()") != null);
+}
+
+test "generateKlarSource string wrapper: params only" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"module": "util", "functions": [
+        \\  {"name": "count_chars", "params": [{"name": "text", "type": "string"}], "return_type": "i32"}
+        \\], "types": []}
+    ;
+    const m = try parseManifest(allocator, json);
+    defer m.deinit(allocator);
+
+    const source = try generateKlarSource(allocator, &m);
+    defer allocator.free(source);
+
+    // Extern: __raw_ prefix
+    try std.testing.expect(std.mem.indexOf(u8, source, "fn __raw_count_chars(text: CStr) -> i32") != null);
+
+    // Wrapper: string param, i32 return (no .to_string())
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn count_chars(text: string) -> i32 {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "return __raw_count_chars(text.as_cstr())") != null);
+    // Should NOT have .to_string() on non-string return
+    try std.testing.expect(std.mem.indexOf(u8, source, "count_chars(text.as_cstr()).to_string()") == null);
+}
+
+test "generateKlarSource string wrapper: return only" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"module": "info", "functions": [
+        \\  {"name": "get_version", "params": [], "return_type": "string"}
+        \\], "types": []}
+    ;
+    const m = try parseManifest(allocator, json);
+    defer m.deinit(allocator);
+
+    const source = try generateKlarSource(allocator, &m);
+    defer allocator.free(source);
+
+    // Extern: __raw_ prefix
+    try std.testing.expect(std.mem.indexOf(u8, source, "fn __raw_get_version() -> CStr") != null);
+
+    // Wrapper: no params, string return
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn get_version() -> string {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "return __raw_get_version().to_string()") != null);
+}
+
+test "generateKlarSource string wrapper: void return with string param" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"module": "logger", "functions": [
+        \\  {"name": "log_msg", "params": [{"name": "msg", "type": "string"}], "return_type": "void"}
+        \\], "types": []}
+    ;
+    const m = try parseManifest(allocator, json);
+    defer m.deinit(allocator);
+
+    const source = try generateKlarSource(allocator, &m);
+    defer allocator.free(source);
+
+    // Extern: __raw_ prefix
+    try std.testing.expect(std.mem.indexOf(u8, source, "fn __raw_log_msg(msg: CStr) -> void") != null);
+
+    // Wrapper: string param, void return (no return keyword)
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn log_msg(msg: string) -> void {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "        __raw_log_msg(msg.as_cstr())") != null);
+    // No "return" for void
+    try std.testing.expect(std.mem.indexOf(u8, source, "return __raw_log_msg") == null);
+}
+
+test "generateKlarSource string wrapper: mixed params" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"module": "db", "functions": [
+        \\  {"name": "query", "params": [{"name": "sql", "type": "string"}, {"name": "limit", "type": "i32"}], "return_type": "string"}
+        \\], "types": []}
+    ;
+    const m = try parseManifest(allocator, json);
+    defer m.deinit(allocator);
+
+    const source = try generateKlarSource(allocator, &m);
+    defer allocator.free(source);
+
+    // Wrapper: mixed params — only string param gets .as_cstr()
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn query(sql: string, limit: i32) -> string {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "__raw_query(sql.as_cstr(), limit).to_string()") != null);
+}
+
+test "generateKlarSource no wrapper for non-string functions" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"module": "math", "functions": [
+        \\  {"name": "add", "params": [{"name": "a", "type": "i32"}, {"name": "b", "type": "i32"}], "return_type": "i32"}
+        \\], "types": []}
+    ;
+    const m = try parseManifest(allocator, json);
+    defer m.deinit(allocator);
+
+    const source = try generateKlarSource(allocator, &m);
+    defer allocator.free(source);
+
+    // No __raw_ prefix for non-string functions
+    try std.testing.expect(std.mem.indexOf(u8, source, "fn add(a: i32, b: i32) -> i32") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "__raw_add") == null);
+    // No wrapper generated
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn add") == null);
+}
+
+test "needsStringWrapper detects string params and return" {
+    // String return
+    try std.testing.expect(needsStringWrapper(.{
+        .name = "f",
+        .params = &[_]Field{},
+        .return_type = "string",
+    }));
+    // String param
+    try std.testing.expect(needsStringWrapper(.{
+        .name = "f",
+        .params = &[_]Field{.{ .name = "x", .type_name = "string" }},
+        .return_type = "void",
+    }));
+    // No strings
+    try std.testing.expect(!needsStringWrapper(.{
+        .name = "f",
+        .params = &[_]Field{.{ .name = "x", .type_name = "i32" }},
+        .return_type = "i32",
+    }));
 }
 
 test "round-trip parseManifest then generateKlarSource" {

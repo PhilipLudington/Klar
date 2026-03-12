@@ -11,6 +11,7 @@ Klar can consume Kira libraries through automatically generated extern declarati
 - [Working with Sum Types (ADTs)](#working-with-sum-types-adts)
 - [Pattern Matching on ADTs](#pattern-matching-on-adts)
 - [Type Mapping](#type-mapping)
+- [String Interop](#string-interop)
 - [Memory Management](#memory-management)
 
 ## Quick Start
@@ -56,8 +57,9 @@ For a Kira manifest with functions and types, `import-kira` generates:
 3. **Unified extern struct** matching the C tagged union layout
 4. **Tag getter function** for match-based dispatch
 5. **Safe accessor functions** for extracting variant payloads
-6. **Extern function block** with all exported functions
-7. **`kira_free`** declaration for memory management
+6. **Extern function block** with all exported functions (string functions prefixed with `__raw_`)
+7. **String wrapper functions** that accept/return `string` instead of `CStr`
+8. **`kira_free`** declaration for memory management
 
 ## Working with Product Types
 
@@ -206,9 +208,67 @@ fn describe(s: ref Shape) -> string {
 | `f64`, `float` | `f64` |
 | `bool` | `Bool` |
 | `char` | `Char` |
-| `string` | `CStr` |
+| `string` | `CStr` (raw) / `string` (wrapper) |
 | `void` | `void` |
 | User-defined types | Pass through unchanged |
+
+## String Interop
+
+Functions that take or return `string` in Kira get automatic wrapper functions. You call the wrapper with Klar `string` values — no `unsafe` or manual `CStr` conversion needed.
+
+### How It Works
+
+For a Kira function `greet(name: string) -> string`, the generator produces:
+
+```klar
+// Raw extern (CStr types, prefixed with __raw_)
+extern {
+    fn __raw_greet(name: CStr) -> CStr
+}
+
+// Safe wrapper (string types, original name)
+pub fn greet(name: string) -> string {
+    unsafe {
+        return __raw_greet(name.as_cstr()).to_string()
+    }
+}
+```
+
+### Usage
+
+```klar
+import kira_hello.*
+
+fn main() -> i32 {
+    // Just use string — wrapper handles CStr conversion
+    let msg: string = greet("world")
+    println(msg)
+    return 0
+}
+```
+
+### Wrapper Rules
+
+| Kira signature | Wrapper behavior |
+|----------------|-----------------|
+| `fn f(s: string) -> string` | Converts param via `.as_cstr()`, return via `.to_string()` |
+| `fn f(s: string) -> i32` | Converts param only |
+| `fn f() -> string` | Converts return only |
+| `fn f(s: string) -> void` | Converts param, no return value |
+| `fn f(a: i32) -> i32` | No wrapper — stays in extern block as-is |
+
+Mixed parameters work correctly: only `string` params get `.as_cstr()`, non-string params pass through unchanged.
+
+### Accessing the Raw Extern
+
+If you need the raw `CStr` version (e.g., to avoid the copy from `.to_string()`), call the `__raw_` prefixed function directly inside an `unsafe` block:
+
+```klar
+unsafe {
+    let raw: CStr = __raw_greet("world".as_cstr())
+    // Use raw CStr without copying...
+}
+```
 
 ## Memory Management
 
@@ -223,8 +283,8 @@ extern {
 ### Ownership Rules
 
 - **ADTs returned by value** are caller-owned (on stack). No deallocation needed.
-- **Strings from Kira** (`CStr` returns) are borrowed — valid for the call duration. Copy to a Klar `string` if you need to keep them.
-- **Strings to Kira** are borrowed for the call duration. Kira copies internally if needed.
+- **Strings via wrappers** — the generated wrapper functions handle all conversion automatically. `string` params are borrowed as `CStr` for the call duration; `CStr` returns are copied to an owned Klar `string`. No manual memory management needed.
+- **Strings via `__raw_` functions** — `CStr` returns are borrowed and valid only for the call duration. Copy to a Klar `string` via `.to_string()` if you need to keep them. `string` params passed via `.as_cstr()` are borrowed for the call.
 - **Heap-allocated values** (pointer returns) must be freed via `kira_free`.
 
 See also: [FFI documentation](ffi.md) for general foreign function interface details.
