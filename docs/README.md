@@ -80,6 +80,7 @@ klar run hello.kl
 - [Comptime](advanced/comptime.md) - Compile-time programming
 - [Builtin Traits](advanced/builtin-traits.md) - Eq, Ordered, Clone, Drop, etc.
 - [FFI](advanced/ffi.md) - Foreign Function Interface for C interop
+- [Kira Interop](advanced/kira-interop.md) - Using Kira libraries from Klar
 
 ### Design
 

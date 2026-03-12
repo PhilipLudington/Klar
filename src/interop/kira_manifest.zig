@@ -415,6 +415,117 @@ pub fn generateKlarSource(allocator: Allocator, m: *const KiraManifest) ![]u8 {
                     }
                     try appendSlice(allocator, &output, "}\n\n");
                 }
+
+                // Determine if any variant has fields (for the data field)
+                var has_data_variants = false;
+                for (s.variants) |v| {
+                    if (v.fields.len > 0) {
+                        has_data_variants = true;
+                        break;
+                    }
+                }
+
+                const largest_idx = findLargestVariantIndex(s.variants);
+                const data_offset = computeDataOffset(s.variants);
+
+                // Emit unified extern struct (tag + data matching C tagged union layout)
+                try appendSlice(allocator, &output, "pub extern struct ");
+                try appendSlice(allocator, &output, s.name);
+                try appendSlice(allocator, &output, " {\n    tag: ");
+                try appendSlice(allocator, &output, s.name);
+                try appendSlice(allocator, &output, "Tag,\n");
+                if (has_data_variants) {
+                    try appendSlice(allocator, &output, "    data: ");
+                    try appendSlice(allocator, &output, s.name);
+                    try appendSlice(allocator, &output, s.variants[largest_idx].name);
+                    try appendSlice(allocator, &output, "Data,\n");
+                }
+                try appendSlice(allocator, &output, "}\n\n");
+
+                // Emit tag getter for match-based dispatch
+                try appendSlice(allocator, &output, "pub fn ");
+                try appendLower(allocator, &output, s.name);
+                try appendSlice(allocator, &output, "_tag(s: ref ");
+                try appendSlice(allocator, &output, s.name);
+                try appendSlice(allocator, &output, ") -> ");
+                try appendSlice(allocator, &output, s.name);
+                try appendSlice(allocator, &output, "Tag {\n    return s.tag\n}\n\n");
+
+                // Emit safe accessor functions for each variant with fields
+                for (s.variants, 0..) |v, vi| {
+                    if (v.fields.len == 0) continue;
+
+                    const is_single = v.fields.len == 1;
+
+                    // Function signature: pub fn as_<variant>(s: ref Type) -> ?ReturnType
+                    try appendSlice(allocator, &output, "pub fn as_");
+                    try appendLower(allocator, &output, v.name);
+                    try appendSlice(allocator, &output, "(s: ref ");
+                    try appendSlice(allocator, &output, s.name);
+                    try appendSlice(allocator, &output, ") -> ?");
+                    if (is_single) {
+                        try appendSlice(allocator, &output, kiraToKlarType(v.fields[0].type_name));
+                    } else {
+                        try appendSlice(allocator, &output, s.name);
+                        try appendSlice(allocator, &output, v.name);
+                        try appendSlice(allocator, &output, "Data");
+                    }
+                    try appendSlice(allocator, &output, " {\n");
+
+                    // Tag check
+                    try appendSlice(allocator, &output, "    if s.tag == ");
+                    try appendSlice(allocator, &output, s.name);
+                    try appendSlice(allocator, &output, "Tag.");
+                    try appendSlice(allocator, &output, v.name);
+                    try appendSlice(allocator, &output, " {\n");
+
+                    if (vi == largest_idx) {
+                        // Largest variant: data field is already the right type
+                        if (is_single) {
+                            try appendSlice(allocator, &output, "        return Some(s.data.");
+                            try appendSlice(allocator, &output, v.fields[0].name);
+                            try appendSlice(allocator, &output, ")\n");
+                        } else {
+                            try appendSlice(allocator, &output, "        return Some(s.data)\n");
+                        }
+                    } else {
+                        // Non-largest variant: ptr_cast to correct type
+                        try appendSlice(allocator, &output, "        unsafe {\n");
+                        try appendSlice(allocator, &output, "            let p: CPtr#[");
+                        try appendSlice(allocator, &output, s.name);
+                        try appendSlice(allocator, &output, "] = ref_to_ptr(s)\n");
+                        try appendSlice(allocator, &output, "            let bp: CPtr#[u8] = ptr_cast#[u8](p)\n");
+                        try appendSlice(allocator, &output, "            let dp: CPtr#[");
+                        try appendSlice(allocator, &output, s.name);
+                        try appendSlice(allocator, &output, v.name);
+                        try appendSlice(allocator, &output, "Data] = ptr_cast#[");
+                        try appendSlice(allocator, &output, s.name);
+                        try appendSlice(allocator, &output, v.name);
+                        try appendSlice(allocator, &output, "Data](offset(bp, ");
+                        {
+                            var buf: [20]u8 = undefined;
+                            const formatted = std.fmt.bufPrint(&buf, "{d}", .{data_offset}) catch unreachable;
+                            try appendSlice(allocator, &output, formatted);
+                        }
+                        try appendSlice(allocator, &output, ".as#[isize]))\n");
+                        try appendSlice(allocator, &output, "            let d: ");
+                        try appendSlice(allocator, &output, s.name);
+                        try appendSlice(allocator, &output, v.name);
+                        try appendSlice(allocator, &output, "Data = read(dp)\n");
+                        if (is_single) {
+                            try appendSlice(allocator, &output, "            return Some(d.");
+                            try appendSlice(allocator, &output, v.fields[0].name);
+                            try appendSlice(allocator, &output, ")\n");
+                        } else {
+                            try appendSlice(allocator, &output, "            return Some(d)\n");
+                        }
+                        try appendSlice(allocator, &output, "        }\n");
+                    }
+
+                    try appendSlice(allocator, &output, "    }\n");
+                    try appendSlice(allocator, &output, "    return None\n");
+                    try appendSlice(allocator, &output, "}\n\n");
+                }
             },
             .product => |p| {
                 try appendSlice(allocator, &output, "pub extern struct ");
@@ -596,6 +707,63 @@ fn appendInt(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), value: i
     var buf: [20]u8 = undefined;
     const formatted = std.fmt.bufPrint(&buf, "{d}", .{value}) catch unreachable;
     try output.appendSlice(allocator, formatted);
+}
+
+fn appendLower(allocator: Allocator, output: *std.ArrayListUnmanaged(u8), name: []const u8) !void {
+    for (name) |c| {
+        try output.append(allocator, if (c >= 'A' and c <= 'Z') c + 32 else c);
+    }
+}
+
+/// Estimate the C sizeof for a Kira type name (used for finding the largest variant).
+fn estimateFieldSize(type_name: []const u8) usize {
+    if (std.mem.eql(u8, type_name, "i8") or std.mem.eql(u8, type_name, "u8") or
+        std.mem.eql(u8, type_name, "bool") or std.mem.eql(u8, type_name, "Bool"))
+        return 1;
+    if (std.mem.eql(u8, type_name, "i16") or std.mem.eql(u8, type_name, "u16"))
+        return 2;
+    if (std.mem.eql(u8, type_name, "i32") or std.mem.eql(u8, type_name, "u32") or
+        std.mem.eql(u8, type_name, "f32") or std.mem.eql(u8, type_name, "int"))
+        return 4;
+    // i64, u64, f64, pointers, string, char — all 8 bytes
+    return 8;
+}
+
+/// Max alignment across all variant fields (determines union alignment in C).
+fn maxFieldAlignment(variants: []const Variant) usize {
+    var max_align: usize = 1;
+    for (variants) |v| {
+        for (v.fields) |f| {
+            const field_align = estimateFieldSize(f.type_name);
+            if (field_align > max_align) max_align = field_align;
+        }
+    }
+    return max_align;
+}
+
+/// Compute the byte offset from struct start to the data (union) portion.
+/// In C: tag is i32 (4 bytes), data starts at roundUp(4, union_alignment).
+fn computeDataOffset(variants: []const Variant) usize {
+    const tag_size: usize = 4; // extern enum: i32
+    const data_align = maxFieldAlignment(variants);
+    return ((tag_size + data_align - 1) / data_align) * data_align;
+}
+
+/// Find the index of the variant with the largest estimated size.
+fn findLargestVariantIndex(variants: []const Variant) usize {
+    var largest_idx: usize = 0;
+    var largest_size: usize = 0;
+    for (variants, 0..) |v, i| {
+        var size: usize = 0;
+        for (v.fields) |f| {
+            size += estimateFieldSize(f.type_name);
+        }
+        if (size > largest_size) {
+            largest_size = size;
+            largest_idx = i;
+        }
+    }
+    return largest_idx;
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -789,6 +957,95 @@ test "generateKlarSource with sum type" {
     try std.testing.expect(std.mem.indexOf(u8, source, "pub extern struct ShapeRectangleData {") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "    w: f64,") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "    h: f64,") != null);
+
+    // Unified struct (Phase 11: ADT Consumption)
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub extern struct Shape {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "    tag: ShapeTag,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "    data: ShapeRectangleData,") != null);
+
+    // Tag getter
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn shape_tag(s: ref Shape) -> ShapeTag {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "    return s.tag") != null);
+
+    // Accessor for Circle (non-largest, single-field -> ?f64)
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn as_circle(s: ref Shape) -> ?f64 {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "    if s.tag == ShapeTag.Circle {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "ptr_cast#[ShapeCircleData]") != null);
+
+    // Accessor for Rectangle (largest variant, multi-field -> ?ShapeRectangleData)
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn as_rectangle(s: ref Shape) -> ?ShapeRectangleData {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "        return Some(s.data)") != null);
+}
+
+test "generateKlarSource ADT with unit variants" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"module": "traffic", "functions": [], "types": [
+        \\  {"name": "Light", "kind": "sum", "variants": [
+        \\    {"name": "Red", "tag": 0, "fields": []},
+        \\    {"name": "Yellow", "tag": 1, "fields": []},
+        \\    {"name": "Green", "tag": 2, "fields": []}
+        \\  ]}
+        \\]}
+    ;
+    const m = try parseManifest(allocator, json);
+    defer m.deinit(allocator);
+
+    const source = try generateKlarSource(allocator, &m);
+    defer allocator.free(source);
+
+    // Tag enum exists
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub extern enum LightTag: i32 {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "    Red = 0,") != null);
+
+    // Unified struct with tag only (no data field since all variants are unit)
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub extern struct Light {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "    tag: LightTag,") != null);
+    // No data field — verify there's no "data:" between struct opening and closing
+    const struct_start = std.mem.indexOf(u8, source, "pub extern struct Light {") orelse unreachable;
+    const struct_region = source[struct_start..@min(struct_start + 100, source.len)];
+    try std.testing.expect(std.mem.indexOf(u8, source[struct_start..], "    data:") == null or
+        std.mem.indexOf(u8, struct_region, "    data:") == null);
+
+    // Tag getter exists
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn light_tag(s: ref Light) -> LightTag {") != null);
+
+    // No accessor functions (all variants are unit)
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn as_red") == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn as_yellow") == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn as_green") == null);
+}
+
+test "generateKlarSource ADT mixed unit and data variants" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"module": "shapes", "functions": [], "types": [
+        \\  {"name": "Shape", "kind": "sum", "variants": [
+        \\    {"name": "Circle", "tag": 0, "fields": [{"name": "radius", "type": "f64"}]},
+        \\    {"name": "Rectangle", "tag": 1, "fields": [{"name": "w", "type": "f64"}, {"name": "h", "type": "f64"}]},
+        \\    {"name": "Point", "tag": 2, "fields": []}
+        \\  ]}
+        \\]}
+    ;
+    const m = try parseManifest(allocator, json);
+    defer m.deinit(allocator);
+
+    const source = try generateKlarSource(allocator, &m);
+    defer allocator.free(source);
+
+    // Unified struct has data (because some variants have fields)
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub extern struct Shape {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "    data: ShapeRectangleData,") != null);
+
+    // Accessors for data variants only
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn as_circle(s: ref Shape) -> ?f64 {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn as_rectangle(s: ref Shape) -> ?ShapeRectangleData {") != null);
+
+    // No accessor for unit variant Point
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn as_point") == null);
+
+    // Tag getter still works for all variants (including Point)
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn shape_tag(s: ref Shape) -> ShapeTag {") != null);
 }
 
 test "generateKlarSource maps string type to CStr" {
@@ -869,6 +1126,59 @@ test "round-trip parseManifest then generateKlarSource" {
     try std.testing.expect(std.mem.indexOf(u8, source, "pub extern struct ColorCustomData {") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "pub extern struct ColorRedData {") == null);
 
+    // Unified struct for Color (Custom is the only variant with data)
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub extern struct Color {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "    data: ColorCustomData,") != null);
+
+    // Tag getter
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn color_tag(s: ref Color) -> ColorTag {") != null);
+
+    // Accessor only for Custom (Red/Green have no fields)
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn as_custom(s: ref Color) -> ?ColorCustomData {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn as_red") == null);
+
     // Product type
     try std.testing.expect(std.mem.indexOf(u8, source, "pub extern struct Vec2 {") != null);
+}
+
+test "estimateFieldSize returns correct sizes" {
+    try std.testing.expectEqual(@as(usize, 1), estimateFieldSize("u8"));
+    try std.testing.expectEqual(@as(usize, 1), estimateFieldSize("i8"));
+    try std.testing.expectEqual(@as(usize, 1), estimateFieldSize("bool"));
+    try std.testing.expectEqual(@as(usize, 2), estimateFieldSize("i16"));
+    try std.testing.expectEqual(@as(usize, 4), estimateFieldSize("i32"));
+    try std.testing.expectEqual(@as(usize, 4), estimateFieldSize("f32"));
+    try std.testing.expectEqual(@as(usize, 8), estimateFieldSize("f64"));
+    try std.testing.expectEqual(@as(usize, 8), estimateFieldSize("i64"));
+    try std.testing.expectEqual(@as(usize, 8), estimateFieldSize("string"));
+    try std.testing.expectEqual(@as(usize, 8), estimateFieldSize("UserType"));
+}
+
+test "computeDataOffset aligns correctly" {
+    // With f64 fields: tag(4) rounds up to 8
+    const f64_variants = [_]Variant{
+        .{ .name = "A", .tag = 0, .fields = &[_]Field{.{ .name = "x", .type_name = "f64" }} },
+    };
+    try std.testing.expectEqual(@as(usize, 8), computeDataOffset(&f64_variants));
+
+    // With i32 fields: tag(4) rounds up to 4 (already aligned)
+    const i32_variants = [_]Variant{
+        .{ .name = "A", .tag = 0, .fields = &[_]Field{.{ .name = "x", .type_name = "i32" }} },
+    };
+    try std.testing.expectEqual(@as(usize, 4), computeDataOffset(&i32_variants));
+
+    // With u8 fields: tag(4) rounds up to 4 (alignment is 1, but tag is 4)
+    const u8_variants = [_]Variant{
+        .{ .name = "A", .tag = 0, .fields = &[_]Field{.{ .name = "x", .type_name = "u8" }} },
+    };
+    try std.testing.expectEqual(@as(usize, 4), computeDataOffset(&u8_variants));
+}
+
+test "findLargestVariantIndex picks correct variant" {
+    const variants = [_]Variant{
+        .{ .name = "Small", .tag = 0, .fields = &[_]Field{.{ .name = "x", .type_name = "f64" }} },
+        .{ .name = "Large", .tag = 1, .fields = &[_]Field{ .{ .name = "w", .type_name = "f64" }, .{ .name = "h", .type_name = "f64" } } },
+        .{ .name = "Empty", .tag = 2, .fields = &[_]Field{} },
+    };
+    try std.testing.expectEqual(@as(usize, 1), findLargestVariantIndex(&variants));
 }
