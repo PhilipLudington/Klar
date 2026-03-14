@@ -659,7 +659,11 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
                     return sym.type_;
                 }
             }
-            tc.addError(.undefined_type, n.span, "undefined type '{s}'", .{n.name});
+            if (tc.findSimilarTypeName(n.name)) |suggestion| {
+                tc.addError(.undefined_type, n.span, "undefined type '{s}'; did you mean '{s}'?", .{ n.name, suggestion });
+            } else {
+                tc.addError(.undefined_type, n.span, "undefined type '{s}'", .{n.name});
+            }
             return tc.type_builder.unknownType();
         },
         .array => |a| {

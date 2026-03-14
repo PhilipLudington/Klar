@@ -222,6 +222,103 @@ fn sourceOffsetFromLineColumn(source: []const u8, line: usize, column: usize) ?u
     return offset;
 }
 
+/// Extract the text of a specific line from source (1-based line number).
+fn getSourceLine(source: []const u8, line: u32) ?[]const u8 {
+    if (line == 0) return null;
+    var current_line: u32 = 1;
+    var line_start: usize = 0;
+    var i: usize = 0;
+
+    while (i < source.len and current_line < line) : (i += 1) {
+        if (source[i] == '\n') {
+            current_line += 1;
+            line_start = i + 1;
+        }
+    }
+
+    if (current_line != line) return null;
+
+    // Find end of line
+    var line_end = source.len;
+    i = line_start;
+    while (i < source.len) : (i += 1) {
+        if (source[i] == '\n') {
+            line_end = i;
+            break;
+        }
+    }
+
+    // Strip trailing \r for Windows line endings
+    if (line_end > line_start and source[line_end - 1] == '\r') {
+        line_end -= 1;
+    }
+
+    return source[line_start..line_end];
+}
+
+/// Write a source snippet with caret pointer for an error span.
+fn writeErrorSnippet(stderr: anytype, source: []const u8, span: ast.Span) !void {
+    const line_text = getSourceLine(source, span.line) orelse return;
+
+    // Format line number
+    var line_num_buf: [16]u8 = undefined;
+    const line_str = std.fmt.bufPrint(&line_num_buf, "{d}", .{span.line}) catch return;
+    const line_width = line_str.len;
+
+    // Print source line: "  3 | let x: i32 = "hello""
+    const max_line_len: usize = 200;
+    const display_text = if (line_text.len > max_line_len) line_text[0..max_line_len] else line_text;
+    var buf: [512]u8 = undefined;
+    const snippet = std.fmt.bufPrint(&buf, "  {s} | {s}\n", .{ line_str, display_text }) catch return;
+    try stderr.writeAll(snippet);
+
+    // Print caret line: "    |          ^"
+    const col: usize = if (span.column > 0) span.column - 1 else 0;
+    const prefix_len = 2 + line_width + 3; // "  " + line_num + " | "
+    const total_indent = prefix_len + col;
+    if (total_indent > 500) return; // sanity check
+
+    var caret_buf: [512]u8 = undefined;
+    var pos: usize = 0;
+    while (pos < total_indent) : (pos += 1) {
+        caret_buf[pos] = ' ';
+    }
+    caret_buf[pos] = '^';
+    pos += 1;
+    caret_buf[pos] = '\n';
+    pos += 1;
+    try stderr.writeAll(caret_buf[0..pos]);
+}
+
+/// Write type check errors with optional source snippets.
+/// `source` is the source text for single-file compilation; pass null for multi-module.
+/// When `include_kind` is true, the error kind tag is included (e.g. "[type_mismatch]").
+fn writeCheckErrors(checker: *const TypeChecker, stderr: anytype, source: ?[]const u8, include_kind: bool) !void {
+    var buf: [512]u8 = undefined;
+    for (checker.errors.items) |check_err| {
+        if (check_err.kind == .meta_warning) continue;
+        if (include_kind) {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d} [{s}]: {s}\n", .{
+                check_err.span.line,
+                check_err.span.column,
+                @tagName(check_err.kind),
+                check_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        } else {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                check_err.span.line,
+                check_err.span.column,
+                check_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        }
+        if (source) |src| {
+            try writeErrorSnippet(stderr, src, check_err.span);
+        }
+    }
+}
+
 fn symbolKindName(kind: checker_mod.Symbol.Kind) []const u8 {
     return switch (kind) {
         .variable => "variable",
@@ -1147,19 +1244,8 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
 
         // Error check (before multi-module execution)
         if (checker.hasErrors()) {
-            var buf: [512]u8 = undefined;
-            const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
-            try stderr.writeAll(header);
-
-            for (checker.errors.items) |check_err| {
-                if (check_err.kind == .meta_warning) continue;
-                const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
-                    check_err.span.line,
-                    check_err.span.column,
-                    check_err.message,
-                }) catch continue;
-                try stderr.writeAll(err_msg);
-            }
+            try stderr.writeAll("Type error(s):\n");
+            try writeCheckErrors(&checker, stderr, null, false);
             try printMetaWarnings(&checker, stderr);
             return;
         }
@@ -1252,19 +1338,8 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
 
     // Single-module error check
     if (checker.hasErrors()) {
-        var buf: [512]u8 = undefined;
-        const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
-        try stderr.writeAll(header);
-
-        for (checker.errors.items) |check_err| {
-            if (check_err.kind == .meta_warning) continue;
-            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
-                check_err.span.line,
-                check_err.span.column,
-                check_err.message,
-            }) catch continue;
-            try stderr.writeAll(err_msg);
-        }
+        try stderr.writeAll("Type error(s):\n");
+        try writeCheckErrors(&checker, stderr, source, false);
         try printMetaWarnings(&checker, stderr);
         return;
     }
@@ -3061,19 +3136,8 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     }
 
     if (checker.hasErrors()) {
-        var buf: [512]u8 = undefined;
-        const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
-        try stderr.writeAll(header);
-
-        for (checker.errors.items) |check_err| {
-            if (check_err.kind == .meta_warning) continue;
-            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
-                check_err.span.line,
-                check_err.span.column,
-                check_err.message,
-            }) catch continue;
-            try stderr.writeAll(err_msg);
-        }
+        try stderr.writeAll("Type error(s):\n");
+        try writeCheckErrors(&checker, stderr, source_buf, false);
         try printMetaWarnings(&checker, stderr);
         return;
     }
@@ -4324,17 +4388,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
     if (has_type_errors) {
         const header = std.fmt.bufPrint(&buf, "Type check failed with {d} error(s):\n", .{checker.error_count}) catch "Type check failed:\n";
         try stderr.writeAll(header);
-
-        for (checker.errors.items) |check_err| {
-            if (check_err.kind == .meta_warning) continue;
-            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d} [{s}]: {s}\n", .{
-                check_err.span.line,
-                check_err.span.column,
-                @tagName(check_err.kind),
-                check_err.message,
-            }) catch continue;
-            try stderr.writeAll(err_msg);
-        }
+        try writeCheckErrors(&checker, stderr, source_buf, true);
         try printMetaWarnings(&checker, stderr);
         if (options.scope_line == null and options.expected_line == null) return; // Query modes can proceed for tooling.
     }
@@ -5183,19 +5237,8 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                     .file_failed = true,
                 };
             }
-            var buf: [512]u8 = undefined;
-            const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
-            try stderr.writeAll(header);
-
-            for (checker.errors.items) |check_err| {
-                if (check_err.kind == .meta_warning) continue;
-                const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
-                    check_err.span.line,
-                    check_err.span.column,
-                    check_err.message,
-                }) catch continue;
-                try stderr.writeAll(err_msg);
-            }
+            try stderr.writeAll("Type error(s):\n");
+            try writeCheckErrors(&checker, stderr, null, false);
             return error.TestsFailed;
         }
 
@@ -5507,19 +5550,8 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                     .file_failed = true,
                 };
             }
-            var buf: [512]u8 = undefined;
-            const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
-            try stderr.writeAll(header);
-
-            for (checker.errors.items) |check_err| {
-                if (check_err.kind == .meta_warning) continue;
-                const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
-                    check_err.span.line,
-                    check_err.span.column,
-                    check_err.message,
-                }) catch continue;
-                try stderr.writeAll(err_msg);
-            }
+            try stderr.writeAll("Type error(s):\n");
+            try writeCheckErrors(&checker, stderr, source, false);
             return error.TestsFailed;
         }
 
@@ -5885,19 +5917,9 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
     }
 
     if (checker.hasErrors()) {
-        var buf: [512]u8 = undefined;
-        const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
-        try stderr.writeAll(header);
-
-        for (checker.errors.items) |check_err| {
-            if (check_err.kind == .meta_warning) continue;
-            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
-                check_err.span.line,
-                check_err.span.column,
-                check_err.message,
-            }) catch continue;
-            try stderr.writeAll(err_msg);
-        }
+        try stderr.writeAll("Type error(s):\n");
+        const snippet_source: ?[]const u8 = if (module.imports.len == 0) source else null;
+        try writeCheckErrors(&checker, stderr, snippet_source, false);
         try printMetaWarnings(&checker, stderr);
         return;
     }
@@ -6033,19 +6055,8 @@ fn disasmFile(allocator: std.mem.Allocator, path: []const u8) !void {
     checker.checkModule(module);
 
     if (checker.hasErrors()) {
-        var buf: [512]u8 = undefined;
-        const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
-        try stderr.writeAll(header);
-
-        for (checker.errors.items) |check_err| {
-            if (check_err.kind == .meta_warning) continue;
-            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
-                check_err.span.line,
-                check_err.span.column,
-                check_err.message,
-            }) catch continue;
-            try stderr.writeAll(err_msg);
-        }
+        try stderr.writeAll("Type error(s):\n");
+        try writeCheckErrors(&checker, stderr, source, false);
         try printMetaWarnings(&checker, stderr);
         return;
     }

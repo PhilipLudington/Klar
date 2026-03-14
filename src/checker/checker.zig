@@ -2540,6 +2540,100 @@ pub const TypeChecker = struct {
         self.warning_count = 0;
     }
 
+    /// Compute Levenshtein edit distance between two strings.
+    /// Returns null if the distance would exceed `max_dist` (early exit optimization).
+    fn editDistance(a: []const u8, b: []const u8, max_dist: usize) ?usize {
+        if (a.len == 0) return if (b.len <= max_dist) b.len else null;
+        if (b.len == 0) return if (a.len <= max_dist) a.len else null;
+
+        // Quick length check: if lengths differ by more than max_dist, impossible
+        const len_diff = if (a.len > b.len) a.len - b.len else b.len - a.len;
+        if (len_diff > max_dist) return null;
+
+        // Use a single row of the DP matrix (space optimization)
+        var prev_row: [128]usize = undefined;
+        var curr_row: [128]usize = undefined;
+        if (b.len + 1 > 128) return null; // name too long
+
+        for (0..b.len + 1) |j| {
+            prev_row[j] = j;
+        }
+
+        for (a, 0..) |ca, i| {
+            curr_row[0] = i + 1;
+            var row_min: usize = curr_row[0];
+            for (b, 0..) |cb, j| {
+                const cost: usize = if (ca == cb) 0 else 1;
+                const del = prev_row[j + 1] + 1;
+                const ins = curr_row[j] + 1;
+                const sub = prev_row[j] + cost;
+                curr_row[j + 1] = @min(del, @min(ins, sub));
+                if (curr_row[j + 1] < row_min) row_min = curr_row[j + 1];
+            }
+            // Early exit if minimum in this row exceeds max_dist
+            if (row_min > max_dist) return null;
+            // Swap rows
+            const tmp = prev_row;
+            prev_row = curr_row;
+            curr_row = tmp;
+        }
+
+        const result = prev_row[b.len];
+        return if (result <= max_dist) result else null;
+    }
+
+    /// Find the most similar name in scope to `name` (edit distance ≤ 2).
+    /// Returns null if no good match is found.
+    pub fn findSimilarName(self: *const TypeChecker, name: []const u8) ?[]const u8 {
+        var best_name: ?[]const u8 = null;
+        var best_dist: usize = 3; // threshold: must be ≤ 2
+
+        // Walk the scope chain
+        var scope: ?*const Scope = self.current_scope;
+        while (scope) |s| {
+            var it = s.symbols.iterator();
+            while (it.next()) |entry| {
+                const candidate = entry.key_ptr.*;
+                if (std.mem.eql(u8, candidate, name)) continue; // skip exact match
+                if (editDistance(name, candidate, best_dist -| 1)) |dist| {
+                    if (dist < best_dist) {
+                        best_dist = dist;
+                        best_name = candidate;
+                    }
+                }
+            }
+            scope = s.parent;
+        }
+
+        return best_name;
+    }
+
+    /// Find the most similar type name in scope (edit distance ≤ 2).
+    pub fn findSimilarTypeName(self: *const TypeChecker, name: []const u8) ?[]const u8 {
+        var best_name: ?[]const u8 = null;
+        var best_dist: usize = 3;
+
+        var scope: ?*const Scope = self.current_scope;
+        while (scope) |s| {
+            var it = s.symbols.iterator();
+            while (it.next()) |entry| {
+                const sym = entry.value_ptr.*;
+                if (sym.kind != .type_ and sym.kind != .trait_) continue;
+                const candidate = entry.key_ptr.*;
+                if (std.mem.eql(u8, candidate, name)) continue;
+                if (editDistance(name, candidate, best_dist -| 1)) |dist| {
+                    if (dist < best_dist) {
+                        best_dist = dist;
+                        best_name = candidate;
+                    }
+                }
+            }
+            scope = s.parent;
+        }
+
+        return best_name;
+    }
+
     /// Resolve a type expression to a Type, returning void on error
     pub fn resolveType(self: *TypeChecker, type_expr: ast.TypeExpr) Type {
         return self.resolveTypeExpr(type_expr) catch {

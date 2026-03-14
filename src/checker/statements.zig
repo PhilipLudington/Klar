@@ -83,7 +83,11 @@ pub fn checkAssignment(tc: anytype, assign: *ast.Assignment) void {
 
     if (assign.op == .assign) {
         if (!tc.checkAssignmentCompatible(target_type, value_type)) {
-            tc.addError(.type_mismatch, assign.span, "cannot assign different types", .{});
+            const expected_str = types.typeToString(tc.allocator, target_type) catch "unknown";
+            defer tc.allocator.free(expected_str);
+            const got_str = types.typeToString(tc.allocator, value_type) catch "unknown";
+            defer tc.allocator.free(got_str);
+            tc.addError(.type_mismatch, assign.span, "cannot assign different types: expected {s}, got {s}", .{ expected_str, got_str });
         }
     } else {
         // Compound assignment
@@ -101,7 +105,11 @@ pub fn checkLetDecl(tc: anytype, decl: *ast.LetDecl) void {
     const value_type = tc.checkExprWithHint(decl.value, declared_type);
 
     if (!tc.isTypeCompatible(declared_type, value_type)) {
-        tc.addError(.type_mismatch, decl.span, "initializer type doesn't match declared type", .{});
+        const expected_str = types.typeToString(tc.allocator, declared_type) catch "unknown";
+        defer tc.allocator.free(expected_str);
+        const got_str = types.typeToString(tc.allocator, value_type) catch "unknown";
+        defer tc.allocator.free(got_str);
+        tc.addError(.type_mismatch, decl.span, "initializer type doesn't match declared type: expected {s}, got {s}", .{ expected_str, got_str });
     }
 
     // Check for duplicate in current scope
@@ -140,7 +148,11 @@ pub fn checkVarDecl(tc: anytype, decl: *ast.VarDecl) void {
     const value_type = tc.checkExprWithHint(decl.value, declared_type);
 
     if (!tc.isTypeCompatible(declared_type, value_type)) {
-        tc.addError(.type_mismatch, decl.span, "initializer type doesn't match declared type", .{});
+        const expected_str = types.typeToString(tc.allocator, declared_type) catch "unknown";
+        defer tc.allocator.free(expected_str);
+        const got_str = types.typeToString(tc.allocator, value_type) catch "unknown";
+        defer tc.allocator.free(got_str);
+        tc.addError(.type_mismatch, decl.span, "initializer type doesn't match declared type: expected {s}, got {s}", .{ expected_str, got_str });
     }
 
     if (tc.current_scope.lookupLocal(decl.name) != null) {
@@ -197,7 +209,11 @@ pub fn checkReturn(tc: anytype, ret: *ast.ReturnStmt) void {
                         }
                     }
                 }
-                tc.addError(.return_type_mismatch, ret.span, "return type mismatch", .{});
+                const expected_str = types.typeToString(tc.allocator, expected) catch "unknown";
+                defer tc.allocator.free(expected_str);
+                const got_str = types.typeToString(tc.allocator, value_type) catch "unknown";
+                defer tc.allocator.free(got_str);
+                tc.addError(.return_type_mismatch, ret.span, "return type mismatch: expected {s}, got {s}", .{ expected_str, got_str });
             }
         }
     } else {
