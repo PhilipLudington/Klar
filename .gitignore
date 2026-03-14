@@ -39,3 +39,7 @@ RESUME.md
 
 # Generated lock files in test fixtures (contain machine-specific absolute paths)
 test/pkg/**/klar.lock
+
+# Compilation benchmark generated files (regenerable via scripts)
+benchmarks/compile/synthetic_10k.kl
+benchmarks/compile/results.json
