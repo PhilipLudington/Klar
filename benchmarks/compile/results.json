@@ -1,0 +1,41 @@
+{
+  "timestamp": "2026-03-14T22:47:59Z",
+  "runs_per_benchmark": 3,
+  "benchmarks": [
+    {
+      "name": "check (10067 lines)",
+      "avg_ms": 85.4,
+      "min_ms": 82.7,
+      "max_ms": 87.5,
+      "variance_pct": 5.6,
+      "runs_ms": [87.52, 86.115, 82.698]
+    }
+    ,
+    {
+      "name": "check checker_main (5306 lines)",
+      "avg_ms": 162.0,
+      "min_ms": 159.6,
+      "max_ms": 164.8,
+      "variance_pct": 3.2,
+      "runs_ms": [164.782, 161.649, 159.557]
+    }
+    ,
+    {
+      "name": "check 319 native tests",
+      "avg_ms": 3981.5,
+      "min_ms": 3949.5,
+      "max_ms": 4038.8,
+      "variance_pct": 2.2,
+      "runs_ms": [3956.384, 3949.473, 4038.765]
+    }
+    ,
+    {
+      "name": "build (10067 lines)",
+      "avg_ms": 455.3,
+      "min_ms": 446.5,
+      "max_ms": 466.8,
+      "variance_pct": 4.5,
+      "runs_ms": [466.81, 452.516, 446.541]
+    }
+  ]
+}

@@ -77,6 +77,7 @@ const CheckCommandOptions = struct {
     expected_line: ?usize = null,
     expected_column: ?usize = null,
     ast_input_path: ?[]const u8 = null,
+    timing: bool = false,
 };
 
 const TestFileResult = struct {
@@ -893,6 +894,8 @@ pub fn main() !void {
                 };
                 options.expected_line = parsed.line;
                 options.expected_column = parsed.column;
+            } else if (std.mem.eql(u8, arg, "--timing")) {
+                options.timing = true;
             } else if (std.mem.eql(u8, arg, "--ast-input") and i + 1 < args.len) {
                 options.ast_input_path = args[i + 1];
                 i += 1;
@@ -4195,6 +4198,8 @@ fn shouldSkipPath(path: []const u8) bool {
 }
 
 fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckCommandOptions) !void {
+    const timing_enabled = options.timing;
+    const t_start = if (timing_enabled) std.time.nanoTimestamp() else 0;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
@@ -4273,8 +4278,16 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
         }
     };
 
-    // Type check the module
-    var checker = TypeChecker.init(allocator);
+    const t_parsed = if (timing_enabled) std.time.nanoTimestamp() else 0;
+
+    // Type check — use arena for single-file, gpa for multi-module (module resolver needs gpa)
+    var checker_arena_store: ?std.heap.ArenaAllocator = null;
+    defer if (checker_arena_store) |*ca| ca.deinit();
+    const checker_alloc = if (module.imports.len == 0) blk: {
+        checker_arena_store = std.heap.ArenaAllocator.init(allocator);
+        break :blk checker_arena_store.?.allocator();
+    } else allocator;
+    var checker = TypeChecker.init(checker_alloc);
     defer checker.deinit();
     checker.setTestMode(true);
     var scope_root: ?*const checker_mod.Scope = null;
@@ -4551,6 +4564,17 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
         const decl_count = module.declarations.len;
         const stats = std.fmt.bufPrint(&buf, "  {d} declaration(s)\n", .{decl_count}) catch "";
         try stdout.writeAll(stats);
+    }
+
+    // Print timing info if requested
+    if (timing_enabled) {
+        const t_end = std.time.nanoTimestamp();
+        const parse_ms = @as(f64, @floatFromInt(t_parsed - t_start)) / 1_000_000.0;
+        const check_ms = @as(f64, @floatFromInt(t_end - t_parsed)) / 1_000_000.0;
+        const total_ms = @as(f64, @floatFromInt(t_end - t_start)) / 1_000_000.0;
+        var timing_buf: [256]u8 = undefined;
+        const timing_msg = std.fmt.bufPrint(&timing_buf, "Timing: parse={d:.1}ms check={d:.1}ms total={d:.1}ms\n", .{ parse_ms, check_ms, total_ms }) catch "";
+        try stderr.writeAll(timing_msg);
     }
 }
 
@@ -6055,8 +6079,10 @@ fn disasmFile(allocator: std.mem.Allocator, path: []const u8) !void {
         return;
     };
 
-    // Type check
-    var checker = TypeChecker.init(allocator);
+    // Type check — use arena for checker allocations
+    var checker_arena = std.heap.ArenaAllocator.init(allocator);
+    defer checker_arena.deinit();
+    var checker = TypeChecker.init(checker_arena.allocator());
     defer checker.deinit();
 
     checker.checkModule(module);
