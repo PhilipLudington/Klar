@@ -541,6 +541,103 @@ pub const Emitter = struct {
         }
     }
 
+    /// Set debug location for the current instruction from an AST span.
+    fn setDebugLoc(self: *Emitter, span: ast.Span) void {
+        if (self.di_scope) |scope| {
+            const loc = llvm.createDebugLocation(
+                self.ctx,
+                @intCast(span.line),
+                @intCast(span.column),
+                scope,
+                null,
+            );
+            llvm.setCurrentDebugLocation(self.builder, loc);
+        }
+    }
+
+    /// Get a DI type metadata node for a Klar type.
+    /// Uses DWARF encoding constants (DW_ATE_signed=5, DW_ATE_unsigned=7, DW_ATE_float=4, DW_ATE_boolean=2, DW_ATE_UTF=16).
+    fn getDIType(self: *Emitter, t: types.Type) ?llvm.MetadataRef {
+        const di_builder = self.di_builder orelse return null;
+        const DW_ATE_boolean: c_uint = 0x02;
+        const DW_ATE_float: c_uint = 0x04;
+        const DW_ATE_signed: c_uint = 0x05;
+        const DW_ATE_unsigned: c_uint = 0x07;
+        const DW_ATE_UTF: c_uint = 0x10;
+        const flags = llvm.c.LLVMDIFlagZero;
+        return switch (t) {
+            .primitive => |p| switch (p) {
+                .i8_ => di_builder.createBasicType("i8", 8, DW_ATE_signed, flags),
+                .i16_ => di_builder.createBasicType("i16", 16, DW_ATE_signed, flags),
+                .i32_ => di_builder.createBasicType("i32", 32, DW_ATE_signed, flags),
+                .i64_ => di_builder.createBasicType("i64", 64, DW_ATE_signed, flags),
+                .u8_ => di_builder.createBasicType("u8", 8, DW_ATE_unsigned, flags),
+                .u16_ => di_builder.createBasicType("u16", 16, DW_ATE_unsigned, flags),
+                .u32_ => di_builder.createBasicType("u32", 32, DW_ATE_unsigned, flags),
+                .u64_ => di_builder.createBasicType("u64", 64, DW_ATE_unsigned, flags),
+                .f32_ => di_builder.createBasicType("f32", 32, DW_ATE_float, flags),
+                .f64_ => di_builder.createBasicType("f64", 64, DW_ATE_float, flags),
+                .bool_ => di_builder.createBasicType("bool", 1, DW_ATE_boolean, flags),
+                .char_ => di_builder.createBasicType("char", 32, DW_ATE_UTF, flags),
+                .string_ => di_builder.createBasicType("string", 64, DW_ATE_unsigned, flags),
+                else => null,
+            },
+            .void_ => di_builder.createBasicType("void", 0, 0, flags),
+            .string_data => di_builder.createBasicType("string", 64, DW_ATE_unsigned, flags),
+            else => null,
+        };
+    }
+
+    /// Emit debug info for a local variable (dbg.declare).
+    fn emitVarDebugInfo(self: *Emitter, name: []const u8, alloca: llvm.ValueRef, t: types.Type, span: ast.Span) void {
+        const di_builder = self.di_builder orelse return;
+        const di_scope = self.di_scope orelse return;
+        const di_file = self.di_file orelse return;
+        const di_type = self.getDIType(t) orelse return;
+        const line: c_uint = @intCast(span.line);
+
+        const di_var = di_builder.createAutoVariable(
+            di_scope,
+            name,
+            di_file,
+            line,
+            di_type,
+            true, // always preserve
+            llvm.c.LLVMDIFlagZero,
+            0,
+        );
+
+        const expr = di_builder.createExpression();
+        const loc = llvm.createDebugLocation(self.ctx, line, @intCast(span.column), di_scope, null);
+        const current_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        di_builder.insertDeclareAtEnd(alloca, di_var, expr, loc, current_bb);
+    }
+
+    /// Emit debug info for a function parameter (dbg.declare).
+    fn emitParamDebugInfo(self: *Emitter, name: []const u8, alloca: llvm.ValueRef, t: types.Type, arg_no: c_uint, span: ast.Span) void {
+        const di_builder = self.di_builder orelse return;
+        const di_scope = self.di_scope orelse return;
+        const di_file = self.di_file orelse return;
+        const di_type = self.getDIType(t) orelse return;
+        const line: c_uint = @intCast(span.line);
+
+        const di_var = di_builder.createParameterVariable(
+            di_scope,
+            name,
+            arg_no,
+            di_file,
+            line,
+            di_type,
+            true, // always preserve
+            llvm.c.LLVMDIFlagZero,
+        );
+
+        const expr = di_builder.createExpression();
+        const loc = llvm.createDebugLocation(self.ctx, line, @intCast(span.column), di_scope, null);
+        const current_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        di_builder.insertDeclareAtEnd(alloca, di_var, expr, loc, current_bb);
+    }
+
     /// Set the type checker reference for call resolution.
     /// Must be called before emitModule if you want generic function calls to be resolved.
     pub fn setTypeChecker(self: *Emitter, checker: *const TypeChecker) void {
@@ -2156,6 +2253,11 @@ pub const Emitter = struct {
                 .is_extern_fn = is_extern_fn,
                 .extern_fn_type = extern_fn_llvm_type,
             }) catch return EmitError.OutOfMemory;
+
+            // Emit debug info for parameter
+            if (semantic_type) |st| {
+                self.emitParamDebugInfo(param.name, alloca, st, @intCast(i + 1), param.span);
+            }
         }
 
         // Emit function body
@@ -2301,6 +2403,11 @@ pub const Emitter = struct {
     }
 
     fn emitStmt(self: *Emitter, stmt: ast.Stmt) EmitError!void {
+        // Set debug location for this statement
+        if (self.di_builder != null) {
+            self.setDebugLoc(stmt.span());
+        }
+
         switch (stmt) {
             .let_decl => |decl| {
                 // Set expected type context from annotation for constructors like Ok/Err
@@ -2444,6 +2551,11 @@ pub const Emitter = struct {
                     .is_extern_fn = is_extern_fn_let,
                     .extern_fn_type = extern_fn_llvm_type_let,
                 }) catch return EmitError.OutOfMemory;
+
+                // Emit debug info for this variable
+                if (semantic_type) |st| {
+                    self.emitVarDebugInfo(decl.name, alloca, st, decl.span);
+                }
 
                 // Register Rc/Arc variables for automatic dropping
                 if (inner_type) |it| {
@@ -2597,6 +2709,11 @@ pub const Emitter = struct {
                     .is_extern_fn = is_extern_fn_var,
                     .extern_fn_type = extern_fn_llvm_type_var,
                 }) catch return EmitError.OutOfMemory;
+
+                // Emit debug info for this variable
+                if (semantic_type) |st| {
+                    self.emitVarDebugInfo(decl.name, alloca, st, decl.span);
+                }
 
                 // Register Rc/Arc variables for automatic dropping
                 if (inner_type) |it| {

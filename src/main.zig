@@ -3611,6 +3611,13 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         return;
     };
 
+    // On macOS with debug info, run dsymutil to create .dSYM bundle before deleting .o
+    if (options.debug_info and builtin.os.tag == .macos) {
+        const dsymutil_args = [_][]const u8{ "dsymutil", exe_path };
+        var dsymutil = std.process.Child.init(&dsymutil_args, allocator);
+        _ = dsymutil.spawnAndWait() catch {};
+    }
+
     // Clean up object file (only on success)
     std.fs.cwd().deleteFile(obj_path) catch {};
 

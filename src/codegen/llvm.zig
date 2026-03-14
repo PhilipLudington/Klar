@@ -886,6 +886,82 @@ pub const DIBuilder = struct {
             column,
         );
     }
+
+    /// Create a local variable descriptor for debug info.
+    pub fn createAutoVariable(
+        self: DIBuilder,
+        scope: MetadataRef,
+        name: []const u8,
+        file: MetadataRef,
+        line_no: c_uint,
+        ty: MetadataRef,
+        always_preserve: bool,
+        flags: c.LLVMDIFlags,
+        align_in_bits: u32,
+    ) MetadataRef {
+        return c.LLVMDIBuilderCreateAutoVariable(
+            self.ref,
+            scope,
+            name.ptr,
+            name.len,
+            file,
+            line_no,
+            ty,
+            @intFromBool(always_preserve),
+            flags,
+            align_in_bits,
+        );
+    }
+
+    /// Create a function parameter variable descriptor for debug info.
+    pub fn createParameterVariable(
+        self: DIBuilder,
+        scope: MetadataRef,
+        name: []const u8,
+        arg_no: c_uint,
+        file: MetadataRef,
+        line_no: c_uint,
+        ty: MetadataRef,
+        always_preserve: bool,
+        flags: c.LLVMDIFlags,
+    ) MetadataRef {
+        return c.LLVMDIBuilderCreateParameterVariable(
+            self.ref,
+            scope,
+            name.ptr,
+            name.len,
+            arg_no,
+            file,
+            line_no,
+            ty,
+            @intFromBool(always_preserve),
+            flags,
+        );
+    }
+
+    /// Create an empty expression (for simple variable locations).
+    pub fn createExpression(self: DIBuilder) MetadataRef {
+        return c.LLVMDIBuilderCreateExpression(self.ref, null, 0);
+    }
+
+    /// Insert a dbg.declare record at the end of a basic block.
+    pub fn insertDeclareAtEnd(
+        self: DIBuilder,
+        storage: ValueRef,
+        var_info: MetadataRef,
+        expr: MetadataRef,
+        debug_loc: MetadataRef,
+        block: BasicBlockRef,
+    ) void {
+        _ = c.LLVMDIBuilderInsertDeclareRecordAtEnd(
+            self.ref,
+            storage,
+            var_info,
+            expr,
+            debug_loc,
+            block,
+        );
+    }
 };
 
 /// Create a debug location.
