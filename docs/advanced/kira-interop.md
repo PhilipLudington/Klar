@@ -12,6 +12,7 @@ Klar can consume Kira libraries through automatically generated extern declarati
 - [Pattern Matching on ADTs](#pattern-matching-on-adts)
 - [Type Mapping](#type-mapping)
 - [String Interop](#string-interop)
+- [Effect Awareness](#effect-awareness)
 - [Build Integration](#build-integration)
 - [Memory Management](#memory-management)
 
@@ -58,8 +59,8 @@ For a Kira manifest with functions and types, `import-kira` generates:
 3. **Unified extern struct** matching the C tagged union layout
 4. **Tag getter function** for match-based dispatch
 5. **Safe accessor functions** for extracting variant payloads
-6. **Extern function block** with all exported functions (string functions prefixed with `__raw_`)
-7. **String wrapper functions** that accept/return `string` instead of `CStr`
+6. **Extern function block** with all exported functions (string functions prefixed with `__raw_`), each with a `// pure` or `// effect` comment
+7. **String wrapper functions** that accept/return `string` instead of `CStr`, with `meta pure` annotation for pure functions
 8. **`kira_free`** declaration for memory management
 
 ## Working with Product Types
@@ -270,6 +271,60 @@ unsafe {
     // Use raw CStr without copying...
 }
 ```
+
+## Effect Awareness
+
+Kira distinguishes between pure functions (`fn`) and effectful functions (`effect fn`). When the Kira manifest includes an `"effect"` field on function declarations, `import-kira` surfaces this information in the generated Klar code.
+
+### Manifest Format
+
+```json
+{
+  "module": "mylib",
+  "functions": [
+    {"name": "add", "params": [...], "return_type": "i32", "effect": false},
+    {"name": "read_file", "params": [...], "return_type": "string", "effect": true}
+  ],
+  "types": []
+}
+```
+
+The `"effect"` field is optional and defaults to `false` (pure) when absent, ensuring backward compatibility with older manifests.
+
+### Generated Annotations
+
+For each function in the extern block, a purity comment is emitted:
+
+```klar
+extern {
+    // pure
+    fn add(a: i32, b: i32) -> i32
+    // effect
+    fn read_file(path: CStr) -> CStr
+}
+```
+
+For string wrapper functions, pure functions additionally receive a `meta pure` annotation:
+
+```klar
+meta pure
+pub fn concat(a: string, b: string) -> string {
+    unsafe {
+        return __raw_concat(a.as_cstr(), b.as_cstr()).to_string()
+    }
+}
+```
+
+Effect functions get the `// effect` comment in the extern block but no `meta pure` on their wrapper.
+
+### How to Use
+
+The purity information is documentation-only — it does not change runtime behavior. It helps developers and AI agents understand which imported functions are side-effect-free:
+
+- **Pure functions** are safe to call multiple times, reorder, or memoize
+- **Effect functions** may perform I/O, mutate external state, or have other side effects
+
+AI agents can use `meta pure` annotations to make optimization and refactoring decisions when working with Kira interop code.
 
 ## Build Integration
 
