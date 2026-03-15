@@ -27520,6 +27520,7 @@ pub const Emitter = struct {
         const loop_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.argloop");
         const loop_body_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.argbody");
         const loop_done_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.argdone");
+        const loop_preheader_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
         _ = self.builder.buildBr(loop_bb);
 
         self.builder.positionAtEnd(loop_bb);
@@ -27543,7 +27544,7 @@ pub const Emitter = struct {
 
         // Wire phi node
         var phi_vals = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), next_idx };
-        var phi_bbs = [_]llvm.c.LLVMBasicBlockRef{ @ptrCast(llvm.c.LLVMGetPreviousBasicBlock(loop_bb)), @ptrCast(loop_body_bb) };
+        var phi_bbs = [_]llvm.c.LLVMBasicBlockRef{ @ptrCast(loop_preheader_bb), @ptrCast(loop_body_bb) };
         llvm.c.LLVMAddIncoming(idx_phi, &phi_vals, &phi_bbs, 2);
 
         self.builder.positionAtEnd(loop_done_bb);
@@ -27561,6 +27562,7 @@ pub const Emitter = struct {
         const copy_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.copyloop");
         const copy_body_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.copybody");
         const copy_done_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.copydone");
+        const copy_preheader_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
         _ = self.builder.buildBr(copy_bb);
 
         self.builder.positionAtEnd(copy_bb);
@@ -27599,7 +27601,7 @@ pub const Emitter = struct {
         _ = self.builder.buildBr(copy_bb);
 
         var cphi_vals = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), cnext_idx };
-        var cphi_bbs = [_]llvm.c.LLVMBasicBlockRef{ @ptrCast(llvm.c.LLVMGetPreviousBasicBlock(copy_bb)), @ptrCast(copy_body_bb) };
+        var cphi_bbs = [_]llvm.c.LLVMBasicBlockRef{ @ptrCast(copy_preheader_bb), @ptrCast(copy_body_bb) };
         llvm.c.LLVMAddIncoming(cidx_phi, &cphi_vals, &cphi_bbs, 2);
 
         self.builder.positionAtEnd(copy_done_bb);

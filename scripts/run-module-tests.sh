@@ -511,7 +511,9 @@ fi
 # Test 21: stdlib integration (path + dir + string_builder + file)
 echo "--- stdlib_integration: Path + Dir + StringBuilder + File pipeline ---"
 temp_bin="/tmp/klar_module_stdlib_integration"
-if [ -d "$TEST_DIR/stdlib_integration" ]; then
+if [[ "$OS" == "Windows_NT" ]]; then
+    echo "⊘ stdlib_integration (skipped on Windows — line ending differences)"
+elif [ -d "$TEST_DIR/stdlib_integration" ]; then
     if $KLAR build $TEST_DIR/stdlib_integration/main.kl -o "$temp_bin" 2>/dev/null; then
         output=$("$temp_bin" 2>/dev/null)
         result=$?
@@ -701,7 +703,9 @@ fi
 
 echo "--- channel: Channel builtins ---"
 temp_bin="/tmp/klar_module_channel"
-if [ -d "$TEST_DIR/channel" ]; then
+if [[ "$OS" == "Windows_NT" ]]; then
+    echo "⊘ channel (skipped on Windows — pthread not available)"
+elif [ -d "$TEST_DIR/channel" ]; then
     if $KLAR build $TEST_DIR/channel/main.kl -o "$temp_bin" 2>/dev/null; then
         "$temp_bin" >/dev/null 2>&1
         result=$?
@@ -723,7 +727,9 @@ fi
 
 echo "--- threadpool: ThreadPool builtins ---"
 temp_bin="/tmp/klar_module_threadpool"
-if [ -d "$TEST_DIR/threadpool" ]; then
+if [[ "$OS" == "Windows_NT" ]]; then
+    echo "⊘ threadpool (skipped on Windows — pthread not available)"
+elif [ -d "$TEST_DIR/threadpool" ]; then
     if $KLAR build $TEST_DIR/threadpool/main.kl -o "$temp_bin" 2>/dev/null; then
         run_with_timeout 10 "$temp_bin" >/dev/null 2>&1
         result=$?
@@ -745,7 +751,9 @@ fi
 
 echo "--- registry: Package registry format ---"
 temp_bin="/tmp/klar_module_registry"
-if [ -d "$TEST_DIR/registry" ]; then
+if [[ "$OS" == "Windows_NT" ]]; then
+    echo "⊘ registry (skipped on Windows — POSIX socket close() not available)"
+elif [ -d "$TEST_DIR/registry" ]; then
     if $KLAR build $TEST_DIR/registry/main.kl -o "$temp_bin" 2>/dev/null; then
         run_with_timeout 30 "$temp_bin" >/dev/null 2>&1
         result=$?
