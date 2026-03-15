@@ -82,3 +82,43 @@ jobs:
 
       - name: Run all tests
         run: ./run-tests.sh
+
+  test-linux-arm64:
+    name: Linux ARM64 (full suite)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Install LLVM
+        run: sudo apt-get update && sudo apt-get install -y llvm-17 llvm-17-dev
+
+      - name: Build
+        run: ./run-build.sh
+
+      - name: Run all tests
+        run: ./run-tests.sh
+
+  cross-compile-windows-arm64:
+    name: Windows ARM64 (cross-compile check)
+    needs: test-linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Cross-compile for Windows ARM64 (no LLVM)
+        run: zig build -Dtarget=aarch64-windows
+
+      - name: Verify binary was produced
+        run: |
+          test -f zig-out/bin/klar.exe
+          file zig-out/bin/klar.exe
