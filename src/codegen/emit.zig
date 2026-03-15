@@ -27443,7 +27443,7 @@ pub const Emitter = struct {
         const ptr_type = llvm.Types.pointer(self.ctx);
         var indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, @intCast(offset))};
         const byte_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, alloca, &indices, 1, name);
-        return self.builder.buildLoad(ptr_type, byte_ptr, @ptrCast(@as([*:0]const u8, name)));
+        return self.builder.buildLoad(ptr_type, byte_ptr, std.mem.span(name));
     }
 
     /// Helper to load i32 from byte offset.
@@ -27452,7 +27452,7 @@ pub const Emitter = struct {
         const i32_type = llvm.Types.int32(self.ctx);
         var indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, @intCast(offset))};
         const byte_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, alloca, &indices, 1, name);
-        return self.builder.buildLoad(i32_type, byte_ptr, @ptrCast(@as([*:0]const u8, name)));
+        return self.builder.buildLoad(i32_type, byte_ptr, std.mem.span(name));
     }
 
     /// Truncate a pointer to i32 (for storing Windows HANDLEs in ProcessHandle fields).
