@@ -3524,6 +3524,19 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         try stdout.writeAll(opt_msg);
     }
 
+    // Run LLVM optimization passes (inlining, mem2reg, GVN, loop opts, etc.)
+    if (options.opt_level != .O0) {
+        const pass_pipeline: [:0]const u8 = switch (options.opt_level) {
+            .O0 => unreachable,
+            .O1 => "default<O1>",
+            .O2 => "default<O2>",
+            .O3 => "default<O3>",
+        };
+        codegen.llvm.runPasses(emitter.getModule(), pass_pipeline, tm) catch {
+            try stderr.writeAll("Warning: LLVM optimization passes failed, continuing without optimization\n");
+        };
+    }
+
     codegen.llvm.targetMachineEmitToFile(tm, emitter.getModule(), obj_path, codegen.llvm.c.LLVMObjectFile) catch |err| {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Failed to emit object file: {s}\n", .{@errorName(err)}) catch "Failed to emit object file\n";

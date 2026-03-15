@@ -10,6 +10,7 @@ pub const c = @cImport({
     @cInclude("llvm-c/TargetMachine.h");
     @cInclude("llvm-c/Analysis.h");
     @cInclude("llvm-c/DebugInfo.h");
+    @cInclude("llvm-c/Transforms/PassBuilder.h");
 });
 
 // Re-export opaque pointer types
@@ -1029,4 +1030,23 @@ pub fn addAttributeAtIndex(func: ValueRef, idx: c_uint, attr: c.LLVMAttributeRef
 /// Index 0 = return value, 1+ = arguments (1-based).
 pub fn addCallSiteAttribute(call: ValueRef, idx: c_uint, attr: c.LLVMAttributeRef) void {
     c.LLVMAddCallSiteAttribute(call, idx, attr);
+}
+
+// --- Pass Builder (new pass manager) ---
+
+/// Run LLVM optimization passes on a module.
+/// `passes` is a pass pipeline string like "default<O2>".
+pub fn runPasses(module: Module, passes: [:0]const u8, tm: TargetMachineRef) Error!void {
+    const opts = c.LLVMCreatePassBuilderOptions();
+    defer c.LLVMDisposePassBuilderOptions(opts);
+
+    const err = c.LLVMRunPasses(module.ref, passes.ptr, tm, opts);
+    if (err != null) {
+        const msg = c.LLVMGetErrorMessage(err);
+        if (msg != null) {
+            std.debug.print("LLVM pass pipeline failed: {s}\n", .{msg});
+            c.LLVMDisposeErrorMessage(msg);
+        }
+        return Error.EmitFailed;
+    }
 }

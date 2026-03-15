@@ -1,0 +1,84 @@
+// Benchmark: String Processing
+// Builds 10,000 strings, concatenates them, then processes the result.
+// Tests string allocation, concatenation, and method call overhead.
+// Native-only (uses String/List operations not available in VM).
+
+fn build_line(n: i32) -> String {
+    // Build "line_NNNNN: the quick brown fox jumps over the lazy dog"
+    var s: String = String.from("line_")
+    let num: String = n.to_string()
+    s.append(num)
+    let suffix: String = String.from(": the quick brown fox jumps over the lazy dog")
+    s.append(suffix)
+    return s
+}
+
+fn main() -> i32 {
+    let n: i32 = 10000
+
+    // Phase 1: Build 10K lines into a list
+    var lines: List#[String] = List.new#[String]()
+    for i: i32 in 0..n {
+        let line: String = build_line(i)
+        lines.push(line)
+    }
+
+    // Verify count
+    if lines.len() != n {
+        println("FAIL: wrong line count")
+        return 1
+    }
+
+    // Phase 2: Concatenate all lines with newlines into a single large string
+    var combined: String = String.with_capacity(n * 60)
+    for i: i32 in 0..n {
+        let line: ?String = lines.get(i)
+        let l: String = line ?? String.new()
+        combined.append(l)
+        combined.push('\n')
+    }
+
+    // Verify combined length is reasonable (each line ~50 chars + newline)
+    let total_len: i32 = combined.len()
+    if total_len < n * 40 {
+        println("FAIL: combined too short")
+        return 2
+    }
+
+    // Phase 3: String operations — contains check on each line
+    var fox_count: i32 = 0
+    for i: i32 in 0..n {
+        let line: ?String = lines.get(i)
+        let l: String = line ?? String.new()
+        let s: string = l.as_str()
+        let has_fox: bool = s.contains("fox")
+        if has_fox {
+            fox_count = fox_count + 1
+        }
+    }
+
+    // Every line should contain "fox"
+    if fox_count != n {
+        println("FAIL: fox count mismatch")
+        return 3
+    }
+
+    // Phase 4: Rebuild strings to exercise allocation churn
+    // Build another batch using concat chains
+    var total_chars: i32 = 0
+    for i: i32 in 0..n {
+        let a: String = String.from("hello_")
+        let b: String = i.to_string()
+        let c: String = a.concat(b)
+        total_chars = total_chars + c.len()
+    }
+
+    // Each string is "hello_" (6) + digits (1-5), total should be > 6*n
+    if total_chars < n * 6 {
+        println("FAIL: concat total too low")
+        return 4
+    }
+
+    println("OK")
+    return 0
+}
