@@ -946,6 +946,8 @@ pub const DIBuilder = struct {
     }
 
     /// Insert a dbg.declare record at the end of a basic block.
+    /// Uses LLVMDIBuilderInsertDeclareRecordAtEnd (LLVM 19+) or
+    /// LLVMDIBuilderInsertDeclareAtEnd (LLVM 17-18) depending on availability.
     pub fn insertDeclareAtEnd(
         self: DIBuilder,
         storage: ValueRef,
@@ -954,14 +956,25 @@ pub const DIBuilder = struct {
         debug_loc: MetadataRef,
         block: BasicBlockRef,
     ) void {
-        _ = c.LLVMDIBuilderInsertDeclareRecordAtEnd(
-            self.ref,
-            storage,
-            var_info,
-            expr,
-            debug_loc,
-            block,
-        );
+        if (@hasDecl(c, "LLVMDIBuilderInsertDeclareRecordAtEnd")) {
+            _ = c.LLVMDIBuilderInsertDeclareRecordAtEnd(
+                self.ref,
+                storage,
+                var_info,
+                expr,
+                debug_loc,
+                block,
+            );
+        } else if (@hasDecl(c, "LLVMDIBuilderInsertDeclareAtEnd")) {
+            _ = c.LLVMDIBuilderInsertDeclareAtEnd(
+                self.ref,
+                storage,
+                var_info,
+                expr,
+                debug_loc,
+                block,
+            );
+        }
     }
 };
 
