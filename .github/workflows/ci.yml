@@ -57,8 +57,22 @@ jobs:
           7z x llvm.7z -oC:/llvm -y
           echo "LLVM_PREFIX=C:/llvm/llvm-18.1.8-windows-amd64-msvc17-msvcrt" >> $GITHUB_ENV
 
+      - name: Add LLVM to PATH
+        run: echo "C:/llvm/llvm-18.1.8-windows-amd64-msvc17-msvcrt/bin" >> $GITHUB_PATH
+
       - name: Build (with LLVM)
         run: ./run-build.sh
+
+      - name: Diagnostic — test klar build on simple file
+        run: |
+          echo 'fn main() -> i32 { return 42 }' > /tmp/test_diag.kl
+          echo "=== klar build diagnostic ==="
+          ./zig-out/bin/klar build /tmp/test_diag.kl -o build/test_diag 2>&1 || echo "Exit code: $?"
+          echo "=== checking output files ==="
+          ls -la build/test_diag* 2>/dev/null || echo "No output files found"
+          echo "=== checking LLVM libs ==="
+          ls "$LLVM_PREFIX/lib/"LLVM* 2>/dev/null | head -5 || echo "No LLVM libs found"
+          ls "$LLVM_PREFIX/bin/"LLVM* 2>/dev/null | head -5 || echo "No LLVM bins found"
 
       - name: Run all tests
         run: ./run-tests.sh

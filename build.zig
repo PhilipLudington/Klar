@@ -6,7 +6,11 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Detect LLVM installation
-    const llvm_prefix = detectLLVMPrefix();
+    // Skip LLVM when cross-compiling: host LLVM libraries can't be used for a
+    // different target (e.g., Linux LLVM can't produce Windows COFF objects).
+    const is_cross_compiling = target.result.os.tag != builtin.os.tag or
+        target.result.cpu.arch != builtin.cpu.arch;
+    const llvm_prefix = if (is_cross_compiling) null else detectLLVMPrefix();
     const has_llvm = llvm_prefix != null;
 
     // Build options module (pass has_llvm to source code)

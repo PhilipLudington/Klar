@@ -212,16 +212,17 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
         rm -f "$temp_bin" "$temp_bin.exe"
     else
         # Show build error for diagnosis (first 3 lines)
-        build_err_line=$(echo "$build_stderr" | head -3 | tr '\n' ' ')
+        # Strip leading/trailing whitespace to avoid false positives from empty stderr
+        build_err_line=$(echo "$build_stderr" | head -3 | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         if [ -n "$build_err_line" ]; then
             echo "✗ $name (build failed: $build_err_line)"
         else
-            # Check stdout for linker messages (MSVC link.exe outputs some errors to stdout)
-            build_out_err=$(echo "$build_stdout" | head -3 | tr '\n' ' ')
+            # Check stdout for linker/error messages (MSVC link.exe outputs some errors to stdout)
+            build_out_err=$(echo "$build_stdout" | head -3 | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             if [ -n "$build_out_err" ]; then
                 echo "✗ $name (build failed: $build_out_err)"
             else
-                echo "✗ $name (build failed)"
+                echo "✗ $name (build failed, no output)"
             fi
         fi
         FAILED=$((FAILED + 1))
