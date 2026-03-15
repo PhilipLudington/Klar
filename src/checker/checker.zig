@@ -5490,6 +5490,8 @@ pub const TypeChecker = struct {
                         if (meta_validation.hasPureAnnotation(f.meta)) |pure_span| {
                             self.in_pure_function = true;
                             self.pure_function_span = pure_span;
+                            // Check for inout parameters which allow mutating external state
+                            meta_validation.checkPureInoutParams(self, f.params, pure_span);
                         }
                         defer self.in_pure_function = was_pure;
                         defer self.pure_function_span = was_pure_span;
@@ -5754,6 +5756,8 @@ pub const TypeChecker = struct {
                         if (meta_validation.hasPureAnnotation(f.meta)) |pure_span| {
                             self.in_pure_function = true;
                             self.pure_function_span = pure_span;
+                            // Check for inout parameters which allow mutating external state
+                            meta_validation.checkPureInoutParams(self, f.params, pure_span);
                         }
                         defer self.in_pure_function = was_pure;
                         defer self.pure_function_span = was_pure_span;

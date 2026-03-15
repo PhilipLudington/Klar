@@ -191,6 +191,8 @@ fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
         if (meta_validation.hasPureAnnotation(func.meta)) |pure_span| {
             tc.in_pure_function = true;
             tc.pure_function_span = pure_span;
+            // Check for inout parameters which allow mutating external state
+            meta_validation.checkPureInoutParams(tc, func.params, pure_span);
         }
         defer tc.in_pure_function = was_pure;
         defer tc.pure_function_span = was_pure_span;
@@ -859,6 +861,8 @@ fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
             if (meta_validation.hasPureAnnotation(method_decl.meta)) |pure_span| {
                 tc.in_pure_function = true;
                 tc.pure_function_span = pure_span;
+                // Check for inout parameters which allow mutating external state
+                meta_validation.checkPureInoutParams(tc, method_decl.params, pure_span);
             }
             defer tc.in_pure_function = was_pure;
             defer tc.pure_function_span = was_pure_span;

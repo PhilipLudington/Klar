@@ -1,0 +1,8 @@
+// Expected: check-error cannot call impure method
+// Pure function calling mutating builtin method (list.push) should be an error
+
+meta pure
+fn bad_push(items: List#[i32]) -> i32 {
+    items.push(42)
+    return items.len()
+}

@@ -1,0 +1,8 @@
+// Expected: check-error cannot call impure method
+// Pure function calling mutating builtin method (map.insert) should be an error
+
+meta pure
+fn bad_insert(m: Map#[string, i32]) -> i32 {
+    m.insert("key", 42)
+    return m.len()
+}

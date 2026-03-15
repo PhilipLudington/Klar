@@ -1,0 +1,6 @@
+// Expected: check-error cannot have inout parameter
+// Pure function with inout parameter should be an error — inout allows mutation of external state
+
+meta pure
+fn bad_inout(x: inout i32) -> void {
+}

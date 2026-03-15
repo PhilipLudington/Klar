@@ -12,6 +12,7 @@
 const std = @import("std");
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");
+const meta_validation = @import("meta_validation.zig");
 const Type = types.Type;
 const Span = ast.Span;
 
@@ -515,6 +516,11 @@ fn checkCStrFromPtr(tc: anytype, method: *ast.MethodCall) Type {
 /// Check for builtin method calls on various types.
 /// Returns the result type if this is a builtin method, null otherwise.
 pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Type) ?Type {
+    // Check purity constraints for builtin method calls
+    if (tc.in_pure_function) {
+        meta_validation.checkPureBuiltinMethodCall(tc, method.method_name, method.span);
+    }
+
     // Check for type conversion methods
     if (std.mem.eql(u8, method.method_name, "as") or
         std.mem.eql(u8, method.method_name, "to") or

@@ -382,15 +382,12 @@ pub fn clearPureFunctions(tc: anytype) void {
 /// Check if a function call violates purity constraints.
 /// Called from checkCallImpl when in_pure_function is true.
 ///
-/// Current scope: Only function/builtin calls are checked. Local mutation (var bindings,
-/// accumulator patterns) is intentionally allowed — purity here means "no external side effects,"
-/// not "no mutation at all."
+/// Current scope: Function/builtin calls, user-defined method calls, and builtin method calls
+/// are checked. Local mutation (var bindings, accumulator patterns) is intentionally allowed —
+/// purity here means "no external side effects," not "no mutation at all."
 ///
 /// Known gaps (not yet checked):
-/// - Method calls (e.g., obj.method()) — impure methods can be called without error
 /// - Function-typed parameters (callbacks) — could hold impure function references
-/// - Assignments to captured variables from outer scope (closures)
-/// - Mutation via inout parameters
 pub fn checkPureCall(tc: anytype, func_name: []const u8, call_span: ast.Span) void {
     // Check if calling a known-impure builtin
     if (isImpureBuiltin(func_name)) {
@@ -476,6 +473,63 @@ fn isPureBuiltin(name: []const u8) bool {
     if (std.mem.eql(u8, name, "ref_to_ptr")) return true;
     if (std.mem.eql(u8, name, "ptr_cast")) return true;
     return false;
+}
+
+/// Returns true if the given builtin method name is impure (mutates the receiver or performs I/O).
+/// Used by checkPureBuiltinMethodCall to catch mutating collection methods and I/O methods
+/// inside meta pure functions.
+pub fn isImpureBuiltinMethod(method_name: []const u8) bool {
+    // Collection mutation methods (List, Map, Set, String, Deque, PriorityQueue)
+    if (std.mem.eql(u8, method_name, "push")) return true;
+    if (std.mem.eql(u8, method_name, "pop")) return true;
+    if (std.mem.eql(u8, method_name, "insert")) return true;
+    if (std.mem.eql(u8, method_name, "remove")) return true;
+    if (std.mem.eql(u8, method_name, "clear")) return true;
+    if (std.mem.eql(u8, method_name, "set")) return true;
+    if (std.mem.eql(u8, method_name, "sort")) return true;
+    if (std.mem.eql(u8, method_name, "reverse")) return true;
+    if (std.mem.eql(u8, method_name, "push_front")) return true;
+    if (std.mem.eql(u8, method_name, "push_back")) return true;
+    if (std.mem.eql(u8, method_name, "pop_front")) return true;
+    if (std.mem.eql(u8, method_name, "pop_back")) return true;
+    if (std.mem.eql(u8, method_name, "push_str")) return true;
+    if (std.mem.eql(u8, method_name, "push_char")) return true;
+    // I/O methods (File, Stream handles)
+    if (std.mem.eql(u8, method_name, "write_all")) return true;
+    if (std.mem.eql(u8, method_name, "flush")) return true;
+    if (std.mem.eql(u8, method_name, "close")) return true;
+    // Rc/Arc mutation
+    if (std.mem.eql(u8, method_name, "replace")) return true;
+    // Channel methods
+    if (std.mem.eql(u8, method_name, "send")) return true;
+    if (std.mem.eql(u8, method_name, "recv")) return true;
+    return false;
+}
+
+/// Check if a builtin method call violates purity constraints.
+/// Called from method_calls.checkBuiltinMethod when in_pure_function is true.
+pub fn checkPureBuiltinMethodCall(tc: anytype, method_name: []const u8, call_span: ast.Span) void {
+    if (isImpureBuiltinMethod(method_name)) {
+        if (tc.pure_function_span) |ps| {
+            tc.addError(.meta_error, call_span, "pure function (declared at line {d}) cannot call impure method '{s}'", .{ ps.line, method_name });
+        } else {
+            tc.addError(.meta_error, call_span, "pure function cannot call impure method '{s}'", .{method_name});
+        }
+    }
+}
+
+/// Check if a pure function has inout parameters, which would allow mutating external state.
+/// Called when entering a meta pure function body.
+/// Checks the AST type_expr directly (reference with mutable=true means inout).
+pub fn checkPureInoutParams(tc: anytype, params: []const ast.FunctionParam, pure_span: ast.Span) void {
+    for (params) |param| {
+        const tag = std.meta.activeTag(param.type_);
+        if (tag == .reference) {
+            if (param.type_.reference.mutable) {
+                tc.addError(.meta_error, param.span, "pure function (declared at line {d}) cannot have inout parameter '{s}': inout allows mutation of external state", .{ pure_span.line, param.name });
+            }
+        }
+    }
 }
 
 /// Validate a custom meta annotation against its definition.
