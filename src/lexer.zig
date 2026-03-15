@@ -192,8 +192,9 @@ pub const Lexer = struct {
                 self.line += 1;
                 self.column = 0;
             }
-            if (self.peek() == '\\' and !self.isAtEnd()) {
-                _ = self.advance(); // skip escape char
+            if (self.peek() == '\\') {
+                _ = self.advance(); // skip backslash
+                if (self.isAtEnd()) break; // unterminated escape at EOF
             }
             _ = self.advance();
         }

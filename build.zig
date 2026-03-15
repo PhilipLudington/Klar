@@ -81,6 +81,73 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+
+    // Fuzz tests — parser/lexer only (no LLVM dependency)
+    // Share module instances so each .zig file belongs to exactly one module.
+    // Use "file.zig" names to match @import("file.zig") in source files.
+    const token_mod = b.createModule(.{ .root_source_file = b.path("src/token.zig"), .target = target, .optimize = optimize });
+    const ast_mod = b.createModule(.{ .root_source_file = b.path("src/ast.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "token.zig", .module = token_mod }} });
+    const lexer_mod = b.createModule(.{ .root_source_file = b.path("src/lexer.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "token.zig", .module = token_mod }} });
+    const parser_mod = b.createModule(.{ .root_source_file = b.path("src/parser.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "token.zig", .module = token_mod }, .{ .name = "lexer.zig", .module = lexer_mod }, .{ .name = "ast.zig", .module = ast_mod } } });
+    const fuzz_mod = b.createModule(.{
+        .root_source_file = b.path("tests/fuzz/parser_fuzz.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "lexer", .module = lexer_mod },
+            .{ .name = "parser", .module = parser_mod },
+            .{ .name = "token", .module = token_mod },
+        },
+    });
+
+    const fuzz_tests = b.addTest(.{
+        .root_module = fuzz_mod,
+    });
+
+    const run_fuzz_tests = b.addRunArtifact(fuzz_tests);
+    const fuzz_step = b.step("fuzz", "Run parser fuzz tests");
+    fuzz_step.dependOn(&run_fuzz_tests.step);
+
+    // Standalone stress test — generates random inputs (no --fuzz dependency)
+    const stress_mod = b.createModule(.{
+        .root_source_file = b.path("tests/fuzz/parser_stress.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "lexer", .module = lexer_mod },
+            .{ .name = "parser", .module = parser_mod },
+            .{ .name = "token", .module = token_mod },
+        },
+    });
+
+    const stress_exe = b.addExecutable(.{
+        .name = "parser-stress",
+        .root_module = stress_mod,
+    });
+
+    const run_stress = b.addRunArtifact(stress_exe);
+    if (b.args) |args| {
+        run_stress.addArgs(args);
+    }
+    const stress_step = b.step("fuzz-stress", "Run parser stress test (default 1M inputs)");
+    stress_step.dependOn(&run_stress.step);
+
+    // Property-based type checker test (standalone, uses klar binary via subprocess)
+    const property_exe = b.addExecutable(.{
+        .name = "checker-property",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/property/checker_property.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_property = b.addRunArtifact(property_exe);
+    if (b.args) |args| {
+        run_property.addArgs(args);
+    }
+    const property_step = b.step("property-test", "Run type checker property tests (default 10K programs)");
+    property_step.dependOn(&run_property.step);
 }
 
 /// Detect LLVM installation path.
