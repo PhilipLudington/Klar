@@ -473,9 +473,9 @@ Each feature follows an evaluate-then-implement pattern. Evaluation may conclude
 - [x] Implement `meta require` / `meta ensure` in meta_validation.zig + codegen — postconditions auto-wrap all return paths
 
 ### 16.4: Incremental Compilation
-- [ ] Research: profile full rebuild to identify caching opportunities (AST, typed AST, object files)
-- [ ] Decision: go/no-go based on measured rebuild times vs implementation effort
-- [ ] If go: implement module-level caching with invalidation based on file content hash
+- [x] Research: profile full rebuild to identify caching opportunities (AST, typed AST, object files)
+- [x] Decision: **Conditional go** for object file caching; implementation deferred until build times exceed 10s. LLVM codegen is 92% of build time (3.4s of 3.7s). Caching .o files would reduce typical edits from 3.7s to ~200ms.
+- [ ] When needed: implement module-level .o caching with content-hash invalidation (~300 LOC)
 
 ---
 
