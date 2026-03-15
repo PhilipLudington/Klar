@@ -1,3 +1,4 @@
+// Skip: windows (pthread not available on MSVC)
 // ThreadPool basic test
 // Tests: create/shutdown, spawn tasks, single-thread serialization
 // exit 0 = pass

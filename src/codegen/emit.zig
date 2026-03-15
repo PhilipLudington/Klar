@@ -27725,7 +27725,7 @@ pub const Emitter = struct {
         // Free cmdline buffer
         const free_fn = self.getOrDeclareFree();
         self.builder.positionAtEnd(cont_bb);
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &[_]llvm.ValueRef{cmdline_buf}, "wspawn.free");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &[_]llvm.ValueRef{cmdline_buf}, "");
         return self.builder.buildLoad(result_type, result_alloca, "wspawn.ret");
     }
 

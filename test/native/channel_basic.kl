@@ -1,3 +1,4 @@
+// Skip: windows (pthread not available on MSVC)
 // Test basic channel operations (single-threaded)
 fn main() -> i32 {
     // Create a channel with capacity 4
