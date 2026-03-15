@@ -70,6 +70,8 @@ should_skip() {
     head -5 "$1" | grep -q "// Skip: native-tests" && return 0
     if [[ "$OS" == "Windows_NT" ]]; then
         head -5 "$1" | grep -q "// Skip: windows" && return 0
+    else
+        head -5 "$1" | grep -q "// Requires: windows" && return 0
     fi
     return 1
 }
@@ -123,6 +125,7 @@ get_expected() {
         result_tuple_string_helper) echo 42 ;;
         int_literal_bases) echo 0 ;;
         string_escape_hex_unicode) echo 0 ;;
+        process_spawn_windows) echo 0 ;;
         *) echo -1 ;;  # -1 means accept any result
     esac
 }
