@@ -27424,16 +27424,15 @@ pub const Emitter = struct {
     /// Helper to store i32 value at byte offset in an alloca (for Windows API struct fields).
     fn storeI32AtByteOffset(self: *Emitter, alloca: llvm.ValueRef, offset: u32, value: llvm.ValueRef, name: [*:0]const u8) void {
         const i8_type = llvm.Types.int8(self.ctx);
-        var indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, offset)};
+        var indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, @intCast(offset))};
         const byte_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, alloca, &indices, 1, name);
-        const i32_ptr = byte_ptr; // LLVM opaque pointers — no cast needed
-        _ = self.builder.buildStore(value, i32_ptr);
+        _ = self.builder.buildStore(value, byte_ptr);
     }
 
     /// Helper to store ptr value at byte offset in an alloca.
     fn storePtrAtByteOffset(self: *Emitter, alloca: llvm.ValueRef, offset: u32, value: llvm.ValueRef, name: [*:0]const u8) void {
         const i8_type = llvm.Types.int8(self.ctx);
-        var indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, offset)};
+        var indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, @intCast(offset))};
         const byte_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, alloca, &indices, 1, name);
         _ = self.builder.buildStore(value, byte_ptr);
     }
@@ -27442,7 +27441,7 @@ pub const Emitter = struct {
     fn loadPtrAtByteOffset(self: *Emitter, alloca: llvm.ValueRef, offset: u32, name: [*:0]const u8) llvm.ValueRef {
         const i8_type = llvm.Types.int8(self.ctx);
         const ptr_type = llvm.Types.pointer(self.ctx);
-        var indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, offset)};
+        var indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, @intCast(offset))};
         const byte_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, alloca, &indices, 1, name);
         return self.builder.buildLoad(ptr_type, byte_ptr, @ptrCast(@as([*:0]const u8, name)));
     }
@@ -27451,7 +27450,7 @@ pub const Emitter = struct {
     fn loadI32AtByteOffset(self: *Emitter, alloca: llvm.ValueRef, offset: u32, name: [*:0]const u8) llvm.ValueRef {
         const i8_type = llvm.Types.int8(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
-        var indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, offset)};
+        var indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, @intCast(offset))};
         const byte_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, alloca, &indices, 1, name);
         return self.builder.buildLoad(i32_type, byte_ptr, @ptrCast(@as([*:0]const u8, name)));
     }
@@ -27629,7 +27628,7 @@ pub const Emitter = struct {
         // Pipe error: return Err(IoError::Other)
         self.builder.positionAtEnd(pipe_err_bb);
         const err_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "wspawn.errtag");
-        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, 0), err_tag_ptr); // Err
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), err_tag_ptr); // Err
         const err_val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "wspawn.errval");
         const err_struct = self.getIoErrorStructType();
         const err_kind_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, err_struct, err_val_ptr, 0, "wspawn.errkind");
@@ -27713,7 +27712,7 @@ pub const Emitter = struct {
 
         // Build Ok(ProcessHandle { pid: hproc_i32, stdout_fd: out_i32, stderr_fd: err_i32 })
         const ok_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "wspawn.oktag");
-        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, 1), ok_tag_ptr); // Ok
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), ok_tag_ptr); // Ok
         const ok_val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "wspawn.okval");
         const pid_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, ok_val_ptr, 0, "wspawn.ok.pid");
         _ = self.builder.buildStore(hproc_i32, pid_ptr);
@@ -27901,7 +27900,7 @@ pub const Emitter = struct {
 
         // Build Ok(ProcessOutput { stdout: buf, stderr: "", exit_code })
         const ok_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "wwait.oktag");
-        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, 1), ok_tag_ptr);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), ok_tag_ptr);
         const ok_val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "wwait.okval");
         const stdout_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, proc_type, ok_val_ptr, 0, "wwait.ok.out");
         _ = self.builder.buildStore(final_buf, stdout_f);
@@ -27961,7 +27960,7 @@ pub const Emitter = struct {
 
         // Return Ok(string)
         const ok_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "wread.oktag");
-        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, 1), ok_tag_ptr);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), ok_tag_ptr);
         const ok_val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "wread.okval");
         _ = self.builder.buildStore(buf, ok_val_ptr);
 

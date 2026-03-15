@@ -256,7 +256,7 @@ fn runKiraBuild(allocator: Allocator, entry_file: []const u8, stderr: anytype) K
 
 /// Compile a C file to an object file using the system C compiler.
 fn compileCToObject(allocator: Allocator, c_file: []const u8, obj_file: []const u8, stderr: anytype) KiraBuildError!void {
-    const cc = std.posix.getenv("CC") orelse "cc";
+    const cc = if (@import("builtin").os.tag == .windows) "cl.exe" else std.posix.getenv("CC") orelse "cc";
     const argv = [_][]const u8{ cc, "-c", "-o", obj_file, c_file };
 
     var child = std.process.Child.init(&argv, allocator);
