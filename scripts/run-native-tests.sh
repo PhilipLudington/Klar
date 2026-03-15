@@ -121,6 +121,8 @@ get_expected() {
         process_run) echo 42 ;;
         timestamp_now) echo 42 ;;
         result_tuple_string_helper) echo 42 ;;
+        int_literal_bases) echo 0 ;;
+        string_escape_hex_unicode) echo 0 ;;
         *) echo -1 ;;  # -1 means accept any result
     esac
 }

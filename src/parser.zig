@@ -29,6 +29,13 @@ fn findUnescapedBrace(content: []const u8, start: usize) ?usize {
     var pos = start;
     while (pos < content.len) {
         if (content[pos] == '\\' and pos + 1 < content.len) {
+            // Skip \u{...} Unicode escape — don't treat { as interpolation
+            if (content[pos + 1] == 'u' and pos + 2 < content.len and content[pos + 2] == '{') {
+                pos += 3;
+                while (pos < content.len and content[pos] != '}') : (pos += 1) {}
+                if (pos < content.len) pos += 1; // skip }
+                continue;
+            }
             // Skip escaped character (including \{ and \})
             pos += 2;
             continue;
@@ -130,7 +137,7 @@ fn hasValidInterpolation(content: []const u8) bool {
 }
 
 /// Process escape sequences in a string segment.
-/// Converts \{ to {, \} to }, and other standard escapes.
+/// Converts \{ to {, \} to }, \xNN to hex byte, \u{NNNN} to UTF-8, and other standard escapes.
 fn processEscapes(allocator: Allocator, content: []const u8) ![]const u8 {
     // Quick check: if no backslashes, return as-is
     if (std.mem.indexOfScalar(u8, content, '\\') == null) {
@@ -142,25 +149,80 @@ fn processEscapes(allocator: Allocator, content: []const u8) ![]const u8 {
     while (i < content.len) {
         if (content[i] == '\\' and i + 1 < content.len) {
             const next = content[i + 1];
-            const escaped: u8 = switch (next) {
-                '{' => '{',
-                '}' => '}',
-                'n' => '\n',
-                't' => '\t',
-                'r' => '\r',
-                '\\' => '\\',
-                '"' => '"',
-                '0' => 0,
-                else => next, // Unknown escape, keep as-is
-            };
-            try result.append(allocator, escaped);
-            i += 2;
+            switch (next) {
+                'x' => {
+                    // \xNN — two hex digits → byte value
+                    if (i + 3 < content.len) {
+                        const hi = hexDigitValue(content[i + 2]);
+                        const lo = hexDigitValue(content[i + 3]);
+                        if (hi != null and lo != null) {
+                            try result.append(allocator, hi.? * 16 + lo.?);
+                            i += 4;
+                            continue;
+                        }
+                    }
+                    // Malformed \x — keep as-is
+                    try result.append(allocator, next);
+                    i += 2;
+                },
+                'u' => {
+                    // \u{NNNNNN} — 1-6 hex digits → UTF-8 codepoint
+                    if (i + 2 < content.len and content[i + 2] == '{') {
+                        var end = i + 3;
+                        while (end < content.len and content[end] != '}') : (end += 1) {}
+                        if (end < content.len) {
+                            const hex_str = content[i + 3 .. end];
+                            const codepoint = std.fmt.parseInt(u21, hex_str, 16) catch {
+                                try result.append(allocator, next);
+                                i += 2;
+                                continue;
+                            };
+                            var buf: [4]u8 = undefined;
+                            const utf8_len = std.unicode.utf8Encode(codepoint, &buf) catch {
+                                try result.append(allocator, next);
+                                i += 2;
+                                continue;
+                            };
+                            for (buf[0..utf8_len]) |b| {
+                                try result.append(allocator, b);
+                            }
+                            i = end + 1; // skip past }
+                            continue;
+                        }
+                    }
+                    // Malformed \u — keep as-is
+                    try result.append(allocator, next);
+                    i += 2;
+                },
+                else => {
+                    const escaped: u8 = switch (next) {
+                        '{' => '{',
+                        '}' => '}',
+                        'n' => '\n',
+                        't' => '\t',
+                        'r' => '\r',
+                        '\\' => '\\',
+                        '"' => '"',
+                        '0' => 0,
+                        else => next, // Unknown escape, keep as-is
+                    };
+                    try result.append(allocator, escaped);
+                    i += 2;
+                },
+            }
         } else {
             try result.append(allocator, content[i]);
             i += 1;
         }
     }
     return result.toOwnedSlice(allocator) catch return error.OutOfMemory;
+}
+
+fn hexDigitValue(c: u8) ?u8 {
+    if (c >= '0' and c <= '9') return c - '0';
+    if (c >= 'a' and c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' and c <= 'F') return c - 'A' + 10;
+    return null;
 }
 
 pub const Parser = struct {

@@ -27345,10 +27345,638 @@ pub const Emitter = struct {
         return llvm.c.LLVMAddFunction(self.module.ref, "poll", fn_type);
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // Windows Process API Declarations
+    // ═══════════════════════════════════════════════════════════════════════
+
+    fn getOrDeclareCreatePipe(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "CreatePipe")) |func| return func;
+        // BOOL CreatePipe(PHANDLE hRead, PHANDLE hWrite, LPSECURITY_ATTRIBUTES, DWORD nSize)
+        var param_types = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx), llvm.Types.int32(self.ctx) };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 4, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "CreatePipe", fn_type);
+    }
+
+    fn getOrDeclareCreateProcessA(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "CreateProcessA")) |func| return func;
+        // BOOL CreateProcessA(LPCSTR app, LPSTR cmdline, LPSECURITY_ATTRIBUTES procSA,
+        //   LPSECURITY_ATTRIBUTES threadSA, BOOL inheritHandles, DWORD flags,
+        //   LPVOID env, LPCSTR dir, LPSTARTUPINFOA si, LPPROCESS_INFORMATION pi)
+        var param_types = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx),
+            llvm.Types.pointer(self.ctx), llvm.Types.int32(self.ctx), llvm.Types.int32(self.ctx),
+            llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx),
+            llvm.Types.pointer(self.ctx),
+        };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 10, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "CreateProcessA", fn_type);
+    }
+
+    fn getOrDeclareCloseHandle(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "CloseHandle")) |func| return func;
+        // BOOL CloseHandle(HANDLE hObject)
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "CloseHandle", fn_type);
+    }
+
+    fn getOrDeclareWaitForSingleObject(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "WaitForSingleObject")) |func| return func;
+        // DWORD WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds)
+        var param_types = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), llvm.Types.int32(self.ctx) };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 2, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "WaitForSingleObject", fn_type);
+    }
+
+    fn getOrDeclareGetExitCodeProcess(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "GetExitCodeProcess")) |func| return func;
+        // BOOL GetExitCodeProcess(HANDLE hProcess, LPDWORD lpExitCode)
+        var param_types = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx) };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 2, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "GetExitCodeProcess", fn_type);
+    }
+
+    fn getOrDeclareReadFile(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "ReadFile")) |func| return func;
+        // BOOL ReadFile(HANDLE hFile, LPVOID buf, DWORD nToRead, LPDWORD nRead, LPOVERLAPPED)
+        var param_types = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx), llvm.Types.int32(self.ctx),
+            llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx),
+        };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 5, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "ReadFile", fn_type);
+    }
+
+    fn getOrDeclareOpenProcess(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "OpenProcess")) |func| return func;
+        // HANDLE OpenProcess(DWORD dwDesiredAccess, BOOL bInheritHandle, DWORD dwProcessId)
+        var param_types = [_]llvm.TypeRef{ llvm.Types.int32(self.ctx), llvm.Types.int32(self.ctx), llvm.Types.int32(self.ctx) };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.pointer(self.ctx), &param_types, 3, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "OpenProcess", fn_type);
+    }
+
+    fn getOrDeclareGetLastError(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "GetLastError")) |func| return func;
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), null, 0, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "GetLastError", fn_type);
+    }
+
+    /// Helper to store i32 value at byte offset in an alloca (for Windows API struct fields).
+    fn storeI32AtByteOffset(self: *Emitter, alloca: llvm.ValueRef, offset: u32, value: llvm.ValueRef, name: [*:0]const u8) void {
+        const i8_type = llvm.Types.int8(self.ctx);
+        var indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, offset)};
+        const byte_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, alloca, &indices, 1, name);
+        const i32_ptr = byte_ptr; // LLVM opaque pointers — no cast needed
+        _ = self.builder.buildStore(value, i32_ptr);
+    }
+
+    /// Helper to store ptr value at byte offset in an alloca.
+    fn storePtrAtByteOffset(self: *Emitter, alloca: llvm.ValueRef, offset: u32, value: llvm.ValueRef, name: [*:0]const u8) void {
+        const i8_type = llvm.Types.int8(self.ctx);
+        var indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, offset)};
+        const byte_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, alloca, &indices, 1, name);
+        _ = self.builder.buildStore(value, byte_ptr);
+    }
+
+    /// Helper to load ptr from byte offset.
+    fn loadPtrAtByteOffset(self: *Emitter, alloca: llvm.ValueRef, offset: u32, name: [*:0]const u8) llvm.ValueRef {
+        const i8_type = llvm.Types.int8(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        var indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, offset)};
+        const byte_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, alloca, &indices, 1, name);
+        return self.builder.buildLoad(ptr_type, byte_ptr, @ptrCast(@as([*:0]const u8, name)));
+    }
+
+    /// Helper to load i32 from byte offset.
+    fn loadI32AtByteOffset(self: *Emitter, alloca: llvm.ValueRef, offset: u32, name: [*:0]const u8) llvm.ValueRef {
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        var indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, offset)};
+        const byte_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, alloca, &indices, 1, name);
+        return self.builder.buildLoad(i32_type, byte_ptr, @ptrCast(@as([*:0]const u8, name)));
+    }
+
+    /// Truncate a pointer to i32 (for storing Windows HANDLEs in ProcessHandle fields).
+    /// Windows HANDLEs are pointer-sized but values are < 2^32 in practice.
+    fn ptrToI32(self: *Emitter, ptr_val: llvm.ValueRef, name: [*:0]const u8) llvm.ValueRef {
+        const i64_val = llvm.c.LLVMBuildPtrToInt(self.builder.ref, ptr_val, llvm.Types.int64(self.ctx), "ptr2int");
+        return llvm.c.LLVMBuildTrunc(self.builder.ref, i64_val, llvm.Types.int32(self.ctx), name);
+    }
+
+    /// Extend i32 back to pointer (for recovering Windows HANDLEs from ProcessHandle fields).
+    fn i32ToPtr(self: *Emitter, i32_val: llvm.ValueRef, name: [*:0]const u8) llvm.ValueRef {
+        const i64_val = llvm.c.LLVMBuildZExt(self.builder.ref, i32_val, llvm.Types.int64(self.ctx), "i32ext");
+        return llvm.c.LLVMBuildIntToPtr(self.builder.ref, i64_val, llvm.Types.pointer(self.ctx), name);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Windows Process Implementations
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Windows: process_spawn using CreateProcessA + CreatePipe.
+    /// ProcessHandle stores: pid=dwProcessId, stdout_fd=pipe_read_handle (truncated to i32),
+    /// stderr_fd=pipe_read_handle (truncated to i32).
+    fn emitProcessSpawnWindows(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 2) return EmitError.InvalidAST;
+
+        const cmd_val = try self.emitExpr(call.args[0]);
+        const args_val = try self.emitExpr(call.args[1]);
+
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const result_type = self.getProcessHandleResultType();
+        const handle_type = self.getProcessHandleStructType();
+        const result_alloca = self.builder.buildAlloca(result_type, "wspawn.result");
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.cont");
+
+        const strlen_fn = self.getOrDeclareStrlen();
+        const malloc_fn = self.getOrDeclareMalloc();
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        const memset_fn = self.getOrDeclareMemset();
+        const create_pipe_fn = self.getOrDeclareCreatePipe();
+        const create_process_fn = self.getOrDeclareCreateProcessA();
+        const close_handle_fn = self.getOrDeclareCloseHandle();
+
+        // Build command line string: "cmd arg1 arg2 ..."
+        // Extract list ptr and len
+        const list_type = self.getListStructType();
+        const header_type = self.getListHeaderType();
+        const list_alloca = self.builder.buildAlloca(list_type, "wspawn.list");
+        _ = self.builder.buildStore(args_val, list_alloca);
+        const header = self.derefListHeader(list_alloca);
+        const hdr_ptr_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header, 0, "wspawn.lptr");
+        const list_ptr = self.builder.buildLoad(ptr_type, hdr_ptr_f, "wspawn.lptr_val");
+        const hdr_len_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header, 1, "wspawn.llen");
+        const list_len = self.builder.buildLoad(i32_type, hdr_len_f, "wspawn.llen_val");
+
+        // Compute total command line length
+        const cmd_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &[_]llvm.ValueRef{cmd_val}, "wspawn.cmdlen");
+        const total_alloca = self.builder.buildAlloca(i64_type, "wspawn.total");
+        _ = self.builder.buildStore(cmd_len, total_alloca);
+
+        // Loop: total += 1 + strlen(args[i]) for quoting: total += 3 + strlen(args[i])
+        const loop_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.argloop");
+        const loop_body_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.argbody");
+        const loop_done_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.argdone");
+        _ = self.builder.buildBr(loop_bb);
+
+        self.builder.positionAtEnd(loop_bb);
+        const idx_phi = llvm.c.LLVMBuildPhi(self.builder.ref, i32_type, "wspawn.idx");
+        const idx_cmp = self.builder.buildICmp(llvm.c.LLVMIntSLT, idx_phi, list_len, "wspawn.idxcmp");
+        _ = self.builder.buildCondBr(idx_cmp, loop_body_bb, loop_done_bb);
+
+        self.builder.positionAtEnd(loop_body_bb);
+        // Load args[i] (each element is a string = ptr)
+        var arg_indices = [_]llvm.ValueRef{idx_phi};
+        const arg_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, ptr_type, list_ptr, &arg_indices, 1, "wspawn.argptr");
+        const arg_val = self.builder.buildLoad(ptr_type, arg_ptr, "wspawn.arg");
+        const arg_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &[_]llvm.ValueRef{arg_val}, "wspawn.arglen");
+        // total += 3 + arglen (space + 2 quotes)
+        const cur_total = self.builder.buildLoad(i64_type, total_alloca, "wspawn.curtotal");
+        const added = self.builder.buildAdd(arg_len, llvm.Const.int64(self.ctx, 3), "wspawn.added");
+        const new_total = self.builder.buildAdd(cur_total, added, "wspawn.newtotal");
+        _ = self.builder.buildStore(new_total, total_alloca);
+        const next_idx = self.builder.buildAdd(idx_phi, llvm.Const.int32(self.ctx, 1), "wspawn.nextidx");
+        _ = self.builder.buildBr(loop_bb);
+
+        // Wire phi node
+        var phi_vals = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), next_idx };
+        var phi_bbs = [_]llvm.c.LLVMBasicBlockRef{ @ptrCast(llvm.c.LLVMGetPreviousBasicBlock(loop_bb)), @ptrCast(loop_body_bb) };
+        llvm.c.LLVMAddIncoming(idx_phi, &phi_vals, &phi_bbs, 2);
+
+        self.builder.positionAtEnd(loop_done_bb);
+        // Allocate command line buffer (+1 for null terminator)
+        const final_total = self.builder.buildLoad(i64_type, total_alloca, "wspawn.final");
+        const buf_size = self.builder.buildAdd(final_total, llvm.Const.int64(self.ctx, 1), "wspawn.bufsz");
+        const cmdline_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{buf_size}, "wspawn.cmdline");
+
+        // Copy cmd to buffer
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &[_]llvm.ValueRef{ cmdline_buf, cmd_val, cmd_len }, "wspawn.cpy1");
+        const pos_alloca = self.builder.buildAlloca(i64_type, "wspawn.pos");
+        _ = self.builder.buildStore(cmd_len, pos_alloca);
+
+        // Second loop: copy " \"arg\"" for each arg
+        const copy_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.copyloop");
+        const copy_body_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.copybody");
+        const copy_done_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.copydone");
+        _ = self.builder.buildBr(copy_bb);
+
+        self.builder.positionAtEnd(copy_bb);
+        const cidx_phi = llvm.c.LLVMBuildPhi(self.builder.ref, i32_type, "wspawn.cidx");
+        const cidx_cmp = self.builder.buildICmp(llvm.c.LLVMIntSLT, cidx_phi, list_len, "wspawn.cidxcmp");
+        _ = self.builder.buildCondBr(cidx_cmp, copy_body_bb, copy_done_bb);
+
+        self.builder.positionAtEnd(copy_body_bb);
+        var cidx_indices = [_]llvm.ValueRef{cidx_phi};
+        const carg_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, ptr_type, list_ptr, &cidx_indices, 1, "wspawn.cargptr");
+        const carg_val = self.builder.buildLoad(ptr_type, carg_ptr, "wspawn.carg");
+        const carg_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &[_]llvm.ValueRef{carg_val}, "wspawn.carglen");
+        const cpos = self.builder.buildLoad(i64_type, pos_alloca, "wspawn.cpos");
+
+        // Write space + quote
+        const space_str = self.builder.buildGlobalStringPtr(" \"", "wspawn.spaceq");
+        var sp_indices = [_]llvm.ValueRef{cpos};
+        const sp_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, cmdline_buf, &sp_indices, 1, "wspawn.spdst");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &[_]llvm.ValueRef{ sp_dst, space_str, llvm.Const.int64(self.ctx, 2) }, "wspawn.cpysp");
+        const after_sp = self.builder.buildAdd(cpos, llvm.Const.int64(self.ctx, 2), "wspawn.aftersp");
+
+        // Copy arg
+        var arg_dst_indices = [_]llvm.ValueRef{after_sp};
+        const arg_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, cmdline_buf, &arg_dst_indices, 1, "wspawn.argdst");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &[_]llvm.ValueRef{ arg_dst, carg_val, carg_len }, "wspawn.cpyarg");
+        const after_arg = self.builder.buildAdd(after_sp, carg_len, "wspawn.afterarg");
+
+        // Write closing quote
+        var q_indices = [_]llvm.ValueRef{after_arg};
+        const q_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, cmdline_buf, &q_indices, 1, "wspawn.qdst");
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, '"'), q_dst);
+        const after_q = self.builder.buildAdd(after_arg, llvm.Const.int64(self.ctx, 1), "wspawn.afterq");
+        _ = self.builder.buildStore(after_q, pos_alloca);
+
+        const cnext_idx = self.builder.buildAdd(cidx_phi, llvm.Const.int32(self.ctx, 1), "wspawn.cnext");
+        _ = self.builder.buildBr(copy_bb);
+
+        var cphi_vals = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), cnext_idx };
+        var cphi_bbs = [_]llvm.c.LLVMBasicBlockRef{ @ptrCast(llvm.c.LLVMGetPreviousBasicBlock(copy_bb)), @ptrCast(copy_body_bb) };
+        llvm.c.LLVMAddIncoming(cidx_phi, &cphi_vals, &cphi_bbs, 2);
+
+        self.builder.positionAtEnd(copy_done_bb);
+        // Null-terminate command line
+        const fpos = self.builder.buildLoad(i64_type, pos_alloca, "wspawn.fpos");
+        var null_indices = [_]llvm.ValueRef{fpos};
+        const null_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, cmdline_buf, &null_indices, 1, "wspawn.ndst");
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 0), null_dst);
+
+        // Set up SECURITY_ATTRIBUTES (24 bytes on x64): bInheritHandle = TRUE
+        const sa_size: u32 = 24;
+        const sa_alloca = self.builder.buildAlloca(llvm.c.LLVMArrayType2(i8_type, sa_size), "wspawn.sa");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ sa_alloca, llvm.Const.int8(self.ctx, 0), llvm.Const.int64(self.ctx, sa_size) }, "wspawn.sa_clr");
+        self.storeI32AtByteOffset(sa_alloca, 0, llvm.Const.int32(self.ctx, @intCast(sa_size)), "wspawn.sa.len"); // nLength
+        self.storeI32AtByteOffset(sa_alloca, 16, llvm.Const.int32(self.ctx, 1), "wspawn.sa.inherit"); // bInheritHandle = TRUE
+
+        // CreatePipe for stdout
+        const out_read_alloca = self.builder.buildAlloca(ptr_type, "wspawn.out_read");
+        const out_write_alloca = self.builder.buildAlloca(ptr_type, "wspawn.out_write");
+        const pipe_out_r = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(create_pipe_fn), create_pipe_fn, &[_]llvm.ValueRef{ out_read_alloca, out_write_alloca, sa_alloca, llvm.Const.int32(self.ctx, 0) }, "wspawn.pipe_out");
+        const pipe_out_fail = self.builder.buildICmp(llvm.c.LLVMIntEQ, pipe_out_r, llvm.Const.int32(self.ctx, 0), "wspawn.pofail");
+        const pipe_out_ok_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.po_ok");
+        const pipe_err_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.perr");
+        _ = self.builder.buildCondBr(pipe_out_fail, pipe_err_bb, pipe_out_ok_bb);
+
+        // Pipe error: return Err(IoError::Other)
+        self.builder.positionAtEnd(pipe_err_bb);
+        const err_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "wspawn.errtag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, 0), err_tag_ptr); // Err
+        const err_val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "wspawn.errval");
+        const err_struct = self.getIoErrorStructType();
+        const err_kind_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, err_struct, err_val_ptr, 0, "wspawn.errkind");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 5), err_kind_ptr); // IoError::Other = 5
+        _ = self.builder.buildBr(cont_bb);
+
+        self.builder.positionAtEnd(pipe_out_ok_bb);
+        // CreatePipe for stderr
+        const err_read_alloca = self.builder.buildAlloca(ptr_type, "wspawn.err_read");
+        const err_write_alloca = self.builder.buildAlloca(ptr_type, "wspawn.err_write");
+        const pipe_err_r = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(create_pipe_fn), create_pipe_fn, &[_]llvm.ValueRef{ err_read_alloca, err_write_alloca, sa_alloca, llvm.Const.int32(self.ctx, 0) }, "wspawn.pipe_err");
+        const pipe_err_fail = self.builder.buildICmp(llvm.c.LLVMIntEQ, pipe_err_r, llvm.Const.int32(self.ctx, 0), "wspawn.pefail");
+        const pipe_err_ok_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.pe_ok");
+        _ = self.builder.buildCondBr(pipe_err_fail, pipe_err_bb, pipe_err_ok_bb);
+
+        self.builder.positionAtEnd(pipe_err_ok_bb);
+        // Set up STARTUPINFOA (104 bytes on x64)
+        const si_size: u32 = 104;
+        const si_alloca = self.builder.buildAlloca(llvm.c.LLVMArrayType2(i8_type, si_size), "wspawn.si");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ si_alloca, llvm.Const.int8(self.ctx, 0), llvm.Const.int64(self.ctx, si_size) }, "wspawn.si_clr");
+        self.storeI32AtByteOffset(si_alloca, 0, llvm.Const.int32(self.ctx, @intCast(si_size)), "wspawn.si.cb"); // cb
+        self.storeI32AtByteOffset(si_alloca, 60, llvm.Const.int32(self.ctx, 0x100), "wspawn.si.flags"); // dwFlags = STARTF_USESTDHANDLES
+        const out_write_h = self.builder.buildLoad(ptr_type, out_write_alloca, "wspawn.ow");
+        const err_write_h = self.builder.buildLoad(ptr_type, err_write_alloca, "wspawn.ew");
+        self.storePtrAtByteOffset(si_alloca, 88, out_write_h, "wspawn.si.stdout"); // hStdOutput
+        self.storePtrAtByteOffset(si_alloca, 96, err_write_h, "wspawn.si.stderr"); // hStdError
+
+        // PROCESS_INFORMATION (24 bytes on x64)
+        const pi_size: u32 = 24;
+        const pi_alloca = self.builder.buildAlloca(llvm.c.LLVMArrayType2(i8_type, pi_size), "wspawn.pi");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ pi_alloca, llvm.Const.int8(self.ctx, 0), llvm.Const.int64(self.ctx, pi_size) }, "wspawn.pi_clr");
+
+        // CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        const cp_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(create_process_fn), create_process_fn, &[_]llvm.ValueRef{
+            null_ptr,                              // lpApplicationName
+            cmdline_buf,                           // lpCommandLine
+            null_ptr,                              // lpProcessAttributes
+            null_ptr,                              // lpThreadAttributes
+            llvm.Const.int32(self.ctx, 1),         // bInheritHandles = TRUE
+            llvm.Const.int32(self.ctx, 0x08000000), // dwCreationFlags = CREATE_NO_WINDOW
+            null_ptr,                              // lpEnvironment
+            null_ptr,                              // lpCurrentDirectory
+            si_alloca,                             // lpStartupInfo
+            pi_alloca,                             // lpProcessInformation
+        }, "wspawn.cp");
+
+        const cp_fail = self.builder.buildICmp(llvm.c.LLVMIntEQ, cp_result, llvm.Const.int32(self.ctx, 0), "wspawn.cpfail");
+        const cp_ok_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.cp_ok");
+        const cp_fail_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.cp_fail");
+        _ = self.builder.buildCondBr(cp_fail, cp_fail_bb, cp_ok_bb);
+
+        // CreateProcess failed: cleanup and return error
+        self.builder.positionAtEnd(cp_fail_bb);
+        const or_h = self.builder.buildLoad(ptr_type, out_read_alloca, "wspawn.or_cl");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{or_h}, "wspawn.cl1");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{out_write_h}, "wspawn.cl2");
+        const er_h = self.builder.buildLoad(ptr_type, err_read_alloca, "wspawn.er_cl");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{er_h}, "wspawn.cl3");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{err_write_h}, "wspawn.cl4");
+        _ = self.builder.buildBr(pipe_err_bb);
+
+        // Success: close write handles and hThread, build ProcessHandle
+        self.builder.positionAtEnd(cp_ok_bb);
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{out_write_h}, "wspawn.cl_ow");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{err_write_h}, "wspawn.cl_ew");
+        // Close hThread (offset 8 in PROCESS_INFORMATION)
+        const h_thread = self.loadPtrAtByteOffset(pi_alloca, 8, "wspawn.hthread");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{h_thread}, "wspawn.cl_ht");
+
+        // Extract process info
+        const h_process = self.loadPtrAtByteOffset(pi_alloca, 0, "wspawn.hproc");
+        _ = self.loadI32AtByteOffset(pi_alloca, 16, "wspawn.pid"); // dwProcessId (available but we use hProcess)
+
+        // Store hProcess as pid (truncated handle) for poll/wait
+        const hproc_i32 = self.ptrToI32(h_process, "wspawn.hproc_i32");
+        const out_read_h = self.builder.buildLoad(ptr_type, out_read_alloca, "wspawn.orh");
+        const err_read_h = self.builder.buildLoad(ptr_type, err_read_alloca, "wspawn.erh");
+        const out_i32 = self.ptrToI32(out_read_h, "wspawn.out_i32");
+        const err_i32 = self.ptrToI32(err_read_h, "wspawn.err_i32");
+
+        // Build Ok(ProcessHandle { pid: hproc_i32, stdout_fd: out_i32, stderr_fd: err_i32 })
+        const ok_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "wspawn.oktag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, 1), ok_tag_ptr); // Ok
+        const ok_val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "wspawn.okval");
+        const pid_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, ok_val_ptr, 0, "wspawn.ok.pid");
+        _ = self.builder.buildStore(hproc_i32, pid_ptr);
+        const stdout_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, ok_val_ptr, 1, "wspawn.ok.out");
+        _ = self.builder.buildStore(out_i32, stdout_ptr);
+        const stderr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, ok_val_ptr, 2, "wspawn.ok.err");
+        _ = self.builder.buildStore(err_i32, stderr_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Free cmdline buffer
+        const free_fn = self.getOrDeclareFree();
+        self.builder.positionAtEnd(cont_bb);
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &[_]llvm.ValueRef{cmdline_buf}, "wspawn.free");
+        return self.builder.buildLoad(result_type, result_alloca, "wspawn.ret");
+    }
+
+    /// Windows: process_poll using WaitForSingleObject.
+    /// ProcessHandle.pid stores the process HANDLE (truncated to i32).
+    fn emitProcessPollWindows(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) return EmitError.InvalidAST;
+
+        const handle_val = try self.emitExpr(call.args[0]);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const status_type = self.getProcessStatusStructType();
+        const handle_type = self.getProcessHandleStructType();
+        const status_alloca = self.builder.buildAlloca(status_type, "wpoll.result");
+        const handle_alloca = self.builder.buildAlloca(handle_type, "wpoll.handle");
+        _ = self.builder.buildStore(handle_val, handle_alloca);
+
+        const wait_fn = self.getOrDeclareWaitForSingleObject();
+        const get_exit_fn = self.getOrDeclareGetExitCodeProcess();
+
+        // Extract process HANDLE from pid field
+        const pid_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, handle_alloca, 0, "wpoll.pidptr");
+        const pid_i32 = self.builder.buildLoad(i32_type, pid_ptr, "wpoll.pid");
+        const h_process = self.i32ToPtr(pid_i32, "wpoll.hproc");
+
+        // WaitForSingleObject(hProcess, 0) — non-blocking
+        const wait_r = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(wait_fn), wait_fn, &[_]llvm.ValueRef{ h_process, llvm.Const.int32(self.ctx, 0) }, "wpoll.wait");
+
+        // WAIT_OBJECT_0 (0) = exited, WAIT_TIMEOUT (258) = still running
+        const is_exited = self.builder.buildICmp(llvm.c.LLVMIntEQ, wait_r, llvm.Const.int32(self.ctx, 0), "wpoll.exited");
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const exited_bb = llvm.appendBasicBlock(self.ctx, func, "wpoll.exited");
+        const running_bb = llvm.appendBasicBlock(self.ctx, func, "wpoll.running");
+        const done_bb = llvm.appendBasicBlock(self.ctx, func, "wpoll.done");
+        _ = self.builder.buildCondBr(is_exited, exited_bb, running_bb);
+
+        // Exited: get exit code
+        self.builder.positionAtEnd(exited_bb);
+        const exit_code_alloca = self.builder.buildAlloca(i32_type, "wpoll.exitcode");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(get_exit_fn), get_exit_fn, &[_]llvm.ValueRef{ h_process, exit_code_alloca }, "wpoll.getexit");
+        const exit_code = self.builder.buildLoad(i32_type, exit_code_alloca, "wpoll.ec");
+        const tag_exited = llvm.c.LLVMBuildStructGEP2(self.builder.ref, status_type, status_alloca, 0, "wpoll.tag_e");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 1), tag_exited); // tag=1 Exited
+        const val_exited = llvm.c.LLVMBuildStructGEP2(self.builder.ref, status_type, status_alloca, 1, "wpoll.val_e");
+        _ = self.builder.buildStore(exit_code, val_exited);
+        _ = self.builder.buildBr(done_bb);
+
+        // Running
+        self.builder.positionAtEnd(running_bb);
+        const tag_running = llvm.c.LLVMBuildStructGEP2(self.builder.ref, status_type, status_alloca, 0, "wpoll.tag_r");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), tag_running); // tag=0 Running
+        const val_running = llvm.c.LLVMBuildStructGEP2(self.builder.ref, status_type, status_alloca, 1, "wpoll.val_r");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), val_running);
+        _ = self.builder.buildBr(done_bb);
+
+        self.builder.positionAtEnd(done_bb);
+        return self.builder.buildLoad(status_type, status_alloca, "wpoll.ret");
+    }
+
+    /// Windows: process_wait using WaitForSingleObject(INFINITE) + ReadFile.
+    fn emitProcessWaitWindows(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) return EmitError.InvalidAST;
+
+        const handle_val = try self.emitExpr(call.args[0]);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const handle_type = self.getProcessHandleStructType();
+        const proc_type = self.getProcessOutputStructType();
+        const result_type = self.getProcessOutputResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "wwait.result");
+        const handle_alloca = self.builder.buildAlloca(handle_type, "wwait.handle");
+        _ = self.builder.buildStore(handle_val, handle_alloca);
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const malloc_fn = self.getOrDeclareMalloc();
+        const realloc_fn = self.getOrDeclareRealloc();
+        const read_file_fn = self.getOrDeclareReadFile();
+        const wait_fn = self.getOrDeclareWaitForSingleObject();
+        const get_exit_fn = self.getOrDeclareGetExitCodeProcess();
+        const close_handle_fn = self.getOrDeclareCloseHandle();
+
+        // Extract stdout_fd as HANDLE
+        const stdout_fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, handle_alloca, 1, "wwait.outfdp");
+        const stdout_fd = self.builder.buildLoad(i32_type, stdout_fd_ptr, "wwait.outfd");
+        const h_stdout = self.i32ToPtr(stdout_fd, "wwait.hstdout");
+
+        // Read all stdout into buffer using ReadFile loop
+        const buf_cap: u32 = 4096;
+        const stdout_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{llvm.Const.int64(self.ctx, buf_cap)}, "wwait.buf");
+        const len_alloca = self.builder.buildAlloca(i64_type, "wwait.len");
+        _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), len_alloca);
+        const cap_alloca = self.builder.buildAlloca(i64_type, "wwait.cap");
+        _ = self.builder.buildStore(llvm.Const.int64(self.ctx, buf_cap), cap_alloca);
+        const buf_alloca = self.builder.buildAlloca(ptr_type, "wwait.bufptr");
+        _ = self.builder.buildStore(stdout_buf, buf_alloca);
+
+        // Read loop
+        const read_bb = llvm.appendBasicBlock(self.ctx, func, "wwait.read");
+        const read_ok_bb = llvm.appendBasicBlock(self.ctx, func, "wwait.readok");
+        const read_done_bb = llvm.appendBasicBlock(self.ctx, func, "wwait.readdone");
+        _ = self.builder.buildBr(read_bb);
+
+        self.builder.positionAtEnd(read_bb);
+        const cur_len = self.builder.buildLoad(i64_type, len_alloca, "wwait.curlen");
+        const cur_cap = self.builder.buildLoad(i64_type, cap_alloca, "wwait.curcap");
+        const cur_buf = self.builder.buildLoad(ptr_type, buf_alloca, "wwait.curbuf");
+        // Grow buffer if needed
+        const space = self.builder.buildSub(cur_cap, cur_len, "wwait.space");
+        const need_grow = self.builder.buildICmp(llvm.c.LLVMIntSLT, space, llvm.Const.int64(self.ctx, 1024), "wwait.needgrow");
+        const grow_bb = llvm.appendBasicBlock(self.ctx, func, "wwait.grow");
+        const read_call_bb = llvm.appendBasicBlock(self.ctx, func, "wwait.readcall");
+        _ = self.builder.buildCondBr(need_grow, grow_bb, read_call_bb);
+
+        self.builder.positionAtEnd(grow_bb);
+        const new_cap = self.builder.buildMul(cur_cap, llvm.Const.int64(self.ctx, 2), "wwait.newcap");
+        const new_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &[_]llvm.ValueRef{ cur_buf, new_cap }, "wwait.newbuf");
+        _ = self.builder.buildStore(new_cap, cap_alloca);
+        _ = self.builder.buildStore(new_buf, buf_alloca);
+        _ = self.builder.buildBr(read_call_bb);
+
+        self.builder.positionAtEnd(read_call_bb);
+        const rb = self.builder.buildLoad(ptr_type, buf_alloca, "wwait.rb");
+        const rl = self.builder.buildLoad(i64_type, len_alloca, "wwait.rl");
+        const i8_type = llvm.Types.int8(self.ctx);
+        var read_indices = [_]llvm.ValueRef{rl};
+        const read_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, rb, &read_indices, 1, "wwait.rdst");
+        const bytes_read_alloca = self.builder.buildAlloca(i32_type, "wwait.nread");
+        const rc = self.builder.buildLoad(i64_type, cap_alloca, "wwait.rc");
+        const remaining = self.builder.buildSub(rc, rl, "wwait.rem");
+        const to_read = llvm.c.LLVMBuildTrunc(self.builder.ref, remaining, i32_type, "wwait.toread");
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        const rf_ok = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(read_file_fn), read_file_fn, &[_]llvm.ValueRef{ h_stdout, read_dst, to_read, bytes_read_alloca, null_ptr }, "wwait.rf");
+
+        // ReadFile returns 0 on failure or EOF
+        const rf_fail = self.builder.buildICmp(llvm.c.LLVMIntEQ, rf_ok, llvm.Const.int32(self.ctx, 0), "wwait.rffail");
+        _ = self.builder.buildCondBr(rf_fail, read_done_bb, read_ok_bb);
+
+        self.builder.positionAtEnd(read_ok_bb);
+        const n_read = self.builder.buildLoad(i32_type, bytes_read_alloca, "wwait.nr");
+        const n_read_64 = llvm.c.LLVMBuildZExt(self.builder.ref, n_read, i64_type, "wwait.nr64");
+        const is_zero = self.builder.buildICmp(llvm.c.LLVMIntEQ, n_read, llvm.Const.int32(self.ctx, 0), "wwait.iszero");
+        const updated_len = self.builder.buildAdd(rl, n_read_64, "wwait.updlen");
+        _ = self.builder.buildStore(updated_len, len_alloca);
+        _ = self.builder.buildCondBr(is_zero, read_done_bb, read_bb);
+
+        self.builder.positionAtEnd(read_done_bb);
+        // Close stdout and stderr handles
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{h_stdout}, "wwait.cl_out");
+        const stderr_fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, handle_alloca, 2, "wwait.errfdp");
+        const stderr_fd = self.builder.buildLoad(i32_type, stderr_fd_ptr, "wwait.errfd");
+        const h_stderr = self.i32ToPtr(stderr_fd, "wwait.hstderr");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{h_stderr}, "wwait.cl_err");
+
+        // Wait for process exit
+        const pid_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, handle_alloca, 0, "wwait.pidp");
+        const pid_i32 = self.builder.buildLoad(i32_type, pid_ptr, "wwait.pid");
+        const h_process = self.i32ToPtr(pid_i32, "wwait.hproc");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(wait_fn), wait_fn, &[_]llvm.ValueRef{ h_process, llvm.Const.int32(self.ctx, @bitCast(@as(i32, -1))) }, "wwait.wait"); // INFINITE = 0xFFFFFFFF
+
+        // Get exit code
+        const exit_alloca = self.builder.buildAlloca(i32_type, "wwait.exit");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(get_exit_fn), get_exit_fn, &[_]llvm.ValueRef{ h_process, exit_alloca }, "wwait.getexit");
+        const exit_code = self.builder.buildLoad(i32_type, exit_alloca, "wwait.ec");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{h_process}, "wwait.cl_proc");
+
+        // Null-terminate stdout string
+        const final_len = self.builder.buildLoad(i64_type, len_alloca, "wwait.flen");
+        const final_buf = self.builder.buildLoad(ptr_type, buf_alloca, "wwait.fbuf");
+        var null_indices = [_]llvm.ValueRef{final_len};
+        const null_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, final_buf, &null_indices, 1, "wwait.ndst");
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 0), null_dst);
+
+        // Build Ok(ProcessOutput { stdout: buf, stderr: "", exit_code })
+        const ok_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "wwait.oktag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, 1), ok_tag_ptr);
+        const ok_val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "wwait.okval");
+        const stdout_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, proc_type, ok_val_ptr, 0, "wwait.ok.out");
+        _ = self.builder.buildStore(final_buf, stdout_f);
+        const stderr_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, proc_type, ok_val_ptr, 1, "wwait.ok.err");
+        _ = self.builder.buildStore(self.builder.buildGlobalStringPtr("", "wwait.empty"), stderr_f);
+        const exit_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, proc_type, ok_val_ptr, 2, "wwait.ok.ec");
+        _ = self.builder.buildStore(exit_code, exit_f);
+
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "wwait.cont");
+        _ = self.builder.buildBr(cont_bb);
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "wwait.ret");
+    }
+
+    /// Windows: process_read_stdout using ReadFile.
+    fn emitProcessReadStdoutWindows(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 2) return EmitError.InvalidAST;
+
+        const handle_val = try self.emitExpr(call.args[0]);
+        const max_bytes_val = try self.emitExpr(call.args[1]);
+
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const handle_type = self.getProcessHandleStructType();
+        const result_type = self.getStringResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "wread.result");
+        const handle_alloca = self.builder.buildAlloca(handle_type, "wread.handle");
+        _ = self.builder.buildStore(handle_val, handle_alloca);
+
+        const malloc_fn = self.getOrDeclareMalloc();
+        const read_file_fn = self.getOrDeclareReadFile();
+
+        // Extract stdout HANDLE
+        const stdout_fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, handle_alloca, 1, "wread.fdp");
+        const stdout_fd = self.builder.buildLoad(i32_type, stdout_fd_ptr, "wread.fd");
+        const h_stdout = self.i32ToPtr(stdout_fd, "wread.h");
+
+        // Allocate buffer
+        const buf_size_64 = llvm.c.LLVMBuildZExt(self.builder.ref, max_bytes_val, llvm.Types.int64(self.ctx), "wread.bsz64");
+        const buf_plus1 = self.builder.buildAdd(buf_size_64, llvm.Const.int64(self.ctx, 1), "wread.bp1");
+        const buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{buf_plus1}, "wread.buf");
+
+        // ReadFile
+        const bytes_read_alloca = self.builder.buildAlloca(i32_type, "wread.nread");
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        const rf_ok = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(read_file_fn), read_file_fn, &[_]llvm.ValueRef{ h_stdout, buf, max_bytes_val, bytes_read_alloca, null_ptr }, "wread.rf");
+
+        _ = rf_ok; // Check not strictly needed — return empty string on failure
+
+        // Null-terminate
+        const n_read = self.builder.buildLoad(i32_type, bytes_read_alloca, "wread.nr");
+        const n_read_64 = llvm.c.LLVMBuildZExt(self.builder.ref, n_read, llvm.Types.int64(self.ctx), "wread.nr64");
+        const i8_type = llvm.Types.int8(self.ctx);
+        var null_indices = [_]llvm.ValueRef{n_read_64};
+        const null_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, buf, &null_indices, 1, "wread.ndst");
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 0), null_dst);
+
+        // Return Ok(string)
+        const ok_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "wread.oktag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, 1), ok_tag_ptr);
+        const ok_val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "wread.okval");
+        _ = self.builder.buildStore(buf, ok_val_ptr);
+
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "wread.cont");
+        _ = self.builder.buildBr(cont_bb);
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "wread.ret");
+    }
+
     /// Emit process_spawn(cmd: string, args: List#[string]) -> Result#[ProcessHandle, IoError]
     /// Uses fork+execvp for safe argument passing (no shell interpretation).
     fn emitProcessSpawn(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: process_spawn is not supported on WebAssembly targets");
+        if (comptime builtin.os.tag == .windows) return self.emitProcessSpawnWindows(call);
         if (call.args.len != 2) return EmitError.InvalidAST;
 
         const cmd_val = try self.emitExpr(call.args[0]);
@@ -27619,6 +28247,7 @@ pub const Emitter = struct {
     /// Uses waitpid(pid, &status, WNOHANG)
     fn emitProcessPoll(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: process_poll is not supported on WebAssembly targets");
+        if (comptime builtin.os.tag == .windows) return self.emitProcessPollWindows(call);
         if (call.args.len != 1) return EmitError.InvalidAST;
 
         const handle_val = try self.emitExpr(call.args[0]);
@@ -27703,6 +28332,7 @@ pub const Emitter = struct {
     /// Uses waitpid(pid, &status, 0) to block, then reads all remaining stdout/stderr.
     fn emitProcessWait(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: process_wait is not supported on WebAssembly targets");
+        if (comptime builtin.os.tag == .windows) return self.emitProcessWaitWindows(call);
         if (call.args.len != 1) return EmitError.InvalidAST;
 
         const handle_val = try self.emitExpr(call.args[0]);
@@ -28065,6 +28695,7 @@ pub const Emitter = struct {
     /// Emit process_read_stdout(handle: ProcessHandle, max_bytes: i32) -> Result#[string, IoError]
     fn emitProcessReadStdout(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: process_read_stdout is not supported on WebAssembly targets");
+        if (comptime builtin.os.tag == .windows) return self.emitProcessReadStdoutWindows(call);
         if (call.args.len != 2) return EmitError.InvalidAST;
 
         const handle_val = try self.emitExpr(call.args[0]);

@@ -9,7 +9,7 @@ For the active milestone plan, see [PLAN.md](PLAN.md).
 
 Klar is a compiled language targeting application-level programming (like C#/Go) with ownership-based memory safety, explicit types, and AI-optimized syntax. The compiler is implemented in Zig with LLVM codegen, a bytecode VM, and a tree-walking interpreter.
 
-Current status: **Phase 16 complete.** Phases 1–16 complete. Bootstrap achieved. Kira interop, production readiness, and advanced language features all done. 2135 tests pass.
+Current status: **All phases complete.** Phases 1–16 complete. Bootstrap achieved. Kira interop, production readiness, and advanced language features all done. Selfhost parser tech debt resolved. Windows process builtins implemented. Build caching added. 2137 tests pass.
 
 ---
 
@@ -292,7 +292,7 @@ See [PLAN.md](PLAN.md) for full detail.
 - [x] 17 module pages generated for stdlib
 
 ### Stretch Goals
-- [ ] Windows `process_spawn` via `CreateProcessW` (currently POSIX-only)
+- [x] Windows `process_spawn` via `CreateProcessA` + `CreatePipe` — all 4 builtins (spawn, poll, wait, read_stdout) implemented behind comptime Windows guard (Windows CI validation pending)
 
 ### Phase 9 Readiness Gate
 - [x] All new collections have module tests passing (2089/2089 total tests)
@@ -486,7 +486,7 @@ Each feature follows an evaluate-then-implement pattern. Evaluation may conclude
 ### 16.4: Incremental Compilation
 - [x] Research: profile full rebuild to identify caching opportunities (AST, typed AST, object files)
 - [x] Decision: **Conditional go** for object file caching; implementation deferred until build times exceed 10s. LLVM codegen is 92% of build time (3.4s of 3.7s). Caching .o files would reduce typical edits from 3.7s to ~200ms.
-- [ ] When needed: implement module-level .o caching with content-hash invalidation (~300 LOC)
+- [x] Whole-program .o caching with SHA-256 content-hash invalidation — `build/.cache/`, `--no-cache` flag, 47% faster -O2 rebuilds
 
 ### Phase 16 Readiness Gate
 - [x] All four feature areas have documented go/no-go decisions with design docs
@@ -514,11 +514,11 @@ Each feature follows an evaluate-then-implement pattern. Evaluation may conclude
 
 ---
 
-### Backlog: Selfhost Parser Known Limitations
+### Backlog: Selfhost Parser Known Limitations ✅
 
-Deferred tech debt from the Milestone 9.6 selfhost parser work.
+**Status:** Complete (2026-03-15)
 
-- [ ] `parse_int_value`: hex/binary/octal literals use i64 computation (overflow possible for values > i64 max)
-- [ ] `process_string_escapes`: `\u` and `\x` escape sequences not handled (falls through to unknown escape)
-- [ ] `final_expr` detection in `parse_block` uses fragile JSON prefix string matching (acknowledged by COUPLING comment)
-- [ ] `is_extern` exemption in mandatory return type check is moot: Zig parser rejects standalone `extern fn`, so the selfhost exemption has no test coverage
+- [x] `parse_int_value`: overflow-safe string-based decimal arithmetic for hex/binary/octal
+- [x] `process_string_escapes`: `\xNN` hex byte and `\u{NNNN}` Unicode escapes (both Zig and selfhost)
+- [x] `final_expr` detection in `parse_block`: bool return from `parse_statement` replaces JSON prefix matching
+- [x] `is_extern` exemption in mandatory return type check: dead code removed

@@ -633,6 +633,7 @@ pub fn main() !void {
         var entry_point: ?[]const u8 = null;
         var linker_script: ?[]const u8 = null;
         var compile_only = false;
+        var no_cache = false;
         var ast_input_path: ?[]const u8 = null;
         var typed_ast_input_path: ?[]const u8 = null;
         var source_file: ?[]const u8 = null;
@@ -710,6 +711,8 @@ pub fn main() !void {
                 i += 1;
             } else if (std.mem.startsWith(u8, arg, "--linker-script=")) {
                 linker_script = arg["--linker-script=".len..];
+            } else if (std.mem.eql(u8, arg, "--no-cache")) {
+                no_cache = true;
             } else if (std.mem.eql(u8, arg, "-c")) {
                 compile_only = true;
             } else if (std.mem.eql(u8, arg, "--ast-input") and i + 1 < args.len) {
@@ -841,6 +844,7 @@ pub fn main() !void {
             .entry_point = entry_point,
             .linker_script = linker_script,
             .compile_only = compile_only,
+            .no_cache = no_cache,
             .search_paths = all_search_paths.items,
         }, ast_input_path, typed_ast_input_path);
     } else if (std.mem.eql(u8, command, "check")) {
@@ -3523,32 +3527,93 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     };
     defer allocator.free(obj_path);
 
-    // Print optimization info if verbose
-    if (options.verbose_opt and options.opt_level != .O0) {
-        var buf2: [256]u8 = undefined;
-        const opt_msg = std.fmt.bufPrint(&buf2, "Optimization level: {s}\n", .{options.opt_level.toString()}) catch "Optimization enabled\n";
-        try stdout.writeAll(opt_msg);
-    }
+    // ═══════════════════════════════════════════════════════════════════════
+    // Build cache: skip LLVM codegen if object file is cached
+    // ═══════════════════════════════════════════════════════════════════════
+    // Disable cache for --ast-input/--typed-ast-input (content not hashable)
+    const use_cache = !options.no_cache and ast_input_path == null and typed_ast_input_path == null;
+    const cache_hit = if (use_cache) blk: {
+        // Compute content hash of all sources + build options
+        var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+        // Hash source file path (distinguishes programs even with --ast-input)
+        hasher.update(path);
+        // Hash all module sources
+        if (source_buf) |sb| hasher.update(sb);
+        for (module_sources.items) |src| hasher.update(src);
+        // Hash build-affecting options
+        hasher.update(options.opt_level.toString());
+        hasher.update(if (options.debug_info) "g" else "");
+        if (options.target_triple) |tt| hasher.update(tt);
+        const hash = hasher.finalResult();
+        var hash_hex: [64]u8 = undefined;
+        for (hash, 0..) |byte, idx| {
+            _ = std.fmt.bufPrint(hash_hex[idx * 2 .. idx * 2 + 2], "{x:0>2}", .{byte}) catch {};
+        }
 
-    // Run LLVM optimization passes (inlining, mem2reg, GVN, loop opts, etc.)
-    if (options.opt_level != .O0) {
-        const pass_pipeline: [:0]const u8 = switch (options.opt_level) {
-            .O0 => unreachable,
-            .O1 => "default<O1>",
-            .O2 => "default<O2>",
-            .O3 => "default<O3>",
-        };
-        codegen.llvm.runPasses(emitter.getModule(), pass_pipeline, tm) catch {
-            try stderr.writeAll("Warning: LLVM optimization passes failed, continuing without optimization\n");
-        };
-    }
+        // Check cache directory for this hash
+        const cache_dir = "build/.cache";
+        std.fs.cwd().makePath(cache_dir) catch {};
+        const cached_obj_path = std.fmt.allocPrint(allocator, "{s}/{s}{s}", .{ cache_dir, hash_hex, obj_ext }) catch break :blk false;
+        defer allocator.free(cached_obj_path);
 
-    codegen.llvm.targetMachineEmitToFile(tm, emitter.getModule(), obj_path, codegen.llvm.c.LLVMObjectFile) catch |err| {
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Failed to emit object file: {s}\n", .{@errorName(err)}) catch "Failed to emit object file\n";
-        try stderr.writeAll(msg);
-        return;
-    };
+        if (std.fs.cwd().access(cached_obj_path, .{})) {
+            // Cache hit: copy cached .o to expected obj_path
+            std.fs.cwd().copyFile(cached_obj_path, std.fs.cwd(), obj_path, .{}) catch break :blk false;
+            break :blk true;
+        } else |_| {
+            break :blk false;
+        }
+    } else false;
+
+    if (!cache_hit) {
+        // Print optimization info if verbose
+        if (options.verbose_opt and options.opt_level != .O0) {
+            var buf2: [256]u8 = undefined;
+            const opt_msg = std.fmt.bufPrint(&buf2, "Optimization level: {s}\n", .{options.opt_level.toString()}) catch "Optimization enabled\n";
+            try stdout.writeAll(opt_msg);
+        }
+
+        // Run LLVM optimization passes (inlining, mem2reg, GVN, loop opts, etc.)
+        if (options.opt_level != .O0) {
+            const pass_pipeline: [:0]const u8 = switch (options.opt_level) {
+                .O0 => unreachable,
+                .O1 => "default<O1>",
+                .O2 => "default<O2>",
+                .O3 => "default<O3>",
+            };
+            codegen.llvm.runPasses(emitter.getModule(), pass_pipeline, tm) catch {
+                try stderr.writeAll("Warning: LLVM optimization passes failed, continuing without optimization\n");
+            };
+        }
+
+        codegen.llvm.targetMachineEmitToFile(tm, emitter.getModule(), obj_path, codegen.llvm.c.LLVMObjectFile) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Failed to emit object file: {s}\n", .{@errorName(err)}) catch "Failed to emit object file\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+
+        // Save to cache (if caching enabled)
+        if (use_cache) {
+            var hasher2 = std.crypto.hash.sha2.Sha256.init(.{});
+            hasher2.update(path);
+            if (source_buf) |sb| hasher2.update(sb);
+            for (module_sources.items) |src| hasher2.update(src);
+            hasher2.update(options.opt_level.toString());
+            hasher2.update(if (options.debug_info) "g" else "");
+            if (options.target_triple) |tt| hasher2.update(tt);
+            const hash2 = hasher2.finalResult();
+            var hash_hex2: [64]u8 = undefined;
+            for (hash2, 0..) |byte, idx| {
+                _ = std.fmt.bufPrint(hash_hex2[idx * 2 .. idx * 2 + 2], "{x:0>2}", .{byte}) catch {};
+            }
+            const cache_path = std.fmt.allocPrint(allocator, "build/.cache/{s}{s}", .{ hash_hex2, obj_ext }) catch null;
+            if (cache_path) |cp| {
+                defer allocator.free(cp);
+                std.fs.cwd().copyFile(obj_path, std.fs.cwd(), cp, .{}) catch {};
+            }
+        }
+    }
 
     // If compile only (-c), don't link - just keep the object file
     if (options.compile_only) {

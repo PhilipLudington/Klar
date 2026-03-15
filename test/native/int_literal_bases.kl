@@ -1,0 +1,41 @@
+// Test hex, binary, and octal integer literals
+fn main() -> i32 {
+    // Hex
+    let h1: i32 = 0xFF
+    assert_eq(h1, 255)
+    let h2: i32 = 0x1A3F
+    assert_eq(h2, 6719)
+    let h3: i64 = 0x7FFFFFFFFFFFFFFF
+    let h3_expected: i64 = 9223372036854775807
+    assert_eq(h3, h3_expected)
+
+    // Binary
+    let b1: i32 = 0b1010
+    assert_eq(b1, 10)
+    let b2: i32 = 0b11111111
+    assert_eq(b2, 255)
+
+    // Octal
+    let o1: i32 = 0o77
+    assert_eq(o1, 63)
+    let o2: i32 = 0o755
+    assert_eq(o2, 493)
+
+    // Underscores
+    let u1: i32 = 0xFF_FF
+    assert_eq(u1, 65535)
+    let u2: i32 = 0b1111_0000
+    assert_eq(u2, 240)
+    let u3: i32 = 0o7_7_7
+    assert_eq(u3, 511)
+
+    // Uppercase prefixes
+    let up1: i32 = 0XFF
+    assert_eq(up1, 255)
+    let up2: i32 = 0B1010
+    assert_eq(up2, 10)
+    let up3: i32 = 0O77
+    assert_eq(up3, 63)
+
+    return 0
+}

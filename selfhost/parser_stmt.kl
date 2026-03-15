@@ -11,22 +11,24 @@ import parser_type.{parse_type}
 // Statement parsing
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn parse_statement(p: Parser) -> (Parser, string) {
+fn parse_statement(p: Parser) -> (Parser, string, bool) {
+    // Returns (parser, json, is_expr_stmt)
     let k: string = tag_name(p.current.kind)
 
-    if k == "let" { return parse_let_decl(p, false) }
-    if k == "var_" { return parse_var_decl(p, false) }
-    if k == "shadow" { return parse_shadow_decl(p) }
-    if k == "return_" { return parse_return_stmt(p) }
-    if k == "break_" { return parse_break_stmt(p) }
-    if k == "continue_" { return parse_continue_stmt(p) }
-    if k == "if_" { return parse_if_stmt(p) }
-    if k == "while_" { return parse_while_loop(p) }
-    if k == "for_" { return parse_for_loop(p) }
-    if k == "loop" { return parse_loop_stmt(p) }
-    if k == "match" { return parse_match_stmt(p) }
+    if k == "let" { let r: (Parser, string) = parse_let_decl(p, false); return (r.0, r.1, false) }
+    if k == "var_" { let r: (Parser, string) = parse_var_decl(p, false); return (r.0, r.1, false) }
+    if k == "shadow" { let r: (Parser, string) = parse_shadow_decl(p); return (r.0, r.1, false) }
+    if k == "return_" { let r: (Parser, string) = parse_return_stmt(p); return (r.0, r.1, false) }
+    if k == "break_" { let r: (Parser, string) = parse_break_stmt(p); return (r.0, r.1, false) }
+    if k == "continue_" { let r: (Parser, string) = parse_continue_stmt(p); return (r.0, r.1, false) }
+    if k == "if_" { let r: (Parser, string) = parse_if_stmt(p); return (r.0, r.1, false) }
+    if k == "while_" { let r: (Parser, string) = parse_while_loop(p); return (r.0, r.1, false) }
+    if k == "for_" { let r: (Parser, string) = parse_for_loop(p); return (r.0, r.1, false) }
+    if k == "loop" { let r: (Parser, string) = parse_loop_stmt(p); return (r.0, r.1, false) }
+    if k == "match" { let r: (Parser, string) = parse_match_stmt(p); return (r.0, r.1, false) }
 
-    return parse_expression_stmt(p)
+    let r: (Parser, string) = parse_expression_stmt(p)
+    return (r.0, r.1, true)
 }
 
 fn parse_let_decl(p: Parser, is_shadow: bool) -> (Parser, string) {
@@ -147,12 +149,12 @@ pub fn parse_block(p: Parser) -> (Parser, string) {
     var count: i32 = 0
 
     while not tk(p2, "r_brace") and not tk(p2, "eof") {
-        let stmt_result: (Parser, string) = parse_statement(p2)
+        let stmt_result: (Parser, string, bool) = parse_statement(p2)
         p2 = stmt_result.0
 
         // Track if this was an expr_stmt (for final_expr detection)
         // An expr_stmt that's the last thing before } becomes final_expr
-        last_was_expr_stmt = starts_with(stmt_result.1, "{\"kind\":\"expr_stmt\"")
+        last_was_expr_stmt = stmt_result.2
         last_expr_json = stmt_result.1
 
         if count > 0 {
@@ -196,8 +198,7 @@ pub fn parse_block(p: Parser) -> (Parser, string) {
 fn extract_expr_from_expr_stmt(json: string) -> string {
     // Input: {"kind":"expr_stmt","expr":EXPR_JSON}
     // Output: EXPR_JSON
-    // COUPLING: This depends on parse_expression_stmt producing exactly this
-    // JSON field order. If that format changes, update the prefix below too.
+    // Note: depends on parse_expression_stmt field order (same file, line ~134).
     let prefix: string = "{\"kind\":\"expr_stmt\",\"expr\":"
     if not starts_with(json, prefix) { return json }
     // Return everything after prefix, minus the trailing }

@@ -166,8 +166,8 @@ fn parse_int_value(text: string) -> string {
         return clean
     }
 
-    // For other bases: compute decimal value (i64 — sufficient for most cases)
-    var result: i64 = 0
+    // For other bases: compute decimal value using string arithmetic (overflow-safe)
+    var decimal: string = "0"
     var i: i32 = start
     while i < text.byte_len() {
         let c: i32 = text.byte_at(i).as#[i32]
@@ -186,10 +186,50 @@ fn parse_int_value(text: string) -> string {
         else if c >= 97 and c <= 102 { digit = c - 97 + 10 }
         else if c >= 65 and c <= 70 { digit = c - 65 + 10 }
         else { break }
-        result = result * base.as#[i64] + digit.as#[i64]
+        decimal = str_mul_add(decimal, base, digit)
         i = i + 1
     }
-    return result.to_string().as_str()
+    return decimal
+}
+
+fn str_mul_add(decimal: string, mul: i32, add: i32) -> string {
+    // Multiply decimal string by mul and add — for overflow-safe base conversion
+    var carry: i32 = add
+    var result: string = ""
+    var i: i32 = decimal.byte_len() - 1
+    while i >= 0 {
+        let d: i32 = decimal.byte_at(i).as#[i32] - 48
+        let prod: i32 = d * mul + carry
+        result = from_byte((prod % 10 + 48).as#[u8]) + result
+        carry = prod / 10
+        i = i - 1
+    }
+    while carry > 0 {
+        result = from_byte((carry % 10 + 48).as#[u8]) + result
+        carry = carry / 10
+    }
+    if result.byte_len() == 0 { return "0" }
+    return result
+}
+
+fn hex_digit_val(c: i32) -> i32 {
+    if c >= 48 and c <= 57 { return c - 48 }       // 0-9
+    if c >= 97 and c <= 102 { return c - 97 + 10 }  // a-f
+    if c >= 65 and c <= 70 { return c - 65 + 10 }   // A-F
+    return -1
+}
+
+fn encode_utf8(codepoint: i32) -> string {
+    if codepoint < 128 {
+        return from_byte(codepoint.as#[u8])
+    }
+    if codepoint < 2048 {
+        return from_byte((192 + codepoint / 64).as#[u8]) + from_byte((128 + codepoint % 64).as#[u8])
+    }
+    if codepoint < 65536 {
+        return from_byte((224 + codepoint / 4096).as#[u8]) + from_byte((128 + (codepoint / 64) % 64).as#[u8]) + from_byte((128 + codepoint % 64).as#[u8])
+    }
+    return from_byte((240 + codepoint / 262144).as#[u8]) + from_byte((128 + (codepoint / 4096) % 64).as#[u8]) + from_byte((128 + (codepoint / 64) % 64).as#[u8]) + from_byte((128 + codepoint % 64).as#[u8])
 }
 
 pub fn parse_float_literal(p: Parser) -> (Parser, string) {
@@ -247,7 +287,16 @@ fn has_unescaped_brace(s: string) -> bool {
         while scan < s.byte_len() {
             let c: i32 = s.byte_at(scan).as#[i32]
             if c == 92 {
-                // Backslash — skip next char
+                // Backslash — skip next char, but handle \u{...} specially
+                if scan + 2 < s.byte_len() and s.byte_at(scan + 1).as#[i32] == 117 and s.byte_at(scan + 2).as#[i32] == 123 {
+                    // Skip \u{...} Unicode escape — don't treat { as interpolation
+                    scan = scan + 3
+                    while scan < s.byte_len() and s.byte_at(scan).as#[i32] != 125 {
+                        scan = scan + 1
+                    }
+                    if scan < s.byte_len() { scan = scan + 1 }
+                    continue
+                }
                 scan = scan + 2
                 continue
             }
@@ -322,6 +371,39 @@ fn parse_interpolated_string_parts(p: Parser, content: string) -> (Parser, strin
             if next == 92 { text_accum = text_accum + "\\"; i = i + 2; continue }
             if next == 34 { text_accum = text_accum + "\""; i = i + 2; continue }
             if next == 48 { text_accum = text_accum + from_byte(0.as#[u8]); i = i + 2; continue }
+            // \xNN — hex byte
+            if next == 120 and i + 3 < content.byte_len() {
+                let hi: i32 = hex_digit_val(content.byte_at(i + 2).as#[i32])
+                let lo: i32 = hex_digit_val(content.byte_at(i + 3).as#[i32])
+                if hi >= 0 and lo >= 0 {
+                    text_accum = text_accum + from_byte((hi * 16 + lo).as#[u8])
+                    i = i + 4
+                    continue
+                }
+            }
+            // \u{NNNNNN} — Unicode codepoint
+            if next == 117 and i + 2 < content.byte_len() and content.byte_at(i + 2).as#[i32] == 123 {
+                var uend: i32 = i + 3
+                while uend < content.byte_len() and content.byte_at(uend).as#[i32] != 125 {
+                    uend = uend + 1
+                }
+                if uend < content.byte_len() {
+                    var cp: i32 = 0
+                    var j: i32 = i + 3
+                    var valid: bool = true
+                    while j < uend {
+                        let hv: i32 = hex_digit_val(content.byte_at(j).as#[i32])
+                        if hv < 0 { valid = false; break }
+                        cp = cp * 16 + hv
+                        j = j + 1
+                    }
+                    if valid and cp >= 0 {
+                        text_accum = text_accum + encode_utf8(cp)
+                        i = uend + 1
+                        continue
+                    }
+                }
+            }
             text_accum = text_accum + from_byte(next.as#[u8])
             i = i + 2
             continue
@@ -401,6 +483,40 @@ fn process_string_escapes(s: string) -> string {
             if next == 48 { result = result + from_byte(0.as#[u8]); i = i + 2; continue }
             if next == 123 { result = result + "{"; i = i + 2; continue }  // \{
             if next == 125 { result = result + "}"; i = i + 2; continue }  // \}
+            // \xNN — two hex digits → byte value
+            if next == 120 and i + 3 < s.byte_len() {
+                let hi: i32 = hex_digit_val(s.byte_at(i + 2).as#[i32])
+                let lo: i32 = hex_digit_val(s.byte_at(i + 3).as#[i32])
+                if hi >= 0 and lo >= 0 {
+                    result = result + from_byte((hi * 16 + lo).as#[u8])
+                    i = i + 4
+                    continue
+                }
+            }
+            // \u{NNNNNN} — Unicode codepoint → UTF-8
+            if next == 117 and i + 2 < s.byte_len() and s.byte_at(i + 2).as#[i32] == 123 {
+                var end: i32 = i + 3
+                while end < s.byte_len() and s.byte_at(end).as#[i32] != 125 {
+                    end = end + 1
+                }
+                if end < s.byte_len() {
+                    // Parse hex digits between { and }
+                    var cp: i32 = 0
+                    var j: i32 = i + 3
+                    var valid: bool = true
+                    while j < end {
+                        let hv: i32 = hex_digit_val(s.byte_at(j).as#[i32])
+                        if hv < 0 { valid = false; break }
+                        cp = cp * 16 + hv
+                        j = j + 1
+                    }
+                    if valid and cp >= 0 {
+                        result = result + encode_utf8(cp)
+                        i = end + 1
+                        continue
+                    }
+                }
+            }
             // Unknown escape — keep as-is
             result = result + from_byte(next.as#[u8])
             i = i + 2

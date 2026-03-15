@@ -1,0 +1,26 @@
+// Test \xNN hex byte and \u{NNNN} Unicode escape sequences in strings
+fn main() -> i32 {
+    // \xNN hex byte escapes
+    let hex1: string = "\x41"
+    assert_eq(hex1, "A")
+    let hex2: string = "\x48\x65\x6c\x6c\x6f"
+    assert_eq(hex2, "Hello")
+
+    // \u{NNNN} Unicode escapes — ASCII range
+    let uni1: string = "\u{0041}"
+    assert_eq(uni1, "A")
+
+    // \u{NNNN} Unicode escapes — 2-byte UTF-8
+    let uni2: string = "\u{00e9}"
+    assert_eq(uni2.byte_len(), 2)
+
+    // Mixed with regular text
+    let mixed: string = "caf\u{00e9}"
+    assert_eq(mixed.byte_len(), 5)
+
+    // \xNN and \u{} in same string
+    let both: string = "\x41\u{0042}\x43"
+    assert_eq(both, "ABC")
+
+    return 0
+}

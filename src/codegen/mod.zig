@@ -83,6 +83,8 @@ pub const CompileOptions = struct {
     linker_script: ?[]const u8 = null,
     /// Compile only - produce object file, don't link.
     compile_only: bool = false,
+    /// Disable build cache (--no-cache).
+    no_cache: bool = false,
     /// Additional search paths for module resolution (e.g., from package dependencies).
     search_paths: []const []const u8 = &.{},
     /// Additional object files to link (e.g., compiled Kira C sources).
