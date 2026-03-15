@@ -463,9 +463,9 @@ Each feature follows an evaluate-then-implement pattern. Evaluation may conclude
 - [ ] If go: implement effect declarations, handler syntax, and checker support
 
 ### 16.2: Constrained Decoding
-- [ ] Research: write design doc for grammar spec format (GBNF, JSON schema, or custom) enabling LLM-guided Klar code generation
-- [ ] Decision: go/no-go based on LLM tooling ecosystem compatibility
-- [ ] If go: implement `klar grammar` CLI command that outputs the Klar grammar spec
+- [x] Research: write design doc for grammar spec format (GBNF, JSON schema, or custom) enabling LLM-guided Klar code generation
+- [x] Decision: **No-go** — REPL verification loop + `klar check` (85ms) is strictly superior; cloud LLMs don't support custom grammars; Klar's context-sensitive struct literal parsing can't be expressed in CFG
+- [x] Not implementing `klar grammar` — maintenance burden (~1000 LOC grammar spec) for marginal benefit
 
 ### 16.3: Formal Verification
 - [ ] Research: write design doc for lightweight contracts (preconditions, postconditions, invariants) — runtime checks vs static analysis
