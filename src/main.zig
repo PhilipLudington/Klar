@@ -1634,6 +1634,12 @@ fn dumpOneMetaAnnotation(out: std.fs.File, ann: ast.MetaAnnotation) anyerror!voi
             }
             try out.writeAll("]}");
         },
+        .require => {
+            try out.writeAll("{\"kind\":\"require\"}");
+        },
+        .ensure => {
+            try out.writeAll("{\"kind\":\"ensure\"}");
+        },
     }
 }
 

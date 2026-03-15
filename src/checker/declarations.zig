@@ -201,6 +201,10 @@ fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
         tc.current_async_context = func.is_async;
         defer tc.current_async_context = was_async_context;
 
+        // Type-check meta require/ensure contract expressions
+        meta_validation.checkRequireContracts(tc, func.meta);
+        meta_validation.checkEnsureContracts(tc, func.meta, body_return_type);
+
         _ = tc.checkBlock(body);
     }
 }
@@ -866,6 +870,10 @@ fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
             }
             defer tc.in_pure_function = was_pure;
             defer tc.pure_function_span = was_pure_span;
+
+            // Type-check meta require/ensure contract expressions
+            meta_validation.checkRequireContracts(tc, method_decl.meta);
+            meta_validation.checkEnsureContracts(tc, method_decl.meta, return_type);
 
             _ = tc.checkBlock(body);
         }

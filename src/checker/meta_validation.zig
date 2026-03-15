@@ -269,6 +269,11 @@ pub fn validateDeclMeta(tc: anytype, meta: []const ast.MetaAnnotation, decl_kind
                     validateCustomAnnotation(tc, cust, decl_kind);
                 }
             },
+            .require, .ensure => {
+                if (decl_kind != .function and decl_kind != .impl_) {
+                    tc.addError(.meta_error, annotation.span(), "meta require/ensure can only appear on functions and methods", .{});
+                }
+            },
             else => {
                 // intent, decision, tag, hint, deprecated, pure — all valid on declarations
             },
@@ -528,6 +533,112 @@ pub fn checkPureInoutParams(tc: anytype, params: []const ast.FunctionParam, pure
             if (param.type_.reference.mutable) {
                 tc.addError(.meta_error, param.span, "pure function (declared at line {d}) cannot have inout parameter '{s}': inout allows mutation of external state", .{ pure_span.line, param.name });
             }
+        }
+    }
+}
+
+/// Extract all `meta require` contracts from a meta annotation list.
+pub fn getRequireContracts(meta: []const ast.MetaAnnotation) []const *ast.MetaContract {
+    // Count first
+    var count: usize = 0;
+    for (meta) |annotation| {
+        switch (annotation) {
+            .require => count += 1,
+            else => {},
+        }
+    }
+    if (count == 0) return &.{};
+
+    // This is called at type-check time, so we use a static buffer approach.
+    // Max 16 require contracts per function should be sufficient.
+    const S = struct {
+        var buf: [16]*ast.MetaContract = undefined;
+    };
+    var i: usize = 0;
+    for (meta) |annotation| {
+        switch (annotation) {
+            .require => |contract| {
+                if (i < 16) {
+                    S.buf[i] = contract;
+                    i += 1;
+                }
+            },
+            else => {},
+        }
+    }
+    return S.buf[0..i];
+}
+
+/// Extract all `meta ensure` contracts from a meta annotation list.
+pub fn getEnsureContracts(meta: []const ast.MetaAnnotation) []const *ast.MetaContract {
+    var count: usize = 0;
+    for (meta) |annotation| {
+        switch (annotation) {
+            .ensure => count += 1,
+            else => {},
+        }
+    }
+    if (count == 0) return &.{};
+
+    const S = struct {
+        var buf: [16]*ast.MetaContract = undefined;
+    };
+    var i: usize = 0;
+    for (meta) |annotation| {
+        switch (annotation) {
+            .ensure => |contract| {
+                if (i < 16) {
+                    S.buf[i] = contract;
+                    i += 1;
+                }
+            },
+            else => {},
+        }
+    }
+    return S.buf[0..i];
+}
+
+/// Type-check `meta require` contract expressions.
+/// Require expressions are checked in the function's parameter scope — they can reference
+/// parameters but not local variables. Each expression must evaluate to bool.
+pub fn checkRequireContracts(tc: anytype, meta: []const ast.MetaAnnotation) void {
+    for (meta) |annotation| {
+        switch (annotation) {
+            .require => |contract| {
+                const expr_type = tc.checkExpr(contract.expr);
+                if (!tc.isBoolType(expr_type)) {
+                    tc.addError(.meta_error, contract.span, "meta require expression must be of type bool", .{});
+                }
+            },
+            else => {},
+        }
+    }
+}
+
+/// Type-check `meta ensure` contract expressions.
+/// Ensure expressions are checked with an additional `result` binding of the function's
+/// return type. Each expression must evaluate to bool.
+pub fn checkEnsureContracts(tc: anytype, meta: []const ast.MetaAnnotation, return_type: anytype) void {
+    const checker = @import("checker.zig");
+    for (meta) |annotation| {
+        switch (annotation) {
+            .ensure => |contract| {
+                // Push a temporary scope with `result` binding for the ensure expression
+                const scope = tc.pushScope(.block) catch return;
+                scope.define(.{
+                    .name = "result",
+                    .type_ = return_type,
+                    .kind = checker.Symbol.Kind.variable,
+                    .mutable = false,
+                    .span = contract.span,
+                }) catch {};
+                const expr_type = tc.checkExpr(contract.expr);
+                if (!tc.isBoolType(expr_type)) {
+                    tc.addError(.meta_error, contract.span, "meta ensure expression must be of type bool", .{});
+                }
+                tc.popScope();
+            },
+            else => {},
         }
     }
 }

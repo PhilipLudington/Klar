@@ -973,6 +973,12 @@ fn metaOutputHuman(mode: MetaQueryMode, matches: []const MetaMatch) !void {
                     try out.writeAll("\n");
                 },
                 .group_def, .define => {},
+                .require => {
+                    try out.writeAll("    require(...)\n");
+                },
+                .ensure => {
+                    try out.writeAll("    ensure(...)\n");
+                },
             }
         }
     }
@@ -1165,7 +1171,7 @@ fn metaOutputJsonMeta(out: std.fs.File, meta: []const ast.MetaAnnotation) !void 
                     wrote_guide = true;
                 }
             },
-            .related, .custom, .tag, .group_join, .group_def, .define => {},
+            .related, .custom, .tag, .group_join, .group_def, .define, .require, .ensure => {},
         }
     }
 

@@ -468,9 +468,9 @@ Each feature follows an evaluate-then-implement pattern. Evaluation may conclude
 - [x] Not implementing `klar grammar` — maintenance burden (~1000 LOC grammar spec) for marginal benefit
 
 ### 16.3: Formal Verification
-- [ ] Research: write design doc for lightweight contracts (preconditions, postconditions, invariants) — runtime checks vs static analysis
-- [ ] Decision: go/no-go based on alignment with "no ambiguity, no surprises" philosophy
-- [ ] If go: implement contract syntax and checker/runtime support
+- [x] Research: write design doc for lightweight contracts (preconditions, postconditions, invariants) — runtime checks vs static analysis
+- [x] Decision: **Go** for `meta require` / `meta ensure` (runtime-checked contracts via meta system, ~400 LOC). **No-go** for struct invariants, static analysis, and new keywords.
+- [x] Implement `meta require` / `meta ensure` in meta_validation.zig + codegen — postconditions auto-wrap all return paths
 
 ### 16.4: Incremental Compilation
 - [ ] Research: profile full rebuild to identify caching opportunities (AST, typed AST, object files)

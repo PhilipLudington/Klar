@@ -2618,6 +2618,10 @@ pub const Parser = struct {
             return .{ .deprecated = try self.parseMetaStringArg(meta_span) };
         } else if (std.mem.eql(u8, name_text, "pure")) {
             return .{ .pure = ast.Span.merge(meta_span, name_span) };
+        } else if (std.mem.eql(u8, name_text, "require")) {
+            return .{ .require = try self.parseMetaContractExpr(meta_span) };
+        } else if (std.mem.eql(u8, name_text, "ensure")) {
+            return .{ .ensure = try self.parseMetaContractExpr(meta_span) };
         } else if (std.mem.eql(u8, name_text, "guide")) {
             return .{ .guide = try self.parseMetaBlock(meta_span) };
         } else if (std.mem.eql(u8, name_text, "related")) {
@@ -2656,6 +2660,24 @@ pub const Parser = struct {
             .value = processed,
             .span = ast.Span.merge(meta_span, end_span),
         };
+    }
+
+    /// Parse a meta contract expression: ( expression )
+    /// Used for meta require(expr) and meta ensure(expr).
+    fn parseMetaContractExpr(self: *Parser, meta_span: ast.Span) ParseError!*ast.MetaContract {
+        try self.consume(.l_paren, "expected '(' after meta require/ensure");
+
+        const expr = try self.parseExpression();
+
+        const end_span = self.spanFromToken(self.current);
+        try self.consume(.r_paren, "expected ')' after contract expression");
+
+        const contract = self.allocator.create(ast.MetaContract) catch return ParseError.OutOfMemory;
+        contract.* = .{
+            .expr = expr,
+            .span = ast.Span.merge(meta_span, end_span),
+        };
+        return contract;
     }
 
     /// Parse a meta block: { key: value, key: value, ... }

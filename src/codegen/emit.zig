@@ -218,6 +218,9 @@ pub const Emitter = struct {
     /// Set when the function uses sret calling convention for returning aggregates.
     current_sret_ptr: ?llvm.ValueRef,
 
+    /// Current function's `meta ensure` contract expressions (checked before each return).
+    current_ensure_contracts: []const ast.MetaAnnotation = &.{},
+
     /// Cached sret attribute kind ID (lazily initialized).
     sret_attr_kind: ?c_uint,
 
@@ -1955,6 +1958,14 @@ pub const Emitter = struct {
             // Emit function body
             try self.pushScope(false);
 
+            // Emit meta require checks at method entry
+            try self.emitRequireContracts(method.meta);
+
+            // Store meta ensure contracts for checking at return sites
+            const prev_ensure = self.current_ensure_contracts;
+            self.current_ensure_contracts = method.meta;
+            defer self.current_ensure_contracts = prev_ensure;
+
             const result = try self.emitBlock(method.body.?);
 
             // Handle return
@@ -2264,6 +2275,14 @@ pub const Emitter = struct {
         if (func.body) |body| {
             // Push function scope for drop tracking
             try self.pushScope(false);
+
+            // Emit meta require checks at function entry
+            try self.emitRequireContracts(func.meta);
+
+            // Store meta ensure contracts for checking at return sites
+            const prev_ensure = self.current_ensure_contracts;
+            self.current_ensure_contracts = func.meta;
+            defer self.current_ensure_contracts = prev_ensure;
 
             const result = try self.emitBlock(body);
 
@@ -2742,7 +2761,11 @@ pub const Emitter = struct {
                         if (std.mem.eql(u8, val.identifier.name, "None")) {
                             if (self.current_return_type) |rt_info| {
                                 if (rt_info.is_optional) {
-                                    const none_val = self.emitNone(rt_info.llvm_type);
+                                    var none_val = self.emitNone(rt_info.llvm_type);
+                                    // Emit ensure checks for None returns
+                                    if (self.hasEnsureContracts()) {
+                                        none_val = try self.emitEnsureChecks(none_val);
+                                    }
                                     if (self.current_sret_ptr) |sret_ptr| {
                                         _ = self.builder.buildStore(none_val, sret_ptr);
                                         _ = self.builder.buildRetVoid();
@@ -2780,6 +2803,10 @@ pub const Emitter = struct {
                         if (self.current_return_type) |rt_info| {
                             result = try self.wrapCompletedFuture(rt_info.llvm_type, result);
                         }
+                    }
+                    // Emit ensure checks before the actual return
+                    if (self.hasEnsureContracts()) {
+                        result = try self.emitEnsureChecks(result);
                     }
                     // If using sret, store to sret pointer and return void
                     if (self.current_sret_ptr) |sret_ptr| {
@@ -14709,6 +14736,96 @@ pub const Emitter = struct {
         self.builder.positionAtEnd(continue_bb);
 
         return llvm.Const.int32(self.ctx, 0);
+    }
+
+    /// Check if the current function has any `meta ensure` contracts.
+    fn hasEnsureContracts(self: *Emitter) bool {
+        for (self.current_ensure_contracts) |annotation| {
+            switch (annotation) {
+                .ensure => return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    /// Emit a contract check (meta require or meta ensure).
+    /// If condition is false, prints a panic message with the contract kind and line, then aborts.
+    fn emitContractCheck(self: *Emitter, condition: llvm.ValueRef, kind: []const u8, line: u32) EmitError!void {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const fail_bb = llvm.appendBasicBlock(self.ctx, func, "contract.fail");
+        const continue_bb = llvm.appendBasicBlock(self.ctx, func, "contract.pass");
+
+        _ = self.builder.buildCondBr(condition, continue_bb, fail_bb);
+
+        // Emit failure block
+        self.builder.positionAtEnd(fail_bb);
+
+        const fprintf_fn = self.getOrDeclareFprintf();
+        const stderr_fn = self.getOrDeclareStderr();
+        const stderr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stderr_fn), stderr_fn, &[_]llvm.ValueRef{}, "stderr");
+
+        // Format: "panic: meta <kind> violated at line <N>\n"
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "panic: meta {s} violated at line {d}\n", .{ kind, line }) catch "panic: contract violated\n";
+        const msg_z = self.allocator.dupeZ(u8, msg) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(msg_z);
+        const fail_msg = self.builder.buildGlobalStringPtr(msg_z, "contract_msg");
+        var fail_args = [_]llvm.ValueRef{ stderr, fail_msg };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, &fail_args, "");
+
+        const abort_fn = self.getOrDeclareAbort();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(abort_fn), abort_fn, &[_]llvm.ValueRef{}, "");
+        _ = self.builder.buildUnreachable();
+
+        // Continue block - contract satisfied
+        self.builder.positionAtEnd(continue_bb);
+    }
+
+    /// Emit all `meta require` checks at function entry.
+    fn emitRequireContracts(self: *Emitter, meta: []const ast.MetaAnnotation) EmitError!void {
+        for (meta) |annotation| {
+            switch (annotation) {
+                .require => |contract| {
+                    const cond = try self.emitExpr(contract.expr);
+                    try self.emitContractCheck(cond, "require", contract.span.line);
+                },
+                else => {},
+            }
+        }
+    }
+
+    /// Emit all `meta ensure` checks before a return, binding `result` to the return value.
+    /// Returns the (possibly reloaded) return value.
+    fn emitEnsureChecks(self: *Emitter, return_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+        // Store return value to a temporary so ensure expressions can reference it as "result"
+        const val_type = llvm.typeOf(return_val);
+        const result_alloca = self.buildEntryBlockAlloca(val_type, "ensure.result");
+        _ = self.builder.buildStore(return_val, result_alloca);
+
+        // Register "result" as a named value so emitExpr(identifier "result") finds it
+        self.named_values.put("result", .{
+            .value = result_alloca,
+            .is_alloca = true,
+            .ty = val_type,
+            .is_signed = true,
+        }) catch return EmitError.OutOfMemory;
+
+        for (self.current_ensure_contracts) |annotation| {
+            switch (annotation) {
+                .ensure => |contract| {
+                    const cond = try self.emitExpr(contract.expr);
+                    try self.emitContractCheck(cond, "ensure", contract.span.line);
+                },
+                else => {},
+            }
+        }
+
+        // Remove "result" binding and reload the value
+        _ = self.named_values.remove("result");
+        const reloaded = self.builder.buildLoad(val_type, result_alloca, "ensure.retval");
+        return reloaded;
     }
 
     /// Emit assert_eq that compares two values and panics with details on failure

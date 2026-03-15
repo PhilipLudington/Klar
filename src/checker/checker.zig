@@ -5500,6 +5500,10 @@ pub const TypeChecker = struct {
                         self.current_async_context = f.is_async;
                         defer self.current_async_context = was_async_context;
 
+                        // Type-check meta require/ensure contract expressions
+                        meta_validation.checkRequireContracts(self, f.meta);
+                        meta_validation.checkEnsureContracts(self, f.meta, self.current_return_type orelse self.type_builder.voidType());
+
                         _ = self.checkBlock(body);
                     }
                 },
@@ -5765,6 +5769,10 @@ pub const TypeChecker = struct {
                         const was_async_context = self.current_async_context;
                         self.current_async_context = f.is_async;
                         defer self.current_async_context = was_async_context;
+
+                        // Type-check meta require/ensure contract expressions
+                        meta_validation.checkRequireContracts(self, f.meta);
+                        meta_validation.checkEnsureContracts(self, f.meta, self.current_return_type orelse self.type_builder.voidType());
 
                         _ = self.checkBlock(body);
                     }

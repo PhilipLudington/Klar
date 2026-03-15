@@ -1,0 +1,7 @@
+// Expected: check-error meta require expression must be of type bool
+// meta require with a non-bool expression should be rejected
+
+meta require(42)
+fn bad_require(x: i32) -> i32 {
+    return x
+}
