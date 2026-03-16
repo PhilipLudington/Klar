@@ -27542,9 +27542,14 @@ pub const Emitter = struct {
         const arg_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, ptr_type, list_ptr, &arg_indices, 1, "wspawn.argptr");
         const arg_val = self.builder.buildLoad(ptr_type, arg_ptr, "wspawn.arg");
         const arg_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &[_]llvm.ValueRef{arg_val}, "wspawn.arglen");
-        // total += 3 + arglen (space + 2 quotes)
+        // Only quote args containing spaces (cmd.exe doesn't recognize "/C" as a switch)
+        const memchr_len = self.getOrDeclareMemchr();
+        const space_found = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memchr_len), memchr_len, &[_]llvm.ValueRef{ arg_val, llvm.Const.int32(self.ctx, ' '), arg_len }, "wspawn.spchk");
+        const needs_quote = self.builder.buildICmp(llvm.c.LLVMIntNE, space_found, llvm.c.LLVMConstNull(ptr_type), "wspawn.needsq");
+        // overhead = needs_quote ? 3 : 1 (space + 2 quotes vs just space)
+        const overhead = self.builder.buildSelect(needs_quote, llvm.Const.int64(self.ctx, 3), llvm.Const.int64(self.ctx, 1), "wspawn.overhead");
         const cur_total = self.builder.buildLoad(i64_type, total_alloca, "wspawn.curtotal");
-        const added = self.builder.buildAdd(arg_len, llvm.Const.int64(self.ctx, 3), "wspawn.added");
+        const added = self.builder.buildAdd(arg_len, overhead, "wspawn.added");
         const new_total = self.builder.buildAdd(cur_total, added, "wspawn.newtotal");
         _ = self.builder.buildStore(new_total, total_alloca);
         const next_idx = self.builder.buildAdd(idx_phi, llvm.Const.int32(self.ctx, 1), "wspawn.nextidx");
@@ -27585,31 +27590,57 @@ pub const Emitter = struct {
         const carg_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &[_]llvm.ValueRef{carg_val}, "wspawn.carglen");
         const cpos = self.builder.buildLoad(i64_type, pos_alloca, "wspawn.cpos");
 
-        // Write space + quote
+        // Check if arg needs quoting (contains spaces)
+        const cmemchr_fn = self.getOrDeclareMemchr();
+        const cspace_found = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(cmemchr_fn), cmemchr_fn, &[_]llvm.ValueRef{ carg_val, llvm.Const.int32(self.ctx, ' '), carg_len }, "wspawn.cspchk");
+        const cneeds_quote = self.builder.buildICmp(llvm.c.LLVMIntNE, cspace_found, llvm.c.LLVMConstNull(ptr_type), "wspawn.cneedsq");
+        const quote_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.quote");
+        const noquote_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.noquote");
+        const merge_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.merge");
+        _ = self.builder.buildCondBr(cneeds_quote, quote_bb, noquote_bb);
+
+        // Quoted path: write ' "arg"'
+        self.builder.positionAtEnd(quote_bb);
         const space_str = self.builder.buildGlobalStringPtr(" \"", "wspawn.spaceq");
         var sp_indices = [_]llvm.ValueRef{cpos};
         const sp_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, cmdline_buf, &sp_indices, 1, "wspawn.spdst");
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &[_]llvm.ValueRef{ sp_dst, space_str, llvm.Const.int64(self.ctx, 2) }, "wspawn.cpysp");
         const after_sp = self.builder.buildAdd(cpos, llvm.Const.int64(self.ctx, 2), "wspawn.aftersp");
-
-        // Copy arg
-        var arg_dst_indices = [_]llvm.ValueRef{after_sp};
-        const arg_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, cmdline_buf, &arg_dst_indices, 1, "wspawn.argdst");
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &[_]llvm.ValueRef{ arg_dst, carg_val, carg_len }, "wspawn.cpyarg");
-        const after_arg = self.builder.buildAdd(after_sp, carg_len, "wspawn.afterarg");
-
-        // Write closing quote
-        var q_indices = [_]llvm.ValueRef{after_arg};
+        var qarg_indices = [_]llvm.ValueRef{after_sp};
+        const qarg_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, cmdline_buf, &qarg_indices, 1, "wspawn.qargdst");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &[_]llvm.ValueRef{ qarg_dst, carg_val, carg_len }, "wspawn.cpyqarg");
+        const after_qarg = self.builder.buildAdd(after_sp, carg_len, "wspawn.afterqarg");
+        var q_indices = [_]llvm.ValueRef{after_qarg};
         const q_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, cmdline_buf, &q_indices, 1, "wspawn.qdst");
         _ = self.builder.buildStore(llvm.Const.int8(self.ctx, '"'), q_dst);
-        const after_q = self.builder.buildAdd(after_arg, llvm.Const.int64(self.ctx, 1), "wspawn.afterq");
-        _ = self.builder.buildStore(after_q, pos_alloca);
+        const after_q = self.builder.buildAdd(after_qarg, llvm.Const.int64(self.ctx, 1), "wspawn.afterq");
+        _ = self.builder.buildBr(merge_bb);
+
+        // Unquoted path: write ' arg'
+        self.builder.positionAtEnd(noquote_bb);
+        var nsp_indices = [_]llvm.ValueRef{cpos};
+        const nsp_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, cmdline_buf, &nsp_indices, 1, "wspawn.nspdst");
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, ' '), nsp_dst);
+        const after_nsp = self.builder.buildAdd(cpos, llvm.Const.int64(self.ctx, 1), "wspawn.afternsp");
+        var narg_indices = [_]llvm.ValueRef{after_nsp};
+        const narg_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, cmdline_buf, &narg_indices, 1, "wspawn.nargdst");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &[_]llvm.ValueRef{ narg_dst, carg_val, carg_len }, "wspawn.cpynarg");
+        const after_narg = self.builder.buildAdd(after_nsp, carg_len, "wspawn.afternarg");
+        _ = self.builder.buildBr(merge_bb);
+
+        // Merge: update position
+        self.builder.positionAtEnd(merge_bb);
+        const final_pos = llvm.c.LLVMBuildPhi(self.builder.ref, i64_type, "wspawn.fpos_phi");
+        var fpos_vals = [_]llvm.ValueRef{ after_q, after_narg };
+        var fpos_bbs = [_]llvm.c.LLVMBasicBlockRef{ @ptrCast(quote_bb), @ptrCast(noquote_bb) };
+        llvm.c.LLVMAddIncoming(final_pos, &fpos_vals, &fpos_bbs, 2);
+        _ = self.builder.buildStore(final_pos, pos_alloca);
 
         const cnext_idx = self.builder.buildAdd(cidx_phi, llvm.Const.int32(self.ctx, 1), "wspawn.cnext");
         _ = self.builder.buildBr(copy_bb);
 
         var cphi_vals = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), cnext_idx };
-        var cphi_bbs = [_]llvm.c.LLVMBasicBlockRef{ @ptrCast(copy_preheader_bb), @ptrCast(copy_body_bb) };
+        var cphi_bbs = [_]llvm.c.LLVMBasicBlockRef{ @ptrCast(copy_preheader_bb), @ptrCast(merge_bb) };
         llvm.c.LLVMAddIncoming(cidx_phi, &cphi_vals, &cphi_bbs, 2);
 
         self.builder.positionAtEnd(copy_done_bb);
