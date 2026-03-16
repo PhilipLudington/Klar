@@ -27407,6 +27407,14 @@ pub const Emitter = struct {
         return llvm.c.LLVMAddFunction(self.module.ref, "ReadFile", fn_type);
     }
 
+    fn getOrDeclareGetStdHandle(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "GetStdHandle")) |func| return func;
+        // HANDLE GetStdHandle(DWORD nStdHandle)
+        var param_types = [_]llvm.TypeRef{llvm.Types.int32(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.pointer(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "GetStdHandle", fn_type);
+    }
+
     fn getOrDeclareOpenProcess(self: *Emitter) llvm.ValueRef {
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, "OpenProcess")) |func| return func;
         // HANDLE OpenProcess(DWORD dwDesiredAccess, BOOL bInheritHandle, DWORD dwProcessId)
@@ -27653,6 +27661,10 @@ pub const Emitter = struct {
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ si_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, si_size) }, "wspawn.si_clr");
         self.storeI32AtByteOffset(si_alloca, 0, llvm.Const.int32(self.ctx, @intCast(si_size)), "wspawn.si.cb"); // cb
         self.storeI32AtByteOffset(si_alloca, 60, llvm.Const.int32(self.ctx, 0x100), "wspawn.si.flags"); // dwFlags = STARTF_USESTDHANDLES
+        // Set hStdInput to parent's stdin (STD_INPUT_HANDLE = -10 = 0xFFFFFFF6)
+        const get_std_handle_fn = self.getOrDeclareGetStdHandle();
+        const parent_stdin = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(get_std_handle_fn), get_std_handle_fn, &[_]llvm.ValueRef{llvm.Const.int32(self.ctx, @as(i32, @bitCast(@as(u32, 0xFFFFFFF6))))}, "wspawn.stdin");
+        self.storePtrAtByteOffset(si_alloca, 80, parent_stdin, "wspawn.si.stdin"); // hStdInput
         const out_write_h = self.builder.buildLoad(ptr_type, out_write_alloca, "wspawn.ow");
         const err_write_h = self.builder.buildLoad(ptr_type, err_write_alloca, "wspawn.ew");
         self.storePtrAtByteOffset(si_alloca, 88, out_write_h, "wspawn.si.stdout"); // hStdOutput
