@@ -71,8 +71,9 @@ pub fn getRegistryUrl(allocator: Allocator) []const u8 {
 }
 
 /// Parse an HTTP URL into host, port, path components.
+/// NOTE: Only HTTP is supported. HTTPS/TLS is not yet implemented.
 fn parseUrl(url: []const u8) RegistryError!UrlComponents {
-    // Reject https
+    // Reject https (TLS not yet supported)
     if (url.len > 8 and std.mem.eql(u8, url[0..8], "https://")) {
         return RegistryError.InvalidUrl;
     }
@@ -95,6 +96,14 @@ fn parseUrl(url: []const u8) RegistryError!UrlComponents {
     } else 80;
 
     if (host.len == 0) return RegistryError.InvalidUrl;
+
+    // Reject CR/LF in host or path to prevent HTTP header injection
+    for (host) |c| {
+        if (c == '\r' or c == '\n') return RegistryError.InvalidUrl;
+    }
+    for (path) |c| {
+        if (c == '\r' or c == '\n') return RegistryError.InvalidUrl;
+    }
 
     return .{ .host = host, .port = port, .path = path };
 }
@@ -150,11 +159,13 @@ fn readHttpResponse(allocator: Allocator, stream: std.net.Stream) !HttpResponse 
     defer response_buf.deinit(allocator);
 
     // Read until connection closes or Content-Length is satisfied
+    const max_response_size: usize = 16 * 1024 * 1024; // 16 MB
     var read_buf: [65536]u8 = undefined;
     for (0..10000) |_| {
         const n = stream.read(&read_buf) catch break;
         if (n == 0) break;
         try response_buf.appendSlice(allocator, read_buf[0..n]);
+        if (response_buf.items.len > max_response_size) return RegistryError.InvalidResponse;
 
         // Check if we have full response based on Content-Length
         if (checkResponseComplete(response_buf.items)) break;

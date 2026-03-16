@@ -1329,7 +1329,8 @@ pub const Emitter = struct {
             }) catch return EmitError.OutOfMemory;
         }
 
-        // ProcessHandle: { pid: i32, stdout_fd: i32, stderr_fd: i32 }
+        // ProcessHandle: POSIX { pid: i32, stdout_fd: i32, stderr_fd: i32 }
+        //                Windows { pid: i64, stdout_fd: i64, stderr_fd: i64 }
         if (!self.struct_types.contains("ProcessHandle")) {
             const ph_type = self.getProcessHandleStructType();
             const ph_field_indices = self.allocator.dupe(u32, &[_]u32{ 0, 1, 2 }) catch return EmitError.OutOfMemory;
@@ -27251,13 +27252,15 @@ pub const Emitter = struct {
 
     // ==================== Phase 6A: Async Subprocess Builtins ====================
 
-    /// LLVM struct type for ProcessHandle: { pid: i32, stdout_fd: i32, stderr_fd: i32 }
+    /// LLVM struct type for ProcessHandle.
+    /// POSIX: { pid: i32, stdout_fd: i32, stderr_fd: i32 }
+    /// Windows: { pid: i64, stdout_fd: i64, stderr_fd: i64 } (HANDLEs are pointer-sized)
     fn getProcessHandleStructType(self: *Emitter) llvm.TypeRef {
-        var fields = [_]llvm.TypeRef{
-            llvm.Types.int32(self.ctx), // pid
-            llvm.Types.int32(self.ctx), // stdout_fd
-            llvm.Types.int32(self.ctx), // stderr_fd
-        };
+        const field_type = if (comptime builtin.os.tag == .windows)
+            llvm.Types.int64(self.ctx)
+        else
+            llvm.Types.int32(self.ctx);
+        var fields = [_]llvm.TypeRef{ field_type, field_type, field_type };
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
@@ -27463,16 +27466,13 @@ pub const Emitter = struct {
         return self.builder.buildLoad(i32_type, byte_ptr, std.mem.span(name));
     }
 
-    /// Truncate a pointer to i32 (for storing Windows HANDLEs in ProcessHandle fields).
-    /// Windows HANDLEs are pointer-sized but values are < 2^32 in practice.
-    fn ptrToI32(self: *Emitter, ptr_val: llvm.ValueRef, name: [*:0]const u8) llvm.ValueRef {
-        const i64_val = llvm.c.LLVMBuildPtrToInt(self.builder.ref, ptr_val, llvm.Types.int64(self.ctx), "ptr2int");
-        return llvm.c.LLVMBuildTrunc(self.builder.ref, i64_val, llvm.Types.int32(self.ctx), name);
+    /// Convert a pointer to i64 (for storing Windows HANDLEs in ProcessHandle fields).
+    fn ptrToHandleField(self: *Emitter, ptr_val: llvm.ValueRef, name: [*:0]const u8) llvm.ValueRef {
+        return llvm.c.LLVMBuildPtrToInt(self.builder.ref, ptr_val, llvm.Types.int64(self.ctx), name);
     }
 
-    /// Extend i32 back to pointer (for recovering Windows HANDLEs from ProcessHandle fields).
-    fn i32ToPtr(self: *Emitter, i32_val: llvm.ValueRef, name: [*:0]const u8) llvm.ValueRef {
-        const i64_val = llvm.c.LLVMBuildZExt(self.builder.ref, i32_val, llvm.Types.int64(self.ctx), "i32ext");
+    /// Convert i64 back to pointer (for recovering Windows HANDLEs from ProcessHandle fields).
+    fn handleFieldToPtr(self: *Emitter, i64_val: llvm.ValueRef, name: [*:0]const u8) llvm.ValueRef {
         return llvm.c.LLVMBuildIntToPtr(self.builder.ref, i64_val, llvm.Types.pointer(self.ctx), name);
     }
 
@@ -27481,8 +27481,8 @@ pub const Emitter = struct {
     // ═══════════════════════════════════════════════════════════════════════
 
     /// Windows: process_spawn using CreateProcessA + CreatePipe.
-    /// ProcessHandle stores: pid=dwProcessId, stdout_fd=pipe_read_handle (truncated to i32),
-    /// stderr_fd=pipe_read_handle (truncated to i32).
+    /// ProcessHandle stores: pid=hProcess (as i64), stdout_fd=pipe_read_handle (as i64),
+    /// stderr_fd=pipe_read_handle (as i64).
     fn emitProcessSpawnWindows(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (call.args.len != 2) return EmitError.InvalidAST;
 
@@ -27748,23 +27748,23 @@ pub const Emitter = struct {
         const h_process = self.loadPtrAtByteOffset(pi_alloca, 0, "wspawn.hproc");
         _ = self.loadI32AtByteOffset(pi_alloca, 16, "wspawn.pid"); // dwProcessId (available but we use hProcess)
 
-        // Store hProcess as pid (truncated handle) for poll/wait
-        const hproc_i32 = self.ptrToI32(h_process, "wspawn.hproc_i32");
+        // Store hProcess as i64 handle for poll/wait
+        const hproc_i64 = self.ptrToHandleField(h_process, "wspawn.hproc_i64");
         const out_read_h = self.builder.buildLoad(ptr_type, out_read_alloca, "wspawn.orh");
         const err_read_h = self.builder.buildLoad(ptr_type, err_read_alloca, "wspawn.erh");
-        const out_i32 = self.ptrToI32(out_read_h, "wspawn.out_i32");
-        const err_i32 = self.ptrToI32(err_read_h, "wspawn.err_i32");
+        const out_i64 = self.ptrToHandleField(out_read_h, "wspawn.out_i64");
+        const err_i64 = self.ptrToHandleField(err_read_h, "wspawn.err_i64");
 
-        // Build Ok(ProcessHandle { pid: hproc_i32, stdout_fd: out_i32, stderr_fd: err_i32 })
+        // Build Ok(ProcessHandle { pid: hproc_i64, stdout_fd: out_i64, stderr_fd: err_i64 })
         const ok_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "wspawn.oktag");
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), ok_tag_ptr); // Ok
         const ok_val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "wspawn.okval");
         const pid_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, ok_val_ptr, 0, "wspawn.ok.pid");
-        _ = self.builder.buildStore(hproc_i32, pid_ptr);
+        _ = self.builder.buildStore(hproc_i64, pid_ptr);
         const stdout_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, ok_val_ptr, 1, "wspawn.ok.out");
-        _ = self.builder.buildStore(out_i32, stdout_ptr);
+        _ = self.builder.buildStore(out_i64, stdout_ptr);
         const stderr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, ok_val_ptr, 2, "wspawn.ok.err");
-        _ = self.builder.buildStore(err_i32, stderr_ptr);
+        _ = self.builder.buildStore(err_i64, stderr_ptr);
         _ = self.builder.buildBr(cont_bb);
 
         // Free cmdline buffer
@@ -27790,10 +27790,10 @@ pub const Emitter = struct {
         const wait_fn = self.getOrDeclareWaitForSingleObject();
         const get_exit_fn = self.getOrDeclareGetExitCodeProcess();
 
-        // Extract process HANDLE from pid field
+        // Extract process HANDLE from pid field (i64 on Windows)
         const pid_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, handle_alloca, 0, "wpoll.pidptr");
-        const pid_i32 = self.builder.buildLoad(i32_type, pid_ptr, "wpoll.pid");
-        const h_process = self.i32ToPtr(pid_i32, "wpoll.hproc");
+        const pid_i64 = self.builder.buildLoad(llvm.Types.int64(self.ctx), pid_ptr, "wpoll.pid");
+        const h_process = self.handleFieldToPtr(pid_i64, "wpoll.hproc");
 
         // WaitForSingleObject(hProcess, 0) — non-blocking
         const wait_r = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(wait_fn), wait_fn, &[_]llvm.ValueRef{ h_process, llvm.Const.int32(self.ctx, 0) }, "wpoll.wait");
@@ -27852,10 +27852,10 @@ pub const Emitter = struct {
         const get_exit_fn = self.getOrDeclareGetExitCodeProcess();
         const close_handle_fn = self.getOrDeclareCloseHandle();
 
-        // Extract stdout_fd as HANDLE
+        // Extract stdout_fd as HANDLE (i64 on Windows)
         const stdout_fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, handle_alloca, 1, "wwait.outfdp");
-        const stdout_fd = self.builder.buildLoad(i32_type, stdout_fd_ptr, "wwait.outfd");
-        const h_stdout = self.i32ToPtr(stdout_fd, "wwait.hstdout");
+        const stdout_fd = self.builder.buildLoad(i64_type, stdout_fd_ptr, "wwait.outfd");
+        const h_stdout = self.handleFieldToPtr(stdout_fd, "wwait.hstdout");
 
         // Read all stdout into buffer using ReadFile loop
         const buf_cap: u32 = 4096;
@@ -27920,14 +27920,14 @@ pub const Emitter = struct {
         // Close stdout and stderr handles
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{h_stdout}, "wwait.cl_out");
         const stderr_fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, handle_alloca, 2, "wwait.errfdp");
-        const stderr_fd = self.builder.buildLoad(i32_type, stderr_fd_ptr, "wwait.errfd");
-        const h_stderr = self.i32ToPtr(stderr_fd, "wwait.hstderr");
+        const stderr_fd = self.builder.buildLoad(i64_type, stderr_fd_ptr, "wwait.errfd");
+        const h_stderr = self.handleFieldToPtr(stderr_fd, "wwait.hstderr");
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{h_stderr}, "wwait.cl_err");
 
         // Wait for process exit
         const pid_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, handle_alloca, 0, "wwait.pidp");
-        const pid_i32 = self.builder.buildLoad(i32_type, pid_ptr, "wwait.pid");
-        const h_process = self.i32ToPtr(pid_i32, "wwait.hproc");
+        const pid_i64 = self.builder.buildLoad(i64_type, pid_ptr, "wwait.pid");
+        const h_process = self.handleFieldToPtr(pid_i64, "wwait.hproc");
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(wait_fn), wait_fn, &[_]llvm.ValueRef{ h_process, llvm.Const.int32(self.ctx, @bitCast(@as(i32, -1))) }, "wwait.wait"); // INFINITE = 0xFFFFFFFF
 
         // Get exit code
@@ -27978,10 +27978,10 @@ pub const Emitter = struct {
         const malloc_fn = self.getOrDeclareMalloc();
         const read_file_fn = self.getOrDeclareReadFile();
 
-        // Extract stdout HANDLE
+        // Extract stdout HANDLE (i64 on Windows)
         const stdout_fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, handle_alloca, 1, "wread.fdp");
-        const stdout_fd = self.builder.buildLoad(i32_type, stdout_fd_ptr, "wread.fd");
-        const h_stdout = self.i32ToPtr(stdout_fd, "wread.h");
+        const stdout_fd = self.builder.buildLoad(llvm.Types.int64(self.ctx), stdout_fd_ptr, "wread.fd");
+        const h_stdout = self.handleFieldToPtr(stdout_fd, "wread.h");
 
         // Allocate buffer
         const buf_size_64 = llvm.c.LLVMBuildZExt(self.builder.ref, max_bytes_val, llvm.Types.int64(self.ctx), "wread.bsz64");

@@ -6520,6 +6520,14 @@ fn addPackage(allocator: std.mem.Allocator, package_spec: []const u8) !void {
         return;
     }
 
+    // Validate name format: [a-z0-9_-]+ (same as klar publish)
+    for (package_name) |c| {
+        if (!std.ascii.isLower(c) and !std.ascii.isDigit(c) and c != '_' and c != '-') {
+            try stderr.writeAll("Error: package name must contain only lowercase letters, digits, hyphens, and underscores\n");
+            return;
+        }
+    }
+
     // Load klar.json
     var loaded_manifest = switch (loadManifestWithErrors(allocator, "klar.json", "add")) {
         .success => |m| m,
@@ -6600,6 +6608,11 @@ fn addPackage(allocator: std.mem.Allocator, package_spec: []const u8) !void {
 
     // Write each file from the archive
     for (archive.file_paths, archive.file_contents) |rel_path, content| {
+        // Reject path traversal attempts
+        if (rel_path.len == 0) continue;
+        if (rel_path[0] == '/') continue;
+        if (std.mem.indexOf(u8, rel_path, "..") != null) continue;
+
         const full_path = std.fmt.allocPrint(allocator, "deps/{s}/{s}", .{ package_name, rel_path }) catch continue;
         defer allocator.free(full_path);
 

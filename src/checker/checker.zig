@@ -2059,11 +2059,17 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
-        // ProcessHandle struct type: { pid: i32, stdout_fd: i32, stderr_fd: i32 }
+        // ProcessHandle struct type:
+        //   POSIX: { pid: i32, stdout_fd: i32, stderr_fd: i32 }
+        //   Windows: { pid: i64, stdout_fd: i64, stderr_fd: i64 } (HANDLEs are pointer-sized)
+        const handle_field_type = if (@import("builtin").os.tag == .windows)
+            self.type_builder.i64Type()
+        else
+            self.type_builder.i32Type();
         const process_handle_fields = try self.allocator.dupe(types.StructField, &[_]types.StructField{
-            .{ .name = "pid", .type_ = self.type_builder.i32Type(), .is_pub = true },
-            .{ .name = "stdout_fd", .type_ = self.type_builder.i32Type(), .is_pub = true },
-            .{ .name = "stderr_fd", .type_ = self.type_builder.i32Type(), .is_pub = true },
+            .{ .name = "pid", .type_ = handle_field_type, .is_pub = true },
+            .{ .name = "stdout_fd", .type_ = handle_field_type, .is_pub = true },
+            .{ .name = "stderr_fd", .type_ = handle_field_type, .is_pub = true },
         });
         const process_handle_struct = try self.allocator.create(types.StructType);
         process_handle_struct.* = .{

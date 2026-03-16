@@ -484,6 +484,7 @@ fn resolveTypeJsonValue(allocator: Allocator, checker: *TypeChecker, val: Value)
     if (std.mem.eql(u8, kind, "array")) {
         const element = try resolveTypeJson(allocator, checker, obj, "element");
         const size = getInteger(obj, "size") orelse return checker.type_builder.unknownType();
+        if (size < 0) return checker.type_builder.unknownType();
         return checker.type_builder.arrayType(element, @intCast(size)) catch return checker.type_builder.unknownType();
     }
     if (std.mem.eql(u8, kind, "slice")) {
