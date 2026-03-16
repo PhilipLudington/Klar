@@ -27614,7 +27614,7 @@ pub const Emitter = struct {
         // Set up SECURITY_ATTRIBUTES (24 bytes on x64): bInheritHandle = TRUE
         const sa_size: u32 = 24;
         const sa_alloca = self.builder.buildAlloca(llvm.c.LLVMArrayType2(i8_type, sa_size), "wspawn.sa");
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ sa_alloca, llvm.Const.int8(self.ctx, 0), llvm.Const.int64(self.ctx, sa_size) }, "wspawn.sa_clr");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ sa_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, sa_size) }, "wspawn.sa_clr");
         self.storeI32AtByteOffset(sa_alloca, 0, llvm.Const.int32(self.ctx, @intCast(sa_size)), "wspawn.sa.len"); // nLength
         self.storeI32AtByteOffset(sa_alloca, 16, llvm.Const.int32(self.ctx, 1), "wspawn.sa.inherit"); // bInheritHandle = TRUE
 
@@ -27650,7 +27650,7 @@ pub const Emitter = struct {
         // Set up STARTUPINFOA (104 bytes on x64)
         const si_size: u32 = 104;
         const si_alloca = self.builder.buildAlloca(llvm.c.LLVMArrayType2(i8_type, si_size), "wspawn.si");
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ si_alloca, llvm.Const.int8(self.ctx, 0), llvm.Const.int64(self.ctx, si_size) }, "wspawn.si_clr");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ si_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, si_size) }, "wspawn.si_clr");
         self.storeI32AtByteOffset(si_alloca, 0, llvm.Const.int32(self.ctx, @intCast(si_size)), "wspawn.si.cb"); // cb
         self.storeI32AtByteOffset(si_alloca, 60, llvm.Const.int32(self.ctx, 0x100), "wspawn.si.flags"); // dwFlags = STARTF_USESTDHANDLES
         const out_write_h = self.builder.buildLoad(ptr_type, out_write_alloca, "wspawn.ow");
@@ -27661,7 +27661,7 @@ pub const Emitter = struct {
         // PROCESS_INFORMATION (24 bytes on x64)
         const pi_size: u32 = 24;
         const pi_alloca = self.builder.buildAlloca(llvm.c.LLVMArrayType2(i8_type, pi_size), "wspawn.pi");
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ pi_alloca, llvm.Const.int8(self.ctx, 0), llvm.Const.int64(self.ctx, pi_size) }, "wspawn.pi_clr");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ pi_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, pi_size) }, "wspawn.pi_clr");
 
         // CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)
         const null_ptr = llvm.c.LLVMConstNull(ptr_type);
