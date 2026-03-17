@@ -1,7 +1,7 @@
 /// Single source of truth for Klar version information.
 /// Update this file when bumping versions.
 pub const major = 0;
-pub const minor = 4;
+pub const minor = 5;
 pub const patch = 0;
 pub const pre_release = "";
 
