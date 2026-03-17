@@ -828,6 +828,8 @@ pub const MetaAnnotation = union(enum) {
     group_join: MetaString,
     define: *MetaDefine,
     custom: *MetaCustom,
+    require: *MetaContract,
+    ensure: *MetaContract,
 
     pub fn span(self: MetaAnnotation) Span {
         return switch (self) {
@@ -838,6 +840,7 @@ pub const MetaAnnotation = union(enum) {
             .group_def => |g| g.span,
             .define => |d| d.span,
             .custom => |c| c.span,
+            .require, .ensure => |mc| mc.span,
         };
     }
 };
@@ -861,6 +864,11 @@ pub const MetaKeyValue = struct {
 pub const MetaValue = union(enum) {
     string: []const u8,
     string_list: []const []const u8,
+};
+
+pub const MetaContract = struct {
+    expr: Expr,
+    span: Span,
 };
 
 pub const MetaRelated = struct {

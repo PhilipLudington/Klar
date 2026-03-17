@@ -10,6 +10,7 @@ pub const c = @cImport({
     @cInclude("llvm-c/TargetMachine.h");
     @cInclude("llvm-c/Analysis.h");
     @cInclude("llvm-c/DebugInfo.h");
+    @cInclude("llvm-c/Transforms/PassBuilder.h");
 });
 
 // Re-export opaque pointer types
@@ -886,6 +887,95 @@ pub const DIBuilder = struct {
             column,
         );
     }
+
+    /// Create a local variable descriptor for debug info.
+    pub fn createAutoVariable(
+        self: DIBuilder,
+        scope: MetadataRef,
+        name: []const u8,
+        file: MetadataRef,
+        line_no: c_uint,
+        ty: MetadataRef,
+        always_preserve: bool,
+        flags: c.LLVMDIFlags,
+        align_in_bits: u32,
+    ) MetadataRef {
+        return c.LLVMDIBuilderCreateAutoVariable(
+            self.ref,
+            scope,
+            name.ptr,
+            name.len,
+            file,
+            line_no,
+            ty,
+            @intFromBool(always_preserve),
+            flags,
+            align_in_bits,
+        );
+    }
+
+    /// Create a function parameter variable descriptor for debug info.
+    pub fn createParameterVariable(
+        self: DIBuilder,
+        scope: MetadataRef,
+        name: []const u8,
+        arg_no: c_uint,
+        file: MetadataRef,
+        line_no: c_uint,
+        ty: MetadataRef,
+        always_preserve: bool,
+        flags: c.LLVMDIFlags,
+    ) MetadataRef {
+        return c.LLVMDIBuilderCreateParameterVariable(
+            self.ref,
+            scope,
+            name.ptr,
+            name.len,
+            arg_no,
+            file,
+            line_no,
+            ty,
+            @intFromBool(always_preserve),
+            flags,
+        );
+    }
+
+    /// Create an empty expression (for simple variable locations).
+    pub fn createExpression(self: DIBuilder) MetadataRef {
+        return c.LLVMDIBuilderCreateExpression(self.ref, null, 0);
+    }
+
+    /// Insert a dbg.declare record at the end of a basic block.
+    /// Uses LLVMDIBuilderInsertDeclareRecordAtEnd (LLVM 19+) or
+    /// LLVMDIBuilderInsertDeclareAtEnd (LLVM 17-18) depending on availability.
+    pub fn insertDeclareAtEnd(
+        self: DIBuilder,
+        storage: ValueRef,
+        var_info: MetadataRef,
+        expr: MetadataRef,
+        debug_loc: MetadataRef,
+        block: BasicBlockRef,
+    ) void {
+        if (@hasDecl(c, "LLVMDIBuilderInsertDeclareRecordAtEnd")) {
+            _ = c.LLVMDIBuilderInsertDeclareRecordAtEnd(
+                self.ref,
+                storage,
+                var_info,
+                expr,
+                debug_loc,
+                block,
+            );
+        } else if (@hasDecl(c, "LLVMDIBuilderInsertDeclareAtEnd")) {
+            _ = c.LLVMDIBuilderInsertDeclareAtEnd(
+                self.ref,
+                storage,
+                var_info,
+                expr,
+                debug_loc,
+                block,
+            );
+        }
+    }
 };
 
 /// Create a debug location.
@@ -953,4 +1043,23 @@ pub fn addAttributeAtIndex(func: ValueRef, idx: c_uint, attr: c.LLVMAttributeRef
 /// Index 0 = return value, 1+ = arguments (1-based).
 pub fn addCallSiteAttribute(call: ValueRef, idx: c_uint, attr: c.LLVMAttributeRef) void {
     c.LLVMAddCallSiteAttribute(call, idx, attr);
+}
+
+// --- Pass Builder (new pass manager) ---
+
+/// Run LLVM optimization passes on a module.
+/// `passes` is a pass pipeline string like "default<O2>".
+pub fn runPasses(module: Module, passes: [:0]const u8, tm: TargetMachineRef) Error!void {
+    const opts = c.LLVMCreatePassBuilderOptions();
+    defer c.LLVMDisposePassBuilderOptions(opts);
+
+    const err = c.LLVMRunPasses(module.ref, passes.ptr, tm, opts);
+    if (err != null) {
+        const msg = c.LLVMGetErrorMessage(err);
+        if (msg != null) {
+            std.debug.print("LLVM pass pipeline failed: {s}\n", .{msg});
+            c.LLVMDisposeErrorMessage(msg);
+        }
+        return Error.EmitFailed;
+    }
 }

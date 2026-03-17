@@ -22,6 +22,8 @@ pub const LinkerOptions = struct {
     link_libs: []const []const u8 = &.{},
     /// Library search paths.
     link_paths: []const []const u8 = &.{},
+    /// Additional object files to link (e.g., compiled Kira C sources).
+    extra_objects: []const []const u8 = &.{},
     /// Custom linker script path (for bare-metal targets).
     linker_script: ?[]const u8 = null,
     /// Freestanding mode: no libc, no standard startup.
@@ -221,6 +223,11 @@ fn linkForPlatform(
             }
         },
         else => return LinkerError.LinkerNotFound,
+    }
+
+    // Add extra object files (e.g., compiled Kira C sources)
+    for (options.extra_objects) |obj| {
+        args.append(allocator, obj) catch return LinkerError.OutOfMemory;
     }
 
     // Add library search paths (-L flags)

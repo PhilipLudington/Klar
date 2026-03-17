@@ -12,6 +12,7 @@
 const std = @import("std");
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");
+const meta_validation = @import("meta_validation.zig");
 const Type = types.Type;
 const Span = ast.Span;
 
@@ -131,6 +132,19 @@ pub fn checkStaticConstructor(tc: anytype, method: *ast.MethodCall) ?Type {
     // CStr.from_ptr(ptr: CPtr[i8]) -> CStr
     if (std.mem.eql(u8, obj_name, "CStr") and std.mem.eql(u8, method.method_name, "from_ptr")) {
         return checkCStrFromPtr(tc, method);
+    }
+
+    // ThreadPool.new(num_threads: i32) -> ThreadPool
+    if (std.mem.eql(u8, obj_name, "ThreadPool") and std.mem.eql(u8, method.method_name, "new")) {
+        if (method.args.len != 1) {
+            tc.addError(.invalid_call, method.span, "ThreadPool.new() expects exactly 1 argument (num_threads: i32)", .{});
+            return tc.type_builder.threadPoolType();
+        }
+        const arg_type = tc.checkExpr(method.args[0]);
+        if (arg_type != .primitive or arg_type.primitive != .i32_) {
+            tc.addError(.type_mismatch, method.span, "ThreadPool.new() expects an i32 argument", .{});
+        }
+        return tc.type_builder.threadPoolType();
     }
 
     return null;
@@ -502,6 +516,11 @@ fn checkCStrFromPtr(tc: anytype, method: *ast.MethodCall) Type {
 /// Check for builtin method calls on various types.
 /// Returns the result type if this is a builtin method, null otherwise.
 pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Type) ?Type {
+    // Check purity constraints for builtin method calls
+    if (tc.in_pure_function) {
+        meta_validation.checkPureBuiltinMethodCall(tc, method.method_name, method.span);
+    }
+
     // Check for type conversion methods
     if (std.mem.eql(u8, method.method_name, "as") or
         std.mem.eql(u8, method.method_name, "to") or
@@ -2365,6 +2384,78 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 tc.addError(.invalid_call, method.span, "flush() takes no arguments", .{});
             }
             return tc.type_builder.resultType(tc.type_builder.voidType(), tc.type_builder.ioErrorType()) catch tc.type_builder.unknownType();
+        }
+    }
+
+    // Sender methods
+    if (object_type == .sender) {
+        const element_type = object_type.sender.element;
+
+        // send(value: T) -> void
+        if (std.mem.eql(u8, method.method_name, "send")) {
+            if (method.args.len != 1) {
+                tc.addError(.invalid_call, method.span, "send() expects exactly 1 argument", .{});
+                return tc.type_builder.voidType();
+            }
+            const arg_type = tc.checkExprWithHint(method.args[0], element_type);
+            if (!arg_type.eql(element_type)) {
+                tc.addError(.type_mismatch, method.span, "send() argument type mismatch", .{});
+            }
+            return tc.type_builder.voidType();
+        }
+
+        // close() -> void
+        if (std.mem.eql(u8, method.method_name, "close")) {
+            if (method.args.len != 0) {
+                tc.addError(.invalid_call, method.span, "close() takes no arguments", .{});
+            }
+            return tc.type_builder.voidType();
+        }
+    }
+
+    // Receiver methods
+    if (object_type == .receiver) {
+        const element_type = object_type.receiver.element;
+
+        // recv() -> ?T
+        if (std.mem.eql(u8, method.method_name, "recv")) {
+            if (method.args.len != 0) {
+                tc.addError(.invalid_call, method.span, "recv() takes no arguments", .{});
+            }
+            return tc.type_builder.optionalType(element_type) catch tc.type_builder.unknownType();
+        }
+
+        // close() -> void
+        if (std.mem.eql(u8, method.method_name, "close")) {
+            if (method.args.len != 0) {
+                tc.addError(.invalid_call, method.span, "close() takes no arguments", .{});
+            }
+            return tc.type_builder.voidType();
+        }
+    }
+
+    // ThreadPool methods
+    if (object_type == .thread_pool) {
+        // spawn(task: fn() -> void) -> void
+        if (std.mem.eql(u8, method.method_name, "spawn")) {
+            if (method.args.len != 1) {
+                tc.addError(.invalid_call, method.span, "spawn() expects exactly 1 argument (task function)", .{});
+                return tc.type_builder.voidType();
+            }
+            const arg_type = tc.checkExpr(method.args[0]);
+            // Accept any function/closure type - we'll validate at codegen
+            if (arg_type != .function and arg_type != .unknown) {
+                tc.addError(.type_mismatch, method.span, "spawn() expects a function argument", .{});
+            }
+            return tc.type_builder.voidType();
+        }
+
+        // shutdown() -> void
+        if (std.mem.eql(u8, method.method_name, "shutdown")) {
+            if (method.args.len != 0) {
+                tc.addError(.invalid_call, method.span, "shutdown() takes no arguments", .{});
+            }
+            return tc.type_builder.voidType();
         }
     }
 

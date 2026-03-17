@@ -1,0 +1,1863 @@
+// selfhost/emitter.kl — Typed AST JSON emitter
+// Phase 8: Emit typed AST JSON from checker arenas
+//
+// Walks AST arenas and produces JSON matching the typed-ast-format.md spec.
+// Uses plain string concatenation for output (avoids buffer codegen issues).
+//
+// Main API:
+//   emit_typed_ast(tc, module) -> string              Single-file typed AST
+//   emit_multi_typed_ast(tc, modules, names, entries) Multi-module typed AST
+
+import types.{
+    KlarType, TypeKind, TypeId, PrimitiveKind,
+    type_kind_name, get_primitive_kind, primitive_name,
+    type_void, type_unknown, type_error,
+    ArrayData, SliceData, TupleData, ResultData, FunctionData,
+    ReferenceData, StructData, StructFieldData, EnumData, EnumVariantInfo,
+    WrapperData, MapData, RangeData, TraitData, TraitMethodData
+}
+
+import ast.{
+    Span, ExprId, StmtId, DeclId, TypeExprId, PatternId,
+    Expr, Stmt, Decl, TypeExpr, Pattern,
+    BinaryOp, UnaryOp, PostfixOp, AssignOp,
+    IntLiteralData, FloatLiteralData, StringLiteralData,
+    CharLiteralData, BoolLiteralData, IdentifierData,
+    BinaryData, UnaryData, PostfixData,
+    CallData, MethodCallData, FieldAccessData, IndexData,
+    CastData, ClosureData, BlockData, IfExprData, MatchExprData,
+    TupleLiteralData, ArrayLiteralData, StructLiteralData,
+    EnumVariantData, InterpolatedStringData,
+    GroupedData, ComptimeBlockData, UnsafeBlockData, BuiltinCallData,
+    LetDeclData, VarDeclData, AssignmentData, ExprStmtData,
+    ReturnStmtData, BreakStmtData, ContinueStmtData,
+    ForLoopData, WhileLoopData, LoopStmtData, IfStmtData, MatchStmtData,
+    FunctionDeclData, TestDeclData, StructDeclData, EnumDeclData,
+    TraitDeclData, ImplDeclData, TypeAliasData, ConstDeclData,
+    ImportDeclData, ModuleDeclData, ExternTypeDeclData, ExternBlockDeclData,
+    NamedTypeData, ArrayTypeData, SliceTypeData, TupleTypeData,
+    OptionalTypeData, ResultTypeData, FunctionTypeData,
+    ReferenceTypeData, GenericApplyData, QualifiedTypeData,
+    WildcardData, LiteralPatData, BindingPatData, VariantPatData,
+    TuplePatData, OrPatData, GuardedPatData, StructPatData,
+    FnParam, MatchArm, FieldInit, GenericParam, StructField,
+    EnumVariantDecl, ImportItem, TraitMethod,
+    AssocTypeDecl, AssocTypeBinding, PatternField,
+    AstModule,
+    no_expr, has_expr, no_type_expr, has_type_expr, no_pattern, has_pattern,
+    has_stmt, has_decl
+}
+
+import checker.{
+    TypeChecker,
+    get_resolved_type, get_expr_type
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// JSON Helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn json_escape(s: string) -> string {
+    var r: string = ""
+    var i: i32 = 0
+    while i < s.byte_len() {
+        let c: i32 = s.byte_at(i).as#[i32]
+        if c == 34 { r = r + "\\\"" }
+        else if c == 92 { r = r + "\\\\" }
+        else if c == 10 { r = r + "\\n" }
+        else if c == 13 { r = r + "\\r" }
+        else if c == 9 { r = r + "\\t" }
+        else { r = r + from_byte(c.as#[u8]) }
+        i = i + 1
+    }
+    return r
+}
+
+fn j_str(s: string) -> string {
+    return "\"" + json_escape(s) + "\""
+}
+
+fn j_bool(b: bool) -> string {
+    if b { return "true" }
+    return "false"
+}
+
+fn j_int(n: i32) -> string {
+    return n.to_string().as_str()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Operator Name Mapping (matching Zig dump-ast format)
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn binary_op_json(op: BinaryOp) -> string {
+    match op {
+        BinaryOp::Add => { return "add" }
+        BinaryOp::Sub => { return "sub" }
+        BinaryOp::Mul => { return "mul" }
+        BinaryOp::Div => { return "div" }
+        BinaryOp::Mod => { return "mod" }
+        BinaryOp::AddWrap => { return "add_wrap" }
+        BinaryOp::SubWrap => { return "sub_wrap" }
+        BinaryOp::MulWrap => { return "mul_wrap" }
+        BinaryOp::AddSat => { return "add_sat" }
+        BinaryOp::SubSat => { return "sub_sat" }
+        BinaryOp::MulSat => { return "mul_sat" }
+        BinaryOp::Eq => { return "eq" }
+        BinaryOp::Neq => { return "not_eq" }
+        BinaryOp::Lt => { return "lt" }
+        BinaryOp::Gt => { return "gt" }
+        BinaryOp::LtEq => { return "lt_eq" }
+        BinaryOp::GtEq => { return "gt_eq" }
+        BinaryOp::Is => { return "is" }
+        BinaryOp::And => { return "and_" }
+        BinaryOp::Or => { return "or_" }
+        BinaryOp::BitAnd => { return "bit_and" }
+        BinaryOp::BitOr => { return "bit_or" }
+        BinaryOp::BitXor => { return "bit_xor" }
+        BinaryOp::Shl => { return "shl" }
+        BinaryOp::Shr => { return "shr" }
+        BinaryOp::Range => { return "range" }
+        BinaryOp::RangeInclusive => { return "range_inclusive" }
+        BinaryOp::NullCoalesce => { return "null_coalesce" }
+        BinaryOp::Pipe => { return "pipe" }
+        BinaryOp::Concat => { return "concat" }
+    }
+}
+
+fn unary_op_json(op: UnaryOp) -> string {
+    match op {
+        UnaryOp::Negate => { return "negate" }
+        UnaryOp::Not => { return "not" }
+        UnaryOp::BitNot => { return "bit_not" }
+        UnaryOp::Deref => { return "deref" }
+        UnaryOp::MakeRef => { return "ref" }
+        UnaryOp::MakeRefMut => { return "ref_mut" }
+        UnaryOp::Await => { return "await_" }
+    }
+}
+
+fn postfix_op_json(op: PostfixOp) -> string {
+    match op {
+        PostfixOp::Try => { return "unwrap" }
+        PostfixOp::Unwrap => { return "force_unwrap" }
+    }
+}
+
+fn assign_op_json(op: AssignOp) -> string {
+    match op {
+        AssignOp::Plain => { return "assign" }
+        AssignOp::Add => { return "add_assign" }
+        AssignOp::Sub => { return "sub_assign" }
+        AssignOp::Mul => { return "mul_assign" }
+        AssignOp::Div => { return "div_assign" }
+        AssignOp::Mod => { return "mod_assign" }
+        AssignOp::AddWrap => { return "add_wrap_assign" }
+        AssignOp::SubWrap => { return "sub_wrap_assign" }
+        AssignOp::MulWrap => { return "mul_wrap_assign" }
+        AssignOp::AddSat => { return "add_sat_assign" }
+        AssignOp::SubSat => { return "sub_sat_assign" }
+        AssignOp::MulSat => { return "mul_sat_assign" }
+        AssignOp::BitAnd => { return "bit_and_assign" }
+        AssignOp::BitOr => { return "bit_or_assign" }
+        AssignOp::BitXor => { return "bit_xor_assign" }
+        AssignOp::Shl => { return "shl_assign" }
+        AssignOp::Shr => { return "shr_assign" }
+        AssignOp::Concat => { return "concat_assign" }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// KlarType → JSON Type Representation
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub fn type_to_json(tc_in: TypeChecker, kt: KlarType) -> string {
+    let tc: TypeChecker = tc_in
+    match kt.kind {
+        TypeKind::Primitive => {
+            let pk: ?PrimitiveKind = get_primitive_kind(kt)
+            match pk {
+                Some(p) => { return "{\"kind\":" + j_str(primitive_name(p)) + "}" }
+                None => { return "{\"kind\":\"unknown\"}" }
+            }
+        }
+        TypeKind::Void => { return "{\"kind\":\"void\"}" }
+        TypeKind::Never => { return "{\"kind\":\"never\"}" }
+        TypeKind::Unknown => { return "{\"kind\":\"unknown\"}" }
+        TypeKind::ErrorType => { return "{\"kind\":\"error\"}" }
+        TypeKind::Array => {
+            if kt.payload >= 0 and kt.payload < tc.type_arrays.len() {
+                let ad: ArrayData = tc.type_arrays[kt.payload]
+                let elem: KlarType = get_resolved_type(tc, ad.element.id)
+                return "{\"kind\":\"array\",\"element\":" + type_to_json(tc, elem) + ",\"size\":" + j_int(ad.size) + "}"
+            }
+            return "{\"kind\":\"array\"}"
+        }
+        TypeKind::Slice => {
+            if kt.payload >= 0 and kt.payload < tc.type_slices.len() {
+                let sd: SliceData = tc.type_slices[kt.payload]
+                let elem: KlarType = get_resolved_type(tc, sd.element.id)
+                return "{\"kind\":\"slice\",\"element\":" + type_to_json(tc, elem) + "}"
+            }
+            return "{\"kind\":\"slice\"}"
+        }
+        TypeKind::Tuple => {
+            if kt.payload >= 0 and kt.payload < tc.type_tuples.len() {
+                let td: TupleData = tc.type_tuples[kt.payload]
+                var elems: string = ""
+                var i: i32 = 0
+                while i < td.elems_count {
+                    if i > 0 { elems = elems + "," }
+                    let et: KlarType = get_resolved_type(tc, td.elems_start + i)
+                    elems = elems + type_to_json(tc, et)
+                    i = i + 1
+                }
+                return "{\"kind\":\"tuple\",\"elements\":[" + elems + "]}"
+            }
+            return "{\"kind\":\"tuple\",\"elements\":[]}"
+        }
+        TypeKind::Optional => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"optional\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"optional\"}"
+        }
+        TypeKind::Result => {
+            if kt.payload >= 0 and kt.payload < tc.type_results.len() {
+                let rd: ResultData = tc.type_results[kt.payload]
+                let ok_t: KlarType = get_resolved_type(tc, rd.ok_type.id)
+                let err_t: KlarType = get_resolved_type(tc, rd.err_type.id)
+                return "{\"kind\":\"result\",\"ok\":" + type_to_json(tc, ok_t) + ",\"err\":" + type_to_json(tc, err_t) + "}"
+            }
+            return "{\"kind\":\"result\"}"
+        }
+        TypeKind::Function => {
+            if kt.payload >= 0 and kt.payload < tc.type_functions.len() {
+                let fd: FunctionData = tc.type_functions[kt.payload]
+                var params: string = ""
+                var i: i32 = 0
+                while i < fd.params_count {
+                    if i > 0 { params = params + "," }
+                    let pt: KlarType = get_resolved_type(tc, fd.params_start + i)
+                    params = params + type_to_json(tc, pt)
+                    i = i + 1
+                }
+                let ret: KlarType = get_resolved_type(tc, fd.return_type.id)
+                return "{\"kind\":\"function\",\"params\":[" + params + "],\"return\":" + type_to_json(tc, ret) + ",\"is_async\":" + j_bool(fd.is_async) + "}"
+            }
+            return "{\"kind\":\"function\"}"
+        }
+        TypeKind::Reference => {
+            if kt.payload >= 0 and kt.payload < tc.type_references.len() {
+                let rd: ReferenceData = tc.type_references[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, rd.inner.id)
+                return "{\"kind\":\"reference\",\"inner\":" + type_to_json(tc, inner) + ",\"mutable\":" + j_bool(rd.is_mut) + "}"
+            }
+            return "{\"kind\":\"reference\"}"
+        }
+        TypeKind::StructType => {
+            if kt.payload >= 0 and kt.payload < tc.type_structs.len() {
+                let sd: StructData = tc.type_structs[kt.payload]
+                return "{\"kind\":\"struct\",\"name\":" + j_str(sd.name) + "}"
+            }
+            return "{\"kind\":\"struct\"}"
+        }
+        TypeKind::EnumType => {
+            if kt.payload >= 0 and kt.payload < tc.type_enums.len() {
+                let ed: EnumData = tc.type_enums[kt.payload]
+                return "{\"kind\":\"enum\",\"name\":" + j_str(ed.name) + "}"
+            }
+            return "{\"kind\":\"enum\"}"
+        }
+        TypeKind::ListType => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let elem: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"list\",\"element\":" + type_to_json(tc, elem) + "}"
+            }
+            return "{\"kind\":\"list\"}"
+        }
+        TypeKind::MapType => {
+            if kt.payload >= 0 and kt.payload < tc.type_maps.len() {
+                let md: MapData = tc.type_maps[kt.payload]
+                let key: KlarType = get_resolved_type(tc, md.key.id)
+                let val: KlarType = get_resolved_type(tc, md.value.id)
+                return "{\"kind\":\"map\",\"key\":" + type_to_json(tc, key) + ",\"value\":" + type_to_json(tc, val) + "}"
+            }
+            return "{\"kind\":\"map\"}"
+        }
+        TypeKind::SetType => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let elem: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"set\",\"element\":" + type_to_json(tc, elem) + "}"
+            }
+            return "{\"kind\":\"set\"}"
+        }
+        TypeKind::StringData => { return "{\"kind\":\"String\"}" }
+        TypeKind::Range => {
+            if kt.payload >= 0 and kt.payload < tc.type_ranges.len() {
+                let rd: RangeData = tc.type_ranges[kt.payload]
+                let elem: KlarType = get_resolved_type(tc, rd.element_type.id)
+                return "{\"kind\":\"range\",\"element\":" + type_to_json(tc, elem) + "}"
+            }
+            return "{\"kind\":\"range\"}"
+        }
+        TypeKind::Rc => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"rc\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"rc\"}"
+        }
+        TypeKind::Arc => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"arc\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"arc\"}"
+        }
+        TypeKind::WeakRc => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"weak_rc\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"weak_rc\"}"
+        }
+        TypeKind::WeakArc => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"weak_arc\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"weak_arc\"}"
+        }
+        TypeKind::Cell => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"cell\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"cell\"}"
+        }
+        TypeKind::ContextError => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"context_error\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"context_error\"}"
+        }
+        TypeKind::BufReader => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"buf_reader\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"buf_reader\"}"
+        }
+        TypeKind::BufWriter => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"buf_writer\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"buf_writer\"}"
+        }
+        TypeKind::CPtr => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"cptr\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"cptr\"}"
+        }
+        TypeKind::COptPtr => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"copt_ptr\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"copt_ptr\"}"
+        }
+        TypeKind::File => { return "{\"kind\":\"file\"}" }
+        TypeKind::IoError => { return "{\"kind\":\"io_error\"}" }
+        TypeKind::Stdout => { return "{\"kind\":\"stdout\"}" }
+        TypeKind::Stderr => { return "{\"kind\":\"stderr\"}" }
+        TypeKind::Stdin => { return "{\"kind\":\"stdin\"}" }
+        TypeKind::Path => { return "{\"kind\":\"path\"}" }
+        TypeKind::Future => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"future\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"future\"}"
+        }
+        TypeKind::CStr => { return "{\"kind\":\"cstr\"}" }
+        TypeKind::CStrOwned => { return "{\"kind\":\"cstr_owned\"}" }
+        TypeKind::ExternType => { return "{\"kind\":\"extern_type\"}" }
+        TypeKind::ExternFn => { return "{\"kind\":\"extern_fn\"}" }
+        _ => {
+            return "{\"kind\":" + j_str(type_kind_name(kt.kind)) + "}"
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TypeExpr Emitter
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn emit_type_expr(tc_in: TypeChecker, te_id: TypeExprId) -> string {
+    let tc: TypeChecker = tc_in
+    if te_id.id < 0 {
+        return "null"
+    }
+    let te: TypeExpr = tc.type_exprs[te_id.id]
+    match te {
+        TypeExpr::Named(data) => {
+            return "{\"kind\":\"named\",\"name\":" + j_str(data.type_name) + "}"
+        }
+        TypeExpr::Array(data) => {
+            var s: string = "{\"kind\":\"array\",\"element\":" + emit_type_expr(tc, data.element)
+            if has_expr(data.size) {
+                s = s + ",\"size\":" + emit_expr(tc, data.size)
+            } else {
+                s = s + ",\"size\":null"
+            }
+            return s + "}"
+        }
+        TypeExpr::Slice(data) => {
+            return "{\"kind\":\"slice\",\"element\":" + emit_type_expr(tc, data.element) + "}"
+        }
+        TypeExpr::Tuple(data) => {
+            var elems: string = ""
+            var i: i32 = 0
+            while i < data.elems_count {
+                if i > 0 { elems = elems + "," }
+                let te_sub: TypeExprId = tc.extra_type_expr_ids[data.elems_start + i]
+                elems = elems + emit_type_expr(tc, te_sub)
+                i = i + 1
+            }
+            return "{\"kind\":\"tuple\",\"elements\":[" + elems + "]}"
+        }
+        TypeExpr::Optional(data) => {
+            return "{\"kind\":\"optional\",\"inner\":" + emit_type_expr(tc, data.inner) + "}"
+        }
+        TypeExpr::ResultType(data) => {
+            return "{\"kind\":\"result\",\"ok\":" + emit_type_expr(tc, data.ok_type) + ",\"err\":" + emit_type_expr(tc, data.err_type) + "}"
+        }
+        TypeExpr::FunctionType(data) => {
+            var params: string = ""
+            var i: i32 = 0
+            while i < data.params_count {
+                if i > 0 { params = params + "," }
+                let te_sub: TypeExprId = tc.extra_type_expr_ids[data.params_start + i]
+                params = params + emit_type_expr(tc, te_sub)
+                i = i + 1
+            }
+            return "{\"kind\":\"function\",\"params\":[" + params + "],\"return_type\":" + emit_type_expr(tc, data.ret) + "}"
+        }
+        TypeExpr::Reference(data) => {
+            return "{\"kind\":\"reference\",\"inner\":" + emit_type_expr(tc, data.inner) + ",\"mutable\":" + j_bool(data.is_mut) + "}"
+        }
+        TypeExpr::GenericApply(data) => {
+            var args: string = ""
+            var i: i32 = 0
+            while i < data.args_count {
+                if i > 0 { args = args + "," }
+                let te_sub: TypeExprId = tc.extra_type_expr_ids[data.args_start + i]
+                args = args + emit_type_expr(tc, te_sub)
+                i = i + 1
+            }
+            return "{\"kind\":\"generic_apply\",\"base\":" + emit_type_expr(tc, data.base) + ",\"args\":[" + args + "]}"
+        }
+        TypeExpr::Qualified(data) => {
+            return "{\"kind\":\"qualified\",\"base\":" + emit_type_expr(tc, data.qualifier) + ",\"member\":" + j_str(data.qualified_name) + "}"
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Pattern Emitter
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn emit_pattern(tc_in: TypeChecker, pid: PatternId) -> string {
+    let tc: TypeChecker = tc_in
+    if pid.id < 0 {
+        return "null"
+    }
+    let pat: Pattern = tc.patterns[pid.id]
+    match pat {
+        Pattern::Wildcard(_) => {
+            return "{\"kind\":\"wildcard\"}"
+        }
+        Pattern::LiteralPat(data) => {
+            // Emit flat literal pattern matching dump-ast format
+            if data.value.id >= 0 {
+                let lit_expr: Expr = tc.exprs[data.value.id]
+                match lit_expr {
+                    Expr::IntLiteral(ld) => {
+                        return "{\"kind\":\"literal\",\"type\":\"int\",\"value\":" + j_str(ld.text) + "}"
+                    }
+                    Expr::FloatLiteral(ld) => {
+                        return "{\"kind\":\"literal\",\"type\":\"float\",\"value\":" + j_str(ld.text) + "}"
+                    }
+                    Expr::StringLiteral(ld) => {
+                        return "{\"kind\":\"literal\",\"type\":\"string\",\"value\":" + j_str(ld.value) + "}"
+                    }
+                    Expr::BoolLiteral(ld) => {
+                        if ld.value {
+                            return "{\"kind\":\"literal\",\"type\":\"bool\",\"value\":\"true\"}"
+                        }
+                        return "{\"kind\":\"literal\",\"type\":\"bool\",\"value\":\"false\"}"
+                    }
+                    Expr::CharLiteral(ld) => {
+                        return "{\"kind\":\"literal\",\"type\":\"char\",\"value\":" + j_str(ld.value) + "}"
+                    }
+                    _ => {
+                        return "{\"kind\":\"literal\",\"value\":" + emit_expr(tc, data.value) + "}"
+                    }
+                }
+            }
+            return "{\"kind\":\"literal\",\"value\":" + emit_expr(tc, data.value) + "}"
+        }
+        Pattern::BindingPat(data) => {
+            return "{\"kind\":\"binding\",\"name\":" + j_str(data.binding_name) + ",\"mutable\":" + j_bool(data.is_mut) + ",\"type_annotation\":null}"
+        }
+        Pattern::VariantPat(data) => {
+            var s: string = "{\"kind\":\"variant\""
+            if has_type_expr(data.type_expr) {
+                s = s + ",\"type_expr\":" + emit_type_expr(tc, data.type_expr)
+            } else {
+                s = s + ",\"type_expr\":null"
+            }
+            s = s + ",\"variant_name\":" + j_str(data.variant_name)
+            if data.fields_count > 0 {
+                let sub_pid: PatternId = tc.extra_pattern_ids[data.fields_start]
+                s = s + ",\"payload\":" + emit_pattern(tc, sub_pid)
+            } else {
+                s = s + ",\"payload\":null"
+            }
+            return s + "}"
+        }
+        Pattern::TuplePat(data) => {
+            var elems: string = ""
+            var i: i32 = 0
+            while i < data.elems_count {
+                if i > 0 { elems = elems + "," }
+                let sub_pid: PatternId = tc.extra_pattern_ids[data.elems_start + i]
+                elems = elems + emit_pattern(tc, sub_pid)
+                i = i + 1
+            }
+            return "{\"kind\":\"tuple_pattern\",\"elements\":[" + elems + "]}"
+        }
+        Pattern::OrPat(data) => {
+            return "{\"kind\":\"or\",\"left\":" + emit_pattern(tc, data.left) + ",\"right\":" + emit_pattern(tc, data.right) + "}"
+        }
+        Pattern::GuardedPat(data) => {
+            return "{\"kind\":\"guarded\",\"pattern\":" + emit_pattern(tc, data.pattern) + ",\"guard\":" + emit_expr(tc, data.guard) + "}"
+        }
+        Pattern::StructPat(data) => {
+            var fields: string = ""
+            var i: i32 = 0
+            while i < data.fields_count {
+                if i > 0 { fields = fields + "," }
+                let sub_pid: PatternId = tc.extra_pattern_ids[data.fields_start + i]
+                fields = fields + emit_pattern(tc, sub_pid)
+                i = i + 1
+            }
+            return "{\"kind\":\"struct_pattern\",\"type_name\":" + j_str(data.type_name) + ",\"fields\":[" + fields + "]}"
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Expression Emitter
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn emit_resolved_type(tc_in: TypeChecker, eid: ExprId) -> string {
+    let tc: TypeChecker = tc_in
+    if eid.id < 0 { return "" }
+    let kt: KlarType = get_expr_type(tc, eid.id)
+    // Only emit resolved_type if it's not unknown
+    if type_kind_name(kt.kind) == "?unknown" { return "" }
+    return ",\"resolved_type\":" + type_to_json(tc, kt)
+}
+
+pub fn emit_expr(tc_in: TypeChecker, eid: ExprId) -> string {
+    let tc: TypeChecker = tc_in
+    if eid.id < 0 {
+        return "null"
+    }
+    let expr: Expr = tc.exprs[eid.id]
+    let rt: string = emit_resolved_type(tc, eid)
+    let id_s: string = ",\"id\":" + j_int(eid.id)
+
+    match expr {
+        Expr::IntLiteral(data) => {
+            return "{\"kind\":\"literal\",\"type\":\"int\",\"value\":" + j_str(data.text) + id_s + rt + "}"
+        }
+        Expr::FloatLiteral(data) => {
+            return "{\"kind\":\"literal\",\"type\":\"float\",\"value\":" + data.text + id_s + rt + "}"
+        }
+        Expr::StringLiteral(data) => {
+            return "{\"kind\":\"literal\",\"type\":\"string\",\"value\":" + j_str(data.value) + id_s + rt + "}"
+        }
+        Expr::CharLiteral(data) => {
+            // data.value may be a single char "a" or a numeric string "97"
+            var code: i32 = 0
+            let vlen: i32 = data.value.byte_len()
+            if vlen == 0 {
+                code = 0
+            } else if vlen == 1 {
+                code = data.value.byte_at(0).as#[i32]
+            } else {
+                // Numeric string from int conversion — parse it back
+                let parsed: ?i64 = parse_int(data.value)
+                match parsed {
+                    Some(v) => { code = v.as#[i32] }
+                    None => { code = data.value.byte_at(0).as#[i32] }
+                }
+            }
+            return "{\"kind\":\"literal\",\"type\":\"char\",\"value\":" + j_int(code) + id_s + rt + "}"
+        }
+        Expr::BoolLiteral(data) => {
+            return "{\"kind\":\"literal\",\"type\":\"bool\",\"value\":" + j_bool(data.value) + id_s + rt + "}"
+        }
+        Expr::Identifier(data) => {
+            return "{\"kind\":\"identifier\",\"name\":" + j_str(data.ident_name) + id_s + rt + "}"
+        }
+        Expr::Binary(data) => {
+            let op_name: string = binary_op_json(data.op)
+            if op_name == "range" {
+                return "{\"kind\":\"range\",\"inclusive\":false,\"start\":" + emit_expr(tc, data.left) + ",\"end\":" + emit_expr(tc, data.right) + id_s + rt + "}"
+            }
+            if op_name == "range_inclusive" {
+                return "{\"kind\":\"range\",\"inclusive\":true,\"start\":" + emit_expr(tc, data.left) + ",\"end\":" + emit_expr(tc, data.right) + id_s + rt + "}"
+            }
+            return "{\"kind\":\"binary\",\"op\":" + j_str(op_name) + ",\"left\":" + emit_expr(tc, data.left) + ",\"right\":" + emit_expr(tc, data.right) + id_s + rt + "}"
+        }
+        Expr::Unary(data) => {
+            return "{\"kind\":\"unary\",\"op\":" + j_str(unary_op_json(data.op)) + ",\"operand\":" + emit_expr(tc, data.operand) + id_s + rt + "}"
+        }
+        Expr::Postfix(data) => {
+            return "{\"kind\":\"postfix\",\"op\":" + j_str(postfix_op_json(data.op)) + ",\"operand\":" + emit_expr(tc, data.operand) + id_s + rt + "}"
+        }
+        Expr::Call(data) => {
+            var type_args: string = "null"
+            if data.type_args_count > 0 {
+                type_args = "["
+                var i: i32 = 0
+                while i < data.type_args_count {
+                    if i > 0 { type_args = type_args + "," }
+                    let ta: TypeExprId = tc.extra_type_expr_ids[data.type_args_start + i]
+                    type_args = type_args + emit_type_expr(tc, ta)
+                    i = i + 1
+                }
+                type_args = type_args + "]"
+            }
+            var args: string = ""
+            var j: i32 = 0
+            while j < data.args_count {
+                if j > 0 { args = args + "," }
+                let ae: ExprId = tc.extra_expr_ids[data.args_start + j]
+                args = args + emit_expr(tc, ae)
+                j = j + 1
+            }
+            return "{\"kind\":\"call\",\"callee\":" + emit_expr(tc, data.callee) + ",\"type_args\":" + type_args + ",\"args\":[" + args + "]" + id_s + rt + "}"
+        }
+        Expr::MethodCall(data) => {
+            var type_args: string = "null"
+            if data.type_args_count > 0 {
+                type_args = "["
+                var i: i32 = 0
+                while i < data.type_args_count {
+                    if i > 0 { type_args = type_args + "," }
+                    let ta: TypeExprId = tc.extra_type_expr_ids[data.type_args_start + i]
+                    type_args = type_args + emit_type_expr(tc, ta)
+                    i = i + 1
+                }
+                type_args = type_args + "]"
+            }
+            var args: string = ""
+            var j: i32 = 0
+            while j < data.args_count {
+                if j > 0 { args = args + "," }
+                let ae: ExprId = tc.extra_expr_ids[data.args_start + j]
+                args = args + emit_expr(tc, ae)
+                j = j + 1
+            }
+            return "{\"kind\":\"method_call\",\"object\":" + emit_expr(tc, data.receiver) + ",\"method_name\":" + j_str(data.method_name) + ",\"type_args\":" + type_args + ",\"args\":[" + args + "]" + id_s + rt + "}"
+        }
+        Expr::FieldAccess(data) => {
+            return "{\"kind\":\"field\",\"object\":" + emit_expr(tc, data.object) + ",\"field_name\":" + j_str(data.field_name) + id_s + rt + "}"
+        }
+        Expr::Index(data) => {
+            return "{\"kind\":\"index\",\"object\":" + emit_expr(tc, data.object) + ",\"index\":" + emit_expr(tc, data.index) + id_s + rt + "}"
+        }
+        Expr::Cast(data) => {
+            var trunc: string = "false"
+            if data.cast_kind == "trunc" { trunc = "true" }
+            return "{\"kind\":\"type_cast\",\"truncating\":" + trunc + ",\"target_type\":" + emit_type_expr(tc, data.target) + ",\"expr\":" + emit_expr(tc, data.expr) + id_s + rt + "}"
+        }
+        Expr::Closure(data) => {
+            var params: string = ""
+            var i: i32 = 0
+            while i < data.params_count {
+                if i > 0 { params = params + "," }
+                let fp: FnParam = tc.extra_params[data.params_start + i]
+                params = params + emit_fn_param(tc, fp)
+                i = i + 1
+            }
+            return "{\"kind\":\"closure\",\"params\":[" + params + "],\"return_type\":" + emit_type_expr(tc, data.return_type) + ",\"body\":" + emit_expr(tc, data.body) + id_s + rt + "}"
+        }
+        Expr::Block(data) => {
+            return "{\"kind\":\"block\",\"body\":" + emit_block_body(tc, data.stmts_start, data.stmts_count) + "}"
+        }
+        Expr::IfExpr(data) => {
+            var s: string = "{\"kind\":\"if_expr\",\"condition\":" + emit_expr(tc, data.condition) + ",\"then_branch\":" + emit_expr(tc, data.then_body)
+            if has_expr(data.else_body) {
+                s = s + ",\"else_branch\":" + emit_expr(tc, data.else_body)
+            } else {
+                s = s + ",\"else_branch\":null"
+            }
+            return s + id_s + rt + "}"
+        }
+        Expr::MatchExpr(data) => {
+            var arms: string = ""
+            var i: i32 = 0
+            while i < data.arms_count {
+                if i > 0 { arms = arms + "," }
+                let arm: MatchArm = tc.extra_match_arms[data.arms_start + i]
+                arms = arms + emit_match_arm(tc, arm)
+                i = i + 1
+            }
+            return "{\"kind\":\"match_expr\",\"subject\":" + emit_expr(tc, data.subject) + ",\"arms\":[" + arms + "]" + id_s + rt + "}"
+        }
+        Expr::TupleLiteral(data) => {
+            var elems: string = ""
+            var i: i32 = 0
+            while i < data.elems_count {
+                if i > 0 { elems = elems + "," }
+                let sub: ExprId = tc.extra_expr_ids[data.elems_start + i]
+                elems = elems + emit_expr(tc, sub)
+                i = i + 1
+            }
+            return "{\"kind\":\"tuple_literal\",\"elements\":[" + elems + "]" + id_s + rt + "}"
+        }
+        Expr::ArrayLiteral(data) => {
+            var elems: string = ""
+            var i: i32 = 0
+            while i < data.elems_count {
+                if i > 0 { elems = elems + "," }
+                let sub: ExprId = tc.extra_expr_ids[data.elems_start + i]
+                elems = elems + emit_expr(tc, sub)
+                i = i + 1
+            }
+            return "{\"kind\":\"array_literal\",\"elements\":[" + elems + "]" + id_s + rt + "}"
+        }
+        Expr::StructLiteral(data) => {
+            var fields: string = ""
+            var i: i32 = 0
+            while i < data.fields_count {
+                if i > 0 { fields = fields + "," }
+                let fi: FieldInit = tc.extra_field_inits[data.fields_start + i]
+                fields = fields + "{\"name\":" + j_str(fi.field_name) + ",\"value\":" + emit_expr(tc, fi.value) + "}"
+                i = i + 1
+            }
+            // Use full type expression (preserves generic_apply for Pair#[i32] etc.)
+            var stype_json: string = ""
+            if has_type_expr(data.type_expr) {
+                stype_json = emit_type_expr(tc, data.type_expr)
+            } else {
+                stype_json = "{\"kind\":\"named\",\"name\":" + j_str(data.struct_name) + "}"
+            }
+            return "{\"kind\":\"struct_literal\",\"type_name\":" + stype_json + ",\"fields\":[" + fields + "],\"spread\":null" + id_s + rt + "}"
+        }
+        Expr::EnumVariant(data) => {
+            // Use full type expression (preserves generic_apply for MyOption#[i32] etc.)
+            var enum_type_json: string = ""
+            if has_type_expr(data.type_expr) {
+                enum_type_json = emit_type_expr(tc, data.type_expr)
+            } else {
+                enum_type_json = "{\"kind\":\"named\",\"name\":" + j_str(data.type_name) + "}"
+            }
+            var s: string = "{\"kind\":\"enum_literal\",\"enum_type\":" + enum_type_json + ",\"variant_name\":" + j_str(data.variant_name)
+            var payloads: string = ""
+            var j: i32 = 0
+            while j < data.args_count {
+                if j > 0 { payloads = payloads + "," }
+                let payload_eid: ExprId = tc.extra_expr_ids[data.args_start + j]
+                payloads = payloads + emit_expr(tc, payload_eid)
+                j = j + 1
+            }
+            s = s + ",\"payload\":[" + payloads + "]"
+            return s + id_s + rt + "}"
+        }
+        Expr::InterpolatedString(data) => {
+            var parts: string = ""
+            var i: i32 = 0
+            while i < data.parts_count {
+                if i > 0 { parts = parts + "," }
+                let sub: ExprId = tc.extra_expr_ids[data.parts_start + i]
+                let sub_expr: Expr = tc.exprs[sub.id]
+                match sub_expr {
+                    Expr::StringLiteral(lit) => {
+                        parts = parts + "{\"kind\":\"string\",\"value\":" + j_str(lit.value) + "}"
+                    }
+                    _ => {
+                        parts = parts + "{\"kind\":\"expr\",\"value\":" + emit_expr(tc, sub) + "}"
+                    }
+                }
+                i = i + 1
+            }
+            return "{\"kind\":\"interpolated_string\",\"parts\":[" + parts + "]" + id_s + rt + "}"
+        }
+        Expr::Grouped(data) => {
+            return emit_expr(tc, data.inner)
+        }
+        Expr::ComptimeBlock(data) => {
+            // Check if last stmt is ExprStmt — emit as final_expr instead
+            if data.body_count > 0 {
+                let last_sid: StmtId = tc.extra_stmt_ids[data.body_start + data.body_count - 1]
+                let last_stmt: Stmt = tc.stmts[last_sid.id]
+                match last_stmt {
+                    Stmt::ExprStmt(esd) => {
+                        let leading: string = emit_block_stmts(tc, data.body_start, data.body_count - 1)
+                        let fe: string = emit_expr(tc, esd.expr)
+                        return "{\"kind\":\"comptime_block\",\"body\":{\"statements\":[" + leading + "],\"final_expr\":" + fe + "}" + id_s + rt + "}"
+                    }
+                    _ => {}
+                }
+            }
+            let body: string = emit_block_stmts(tc, data.body_start, data.body_count)
+            return "{\"kind\":\"comptime_block\",\"body\":{\"statements\":[" + body + "],\"final_expr\":null}" + id_s + rt + "}"
+        }
+        Expr::UnsafeBlock(data) => {
+            let body: string = emit_block_stmts(tc, data.body_start, data.body_count)
+            return "{\"kind\":\"unsafe_block\",\"body\":{\"statements\":[" + body + "],\"final_expr\":null}" + id_s + rt + "}"
+        }
+        Expr::BuiltinCall(data) => {
+            var args: string = ""
+            let is_type_builtin: bool = data.builtin_name == "typeName" or data.builtin_name == "typeInfo" or data.builtin_name == "fields" or data.builtin_name == "sizeOf"
+            var i: i32 = 0
+            while i < data.args_count {
+                if i > 0 { args = args + "," }
+                let sub: ExprId = tc.extra_expr_ids[data.args_start + i]
+                if is_type_builtin {
+                    // Type args: emit as {"kind":"type","value":{"kind":"named","name":"..."}}
+                    let arg_expr: Expr = tc.exprs[sub.id]
+                    var type_name: string = ""
+                    match arg_expr {
+                        Expr::Identifier(id_data) => {
+                            type_name = id_data.ident_name
+                        }
+                        _ => {}
+                    }
+                    if type_name != "" {
+                        args = args + "{\"kind\":\"type\",\"value\":{\"kind\":\"named\",\"name\":" + j_str(type_name) + "}}"
+                    } else {
+                        args = args + "{\"kind\":\"expr\",\"value\":" + emit_expr(tc, sub) + "}"
+                    }
+                } else {
+                    args = args + "{\"kind\":\"expr\",\"value\":" + emit_expr(tc, sub) + "}"
+                }
+                i = i + 1
+            }
+            return "{\"kind\":\"builtin_call\",\"name\":" + j_str(data.builtin_name) + ",\"args\":[" + args + "]" + id_s + rt + "}"
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Statement Emitter
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn emit_stmt(tc_in: TypeChecker, sid: StmtId) -> string {
+    let tc: TypeChecker = tc_in
+    if sid.id < 0 {
+        return "null"
+    }
+    let stmt: Stmt = tc.stmts[sid.id]
+    match stmt {
+        Stmt::LetDecl(data) => {
+            return "{\"kind\":\"let_decl\",\"name\":" + j_str(data.decl_name) + ",\"is_shadow\":" + j_bool(data.is_shadow) + ",\"type\":" + emit_type_expr(tc, data.type_expr) + ",\"value\":" + emit_expr(tc, data.value) + "}"
+        }
+        Stmt::VarDecl(data) => {
+            return "{\"kind\":\"var_decl\",\"name\":" + j_str(data.decl_name) + ",\"is_shadow\":" + j_bool(data.is_shadow) + ",\"type\":" + emit_type_expr(tc, data.type_expr) + ",\"value\":" + emit_expr(tc, data.value) + "}"
+        }
+        Stmt::Assignment(data) => {
+            return "{\"kind\":\"assignment\",\"target\":" + emit_expr(tc, data.target) + ",\"op\":" + j_str(assign_op_json(data.op)) + ",\"value\":" + emit_expr(tc, data.value) + "}"
+        }
+        Stmt::ExprStmt(data) => {
+            return "{\"kind\":\"expr_stmt\",\"expr\":" + emit_expr(tc, data.expr) + "}"
+        }
+        Stmt::ReturnStmt(data) => {
+            if has_expr(data.value) {
+                return "{\"kind\":\"return_stmt\",\"value\":" + emit_expr(tc, data.value) + "}"
+            }
+            return "{\"kind\":\"return_stmt\",\"value\":null}"
+        }
+        Stmt::BreakStmt(data) => {
+            if has_expr(data.value) {
+                return "{\"kind\":\"break_stmt\",\"value\":" + emit_expr(tc, data.value) + "}"
+            }
+            return "{\"kind\":\"break_stmt\",\"value\":null}"
+        }
+        Stmt::ContinueStmt(_) => {
+            return "{\"kind\":\"continue_stmt\"}"
+        }
+        Stmt::ForLoop(data) => {
+            var s: string = "{\"kind\":\"for_loop\""
+            if data.binding2 != "" {
+                s = s + ",\"pattern\":{\"kind\":\"tuple_pattern\",\"elements\":[{\"kind\":\"binding\",\"name\":" + j_str(data.binding) + ",\"mutable\":false,\"type_annotation\":null},{\"kind\":\"binding\",\"name\":" + j_str(data.binding2) + ",\"mutable\":false,\"type_annotation\":null}]}"
+            } else {
+                s = s + ",\"pattern\":{\"kind\":\"binding\",\"name\":" + j_str(data.binding) + ",\"mutable\":false,\"type_annotation\":" + emit_type_expr(tc, data.binding_type) + "}"
+            }
+            s = s + ",\"iterable\":" + emit_expr(tc, data.iterable)
+            let body: string = emit_block_stmts(tc, data.body_start, data.body_count)
+            s = s + ",\"body\":{\"statements\":[" + body + "],\"final_expr\":null}}"
+            return s
+        }
+        Stmt::WhileLoop(data) => {
+            let body: string = emit_block_stmts(tc, data.body_start, data.body_count)
+            return "{\"kind\":\"while_loop\",\"condition\":" + emit_expr(tc, data.condition) + ",\"body\":{\"statements\":[" + body + "],\"final_expr\":null}}"
+        }
+        Stmt::LoopStmt(data) => {
+            let body: string = emit_block_stmts(tc, data.body_start, data.body_count)
+            return "{\"kind\":\"loop_stmt\",\"body\":{\"statements\":[" + body + "],\"final_expr\":null}}"
+        }
+        Stmt::IfStmt(data) => {
+            let then_body: string = emit_block_stmts(tc, data.then_start, data.then_count)
+            var s: string = "{\"kind\":\"if_stmt\",\"condition\":" + emit_expr(tc, data.condition) + ",\"then_branch\":{\"statements\":[" + then_body + "],\"final_expr\":null}"
+            if data.else_count > 0 {
+                let else_body: string = emit_block_stmts(tc, data.else_start, data.else_count)
+                // Check if else_branch is a single if_stmt (else-if chain)
+                if data.else_count == 1 {
+                    let else_sid: StmtId = tc.extra_stmt_ids[data.else_start]
+                    let else_stmt: Stmt = tc.stmts[else_sid.id]
+                    match else_stmt {
+                        Stmt::IfStmt(_) => {
+                            // else-if: emit the if_stmt directly as else_branch
+                            s = s + ",\"else_branch\":" + emit_stmt(tc, else_sid)
+                        }
+                        _ => {
+                            s = s + ",\"else_branch\":{\"kind\":\"block\",\"body\":{\"statements\":[" + else_body + "],\"final_expr\":null}}"
+                        }
+                    }
+                } else {
+                    s = s + ",\"else_branch\":{\"kind\":\"block\",\"body\":{\"statements\":[" + else_body + "],\"final_expr\":null}}"
+                }
+            } else {
+                s = s + ",\"else_branch\":null"
+            }
+            return s + "}"
+        }
+        Stmt::MatchStmt(data) => {
+            var arms: string = ""
+            var i: i32 = 0
+            while i < data.arms_count {
+                if i > 0 { arms = arms + "," }
+                let arm: MatchArm = tc.extra_match_arms[data.arms_start + i]
+                arms = arms + emit_match_arm(tc, arm)
+                i = i + 1
+            }
+            return "{\"kind\":\"match_stmt\",\"subject\":" + emit_expr(tc, data.subject) + ",\"arms\":[" + arms + "]}"
+        }
+    }
+}
+
+fn emit_match_arm(tc_in: TypeChecker, arm: MatchArm) -> string {
+    let tc: TypeChecker = tc_in
+    var s: string = "{\"pattern\":" + emit_pattern(tc, arm.pattern)
+    if has_expr(arm.guard) {
+        s = s + ",\"guard\":" + emit_expr(tc, arm.guard)
+    } else {
+        s = s + ",\"guard\":null"
+    }
+    // arm.body: emit as raw block (buildBlock expects {statements, final_expr})
+    s = s + ",\"body\":" + emit_expr_as_raw_block(tc, arm.body)
+    return s + "}"
+}
+
+fn emit_expr_as_raw_block(tc_in: TypeChecker, eid: ExprId) -> string {
+    let tc: TypeChecker = tc_in
+    if eid.id < 0 {
+        return "{\"statements\":[],\"final_expr\":null}"
+    }
+    let expr: Expr = tc.exprs[eid.id]
+    match expr {
+        Expr::Block(data) => {
+            return emit_block_body(tc, data.stmts_start, data.stmts_count)
+        }
+        _ => {
+            return "{\"statements\":[{\"kind\":\"expr_stmt\",\"expr\":" + emit_expr(tc, eid) + "}],\"final_expr\":null}"
+        }
+    }
+}
+
+fn emit_block_stmts(tc_in: TypeChecker, start: i32, count: i32) -> string {
+    let tc: TypeChecker = tc_in
+    var result: string = ""
+    var i: i32 = 0
+    while i < count {
+        if i > 0 { result = result + "," }
+        let sid: StmtId = tc.extra_stmt_ids[start + i]
+        result = result + emit_stmt(tc, sid)
+        i = i + 1
+    }
+    return result
+}
+
+fn emit_block_body(tc_in: TypeChecker, start: i32, count: i32) -> string {
+    let tc: TypeChecker = tc_in
+    let stmts: string = emit_block_stmts(tc, start, count)
+    return "{\"statements\":[" + stmts + "],\"final_expr\":null}"
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Shared Helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn emit_fn_param(tc_in: TypeChecker, fp: FnParam) -> string {
+    let tc: TypeChecker = tc_in
+    var s: string = "{\"name\":" + j_str(fp.param_name)
+    s = s + ",\"type\":" + emit_type_expr(tc, fp.type_expr)
+    s = s + ",\"is_comptime\":false,\"is_out\":" + j_bool(fp.is_mut)
+    if has_expr(fp.default_value) {
+        s = s + ",\"default_value\":" + emit_expr(tc, fp.default_value)
+    } else {
+        s = s + ",\"default_value\":null"
+    }
+    return s + "}"
+}
+
+fn emit_generic_param(tc_in: TypeChecker, gp: GenericParam) -> string {
+    let tc: TypeChecker = tc_in
+    var s: string = "{\"name\":" + j_str(gp.param_name) + ",\"bounds\":["
+    if has_type_expr(gp.bound) {
+        s = s + emit_type_expr(tc, gp.bound)
+    }
+    return s + "]}"
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Declaration Emitter
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn emit_decl(tc_in: TypeChecker, did: DeclId) -> string {
+    let tc: TypeChecker = tc_in
+    if did.id < 0 {
+        return "null"
+    }
+    let decl: Decl = tc.decls[did.id]
+    match decl {
+        Decl::Function(data) => {
+            return emit_function_decl(tc, data)
+        }
+        Decl::TestDecl(data) => {
+            let body: string = emit_block_stmts(tc, data.body_start, data.body_count)
+            return "{\"kind\":\"test_decl\",\"name\":" + j_str(data.test_name) + ",\"body\":{\"statements\":[" + body + "],\"final_expr\":null}}"
+        }
+        Decl::StructDecl(data) => {
+            return emit_struct_decl(tc, data)
+        }
+        Decl::EnumDecl(data) => {
+            return emit_enum_decl(tc, data)
+        }
+        Decl::TraitDecl(data) => {
+            return emit_trait_decl(tc, data)
+        }
+        Decl::ImplDecl(data) => {
+            return emit_impl_decl(tc, data)
+        }
+        Decl::TypeAlias(data) => {
+            var type_params: string = ""
+            var i: i32 = 0
+            while i < data.generics_count {
+                if i > 0 { type_params = type_params + "," }
+                let gp: GenericParam = tc.extra_generic_params[data.generics_start + i]
+                type_params = type_params + emit_generic_param(tc, gp)
+                i = i + 1
+            }
+            return "{\"kind\":\"type_alias\",\"name\":" + j_str(data.alias_name) + ",\"is_pub\":" + j_bool(data.is_pub) + ",\"type_params\":[" + type_params + "],\"target\":" + emit_type_expr(tc, data.target) + "}"
+        }
+        Decl::ConstDecl(data) => {
+            return "{\"kind\":\"const_decl\",\"name\":" + j_str(data.const_name) + ",\"is_pub\":" + j_bool(data.is_pub) + ",\"type\":" + emit_type_expr(tc, data.type_expr) + ",\"value\":" + emit_expr(tc, data.value) + "}"
+        }
+        Decl::ImportDecl(data) => {
+            return emit_import_decl(tc, data)
+        }
+        Decl::ModuleDecl(data) => {
+            return "{\"kind\":\"module\",\"name\":" + j_str(data.mod_name) + "}"
+        }
+        Decl::ExternTypeDecl(data) => {
+            return "{\"kind\":\"extern_type\",\"name\":" + j_str(data.ext_name) + ",\"is_pub\":" + j_bool(data.is_pub) + "}"
+        }
+        Decl::ExternBlock(data) => {
+            var decls: string = ""
+            var i: i32 = 0
+            while i < data.decls_count {
+                if i > 0 { decls = decls + "," }
+                let sub_did: DeclId = DeclId { id: data.decls_start + i }
+                decls = decls + emit_decl(tc, sub_did)
+                i = i + 1
+            }
+            return "{\"kind\":\"extern_block\",\"declarations\":[" + decls + "]}"
+        }
+    }
+}
+
+fn emit_function_decl(tc_in: TypeChecker, data: FunctionDeclData) -> string {
+    let tc: TypeChecker = tc_in
+    var s: string = "{\"kind\":\"function\",\"name\":" + j_str(data.fn_name)
+    s = s + ",\"is_pub\":" + j_bool(data.is_pub)
+    s = s + ",\"is_async\":" + j_bool(data.is_async)
+    s = s + ",\"is_comptime\":" + j_bool(data.is_comptime)
+    s = s + ",\"is_unsafe\":" + j_bool(data.is_unsafe)
+    s = s + ",\"is_extern\":" + j_bool(data.is_extern)
+    s = s + ",\"is_variadic\":" + j_bool(data.is_variadic)
+
+    // type_params
+    var type_params: string = ""
+    var i: i32 = 0
+    while i < data.generics_count {
+        if i > 0 { type_params = type_params + "," }
+        let gp: GenericParam = tc.extra_generic_params[data.generics_start + i]
+        type_params = type_params + emit_generic_param(tc, gp)
+        i = i + 1
+    }
+    s = s + ",\"type_params\":[" + type_params + "]"
+
+    // params
+    var params: string = ""
+    i = 0
+    while i < data.params_count {
+        if i > 0 { params = params + "," }
+        let fp: FnParam = tc.extra_params[data.params_start + i]
+        params = params + emit_fn_param(tc, fp)
+        i = i + 1
+    }
+    s = s + ",\"params\":[" + params + "]"
+
+    s = s + ",\"return_type\":" + emit_type_expr(tc, data.return_type)
+    s = s + ",\"where_clause\":null"
+
+    // body — extern functions have no body, all others get an empty block
+    if data.is_extern {
+        s = s + ",\"body\":null"
+    } else if data.body_count > 0 {
+        let body: string = emit_block_stmts(tc, data.body_start, data.body_count)
+        s = s + ",\"body\":{\"statements\":[" + body + "],\"final_expr\":null}"
+    } else {
+        s = s + ",\"body\":{\"statements\":[],\"final_expr\":null}"
+    }
+
+    return s + "}"
+}
+
+fn emit_struct_decl(tc_in: TypeChecker, data: StructDeclData) -> string {
+    let tc: TypeChecker = tc_in
+    var s: string = "{\"kind\":\"struct_decl\",\"name\":" + j_str(data.struct_name)
+    s = s + ",\"is_pub\":" + j_bool(data.is_pub)
+    s = s + ",\"is_extern\":" + j_bool(data.is_extern)
+    s = s + ",\"is_packed\":" + j_bool(data.is_packed)
+
+    // type_params
+    var type_params: string = ""
+    var i: i32 = 0
+    while i < data.generics_count {
+        if i > 0 { type_params = type_params + "," }
+        let gp: GenericParam = tc.extra_generic_params[data.generics_start + i]
+        type_params = type_params + emit_generic_param(tc, gp)
+        i = i + 1
+    }
+    s = s + ",\"type_params\":[" + type_params + "]"
+
+    // fields
+    var fields: string = ""
+    i = 0
+    while i < data.fields_count {
+        if i > 0 { fields = fields + "," }
+        let sf: StructField = tc.extra_struct_fields[data.fields_start + i]
+        fields = fields + "{\"name\":" + j_str(sf.field_name) + ",\"type\":" + emit_type_expr(tc, sf.type_expr) + ",\"is_pub\":false}"
+        i = i + 1
+    }
+    s = s + ",\"fields\":[" + fields + "]"
+    s = s + ",\"traits\":[]"
+
+    return s + "}"
+}
+
+fn emit_enum_decl(tc_in: TypeChecker, data: EnumDeclData) -> string {
+    let tc: TypeChecker = tc_in
+    var s: string = "{\"kind\":\"enum_decl\",\"name\":" + j_str(data.enum_name)
+    s = s + ",\"is_pub\":" + j_bool(data.is_pub)
+    s = s + ",\"is_extern\":false,\"repr_type\":null"
+
+    // type_params
+    var type_params: string = ""
+    var i: i32 = 0
+    while i < data.generics_count {
+        if i > 0 { type_params = type_params + "," }
+        let gp: GenericParam = tc.extra_generic_params[data.generics_start + i]
+        type_params = type_params + emit_generic_param(tc, gp)
+        i = i + 1
+    }
+    s = s + ",\"type_params\":[" + type_params + "]"
+
+    // variants
+    var variants: string = ""
+    i = 0
+    while i < data.variants_count {
+        if i > 0 { variants = variants + "," }
+        let ev: EnumVariantDecl = tc.extra_enum_variants[data.variants_start + i]
+        variants = variants + "{\"name\":" + j_str(ev.variant_name)
+        if ev.payload_count > 0 {
+            var payloads: string = ""
+            var j: i32 = 0
+            while j < ev.payload_count {
+                if j > 0 { payloads = payloads + "," }
+                let te: TypeExprId = tc.extra_type_expr_ids[ev.payload_start + j]
+                payloads = payloads + emit_type_expr(tc, te)
+                j = j + 1
+            }
+            variants = variants + ",\"payload\":{\"kind\":\"tuple\",\"types\":[" + payloads + "]}"
+        } else {
+            variants = variants + ",\"payload\":null"
+        }
+        if has_expr(ev.discriminant) {
+            variants = variants + ",\"value\":0"
+        } else {
+            variants = variants + ",\"value\":null"
+        }
+        variants = variants + "}"
+        i = i + 1
+    }
+    s = s + ",\"variants\":[" + variants + "]"
+
+    return s + "}"
+}
+
+fn emit_trait_decl(tc_in: TypeChecker, data: TraitDeclData) -> string {
+    let tc: TypeChecker = tc_in
+    var s: string = "{\"kind\":\"trait_decl\",\"name\":" + j_str(data.trait_name)
+    s = s + ",\"is_pub\":" + j_bool(data.is_pub)
+
+    // type_params
+    var type_params: string = ""
+    var i: i32 = 0
+    while i < data.generics_count {
+        if i > 0 { type_params = type_params + "," }
+        let gp: GenericParam = tc.extra_generic_params[data.generics_start + i]
+        type_params = type_params + emit_generic_param(tc, gp)
+        i = i + 1
+    }
+    s = s + ",\"type_params\":[" + type_params + "]"
+
+    // parents (super traits)
+    var parents: string = ""
+    i = 0
+    while i < data.parents_count {
+        if i > 0 { parents = parents + "," }
+        let te: TypeExprId = tc.extra_type_expr_ids[data.parents_start + i]
+        parents = parents + emit_type_expr(tc, te)
+        i = i + 1
+    }
+    s = s + ",\"super_traits\":[" + parents + "]"
+
+    // methods (TraitMethod structs are stored differently — use DeclIds for methods)
+    var methods: string = ""
+    i = 0
+    while i < data.methods_count {
+        if i > 0 { methods = methods + "," }
+        let method_did: DeclId = DeclId { id: data.methods_start + i }
+        methods = methods + emit_decl(tc, method_did)
+        i = i + 1
+    }
+    s = s + ",\"methods\":[" + methods + "]"
+
+    // associated_types
+    s = s + ",\"associated_types\":[]"
+
+    return s + "}"
+}
+
+fn emit_impl_decl(tc_in: TypeChecker, data: ImplDeclData) -> string {
+    let tc: TypeChecker = tc_in
+    var s: string = "{\"kind\":\"impl_decl\",\"is_unsafe\":false"
+
+    // type_params
+    var type_params: string = ""
+    var i: i32 = 0
+    while i < data.generics_count {
+        if i > 0 { type_params = type_params + "," }
+        let gp: GenericParam = tc.extra_generic_params[data.generics_start + i]
+        type_params = type_params + emit_generic_param(tc, gp)
+        i = i + 1
+    }
+    s = s + ",\"type_params\":[" + type_params + "]"
+
+    // Use full type expression for target_type (preserves generic_apply for Box#[T] etc.)
+    if has_type_expr(data.target_type_expr) {
+        s = s + ",\"target_type\":" + emit_type_expr(tc, data.target_type_expr)
+    } else {
+        s = s + ",\"target_type\":{\"kind\":\"named\",\"name\":" + j_str(data.target_type) + "}"
+    }
+
+    // Use full type expression for trait_type (preserves generic_apply for From#[E] etc.)
+    if data.impl_trait != "" {
+        if has_type_expr(data.trait_type_expr) {
+            s = s + ",\"trait_type\":" + emit_type_expr(tc, data.trait_type_expr)
+        } else {
+            s = s + ",\"trait_type\":{\"kind\":\"named\",\"name\":" + j_str(data.impl_trait) + "}"
+        }
+    } else {
+        s = s + ",\"trait_type\":null"
+    }
+
+    s = s + ",\"associated_types\":[]"
+    s = s + ",\"where_clause\":null"
+
+    // methods
+    var methods: string = ""
+    i = 0
+    while i < data.methods_count {
+        if i > 0 { methods = methods + "," }
+        let method_did: DeclId = DeclId { id: data.methods_start + i }
+        methods = methods + emit_decl(tc, method_did)
+        i = i + 1
+    }
+    s = s + ",\"methods\":[" + methods + "]"
+
+    return s + "}"
+}
+
+fn emit_import_decl(tc_in: TypeChecker, data: ImportDeclData) -> string {
+    let tc: TypeChecker = tc_in
+    var items: string = ""
+    var i: i32 = 0
+    while i < data.items_count {
+        if i > 0 { items = items + "," }
+        let item: ImportItem = tc.extra_import_items[data.items_start + i]
+        items = items + "{\"name\":" + j_str(item.item_name)
+        if item.alias != "" and item.alias != item.item_name {
+            items = items + ",\"alias\":" + j_str(item.alias)
+        }
+        items = items + "}"
+        i = i + 1
+    }
+    return "{\"kind\":\"import\",\"path\":" + j_str(data.path) + ",\"items\":[" + items + "],\"is_glob\":" + j_bool(data.is_glob) + "}"
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Monomorphized Table Emission
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Extract original name from mangled name (e.g., "Pair$i32_i64" -> "Pair")
+fn extract_original_name(mangled: string) -> string {
+    var i: i32 = 0
+    while i < mangled.byte_len() {
+        if mangled.byte_at(i) == 36.as#[u8] {
+            return mangled.slice(0, i)
+        }
+        i = i + 1
+    }
+    return mangled
+}
+
+fn emit_mono_structs(tc_in: TypeChecker) -> string {
+    let tc: TypeChecker = tc_in
+    let keys: List#[string] = tc.mono_structs.keys()
+    if keys.len() == 0 { return "[]" }
+    var result: string = "["
+    var ki: i32 = 0
+    while ki < keys.len() {
+        if ki > 0 { result = result + "," }
+        let mangled: string = keys[ki]
+        let original: string = extract_original_name(mangled)
+        let opt_kt: ?KlarType = tc.mono_structs.get(mangled)
+        match opt_kt {
+            Some(kt) => {
+                if kt.payload >= 0 and kt.payload < tc.type_structs.len() {
+                    let sd: StructData = tc.type_structs[kt.payload]
+                    result = result + "{\"original_name\":" + j_str(original)
+                    result = result + ",\"mangled_name\":" + j_str(mangled)
+                    result = result + ",\"type_args\":[]"
+                    // Emit fields
+                    var fields: string = ""
+                    var fi: i32 = 0
+                    while fi < sd.fields_count {
+                        if fi > 0 { fields = fields + "," }
+                        let fd: StructFieldData = tc.struct_fields[sd.fields_start + fi]
+                        let ft: KlarType = get_resolved_type(tc, fd.field_type.id)
+                        fields = fields + "{\"name\":" + j_str(fd.name) + ",\"type\":" + type_to_json(tc, ft) + ",\"is_pub\":true}"
+                        fi = fi + 1
+                    }
+                    result = result + ",\"fields\":[" + fields + "]}"
+                } else {
+                    result = result + "{\"original_name\":" + j_str(original) + ",\"mangled_name\":" + j_str(mangled) + ",\"type_args\":[],\"fields\":[]}"
+                }
+            }
+            None => {
+                result = result + "{\"original_name\":" + j_str(original) + ",\"mangled_name\":" + j_str(mangled) + ",\"type_args\":[],\"fields\":[]}"
+            }
+        }
+        ki = ki + 1
+    }
+    return result + "]"
+}
+
+fn emit_mono_functions(tc_in: TypeChecker) -> string {
+    let tc: TypeChecker = tc_in
+    let keys: List#[string] = tc.mono_functions.keys()
+    if keys.len() == 0 { return "[]" }
+    var result: string = "["
+    var ki: i32 = 0
+    while ki < keys.len() {
+        if ki > 0 { result = result + "," }
+        let mangled: string = keys[ki]
+        let original: string = extract_original_name(mangled)
+        let opt_kt: ?KlarType = tc.mono_functions.get(mangled)
+        match opt_kt {
+            Some(kt) => {
+                if kt.payload >= 0 and kt.payload < tc.type_functions.len() {
+                    let fd: FunctionData = tc.type_functions[kt.payload]
+                    result = result + "{\"original_name\":" + j_str(original)
+                    result = result + ",\"mangled_name\":" + j_str(mangled)
+                    result = result + ",\"type_args\":[]"
+                    result = result + ",\"is_async\":" + j_bool(fd.is_async)
+                    // Emit params with concrete types; get names from generic decl
+                    var params: string = ""
+                    let opt_gen_idx: ?i32 = tc.generic_fn_decls.get(original)
+                    var pi: i32 = 0
+                    while pi < fd.params_count {
+                        if pi > 0 { params = params + "," }
+                        let pt: KlarType = get_resolved_type(tc, fd.params_start + pi)
+                        // Try to get param name from generic function declaration
+                        var pname: string = "p" + pi.to_string().as_str()
+                        match opt_gen_idx {
+                            Some(gen_idx) => {
+                                if gen_idx >= 0 and gen_idx < tc.generic_fn_data.len() {
+                                    let gen_fn: FunctionDeclData = tc.generic_fn_data[gen_idx]
+                                    if pi < gen_fn.params_count {
+                                        let fp: FnParam = tc.extra_params[gen_fn.params_start + pi]
+                                        pname = fp.param_name
+                                    }
+                                }
+                            }
+                            None => {}
+                        }
+                        params = params + "{\"name\":" + j_str(pname) + ",\"type\":" + type_to_json(tc, pt) + "}"
+                        pi = pi + 1
+                    }
+                    result = result + ",\"params\":[" + params + "]"
+                    // Return type
+                    let ret: KlarType = get_resolved_type(tc, fd.return_type.id)
+                    result = result + ",\"return_type\":" + type_to_json(tc, ret)
+                    // Body — get from generic function declaration
+                    match opt_gen_idx {
+                        Some(gen_idx) => {
+                            if gen_idx >= 0 and gen_idx < tc.generic_fn_data.len() {
+                                let gen_fn: FunctionDeclData = tc.generic_fn_data[gen_idx]
+                                if gen_fn.body_count > 0 {
+                                    let body: string = emit_block_stmts(tc, gen_fn.body_start, gen_fn.body_count)
+                                    result = result + ",\"body\":{\"statements\":[" + body + "],\"final_expr\":null}"
+                                } else {
+                                    result = result + ",\"body\":null"
+                                }
+                            } else {
+                                result = result + ",\"body\":null"
+                            }
+                        }
+                        None => {
+                            result = result + ",\"body\":null"
+                        }
+                    }
+                    result = result + "}"
+                } else {
+                    result = result + "{\"original_name\":" + j_str(original) + ",\"mangled_name\":" + j_str(mangled) + ",\"type_args\":[],\"params\":[],\"return_type\":{\"kind\":\"void\"},\"body\":null}"
+                }
+            }
+            None => {
+                result = result + "{\"original_name\":" + j_str(original) + ",\"mangled_name\":" + j_str(mangled) + ",\"type_args\":[],\"params\":[],\"return_type\":{\"kind\":\"void\"},\"body\":null}"
+            }
+        }
+        ki = ki + 1
+    }
+    return result + "]"
+}
+
+fn emit_mono_methods(tc_in: TypeChecker) -> string {
+    let tc: TypeChecker = tc_in
+    let struct_keys: List#[string] = tc.mono_structs.keys()
+    if struct_keys.len() == 0 { return "[]" }
+
+    var result: string = "["
+    var count: i32 = 0
+
+    // For each monomorphized struct, find its generic impl methods
+    var ski: i32 = 0
+    while ski < struct_keys.len() {
+        let mangled_struct: string = struct_keys[ski]
+        let original_struct: string = extract_original_name(mangled_struct)
+
+        // Scan generic_impl_data for matching impl blocks
+        var ii: i32 = 0
+        while ii < tc.generic_impl_data.len() {
+            let impl_data: ImplDeclData = tc.generic_impl_data[ii]
+            if impl_data.target_type == original_struct {
+                // For each method in this impl block
+                var mi: i32 = 0
+                while mi < impl_data.methods_count {
+                    let method_decl: Decl = tc.decls[impl_data.methods_start + mi]
+                    match method_decl {
+                        Decl::Function(fn_data) => {
+                            let mangled_method: string = mangled_struct + "_" + fn_data.fn_name
+                            // Look up concrete type from methods map
+                            let method_key: string = mangled_struct + "." + fn_data.fn_name
+                            let opt_info: ?MethodInfo = tc.methods.get(method_key)
+                            match opt_info {
+                                Some(info) => {
+                                    if count > 0 { result = result + "," }
+                                    result = result + "{\"struct_name\":" + j_str(original_struct)
+                                    result = result + ",\"method_name\":" + j_str(fn_data.fn_name)
+                                    result = result + ",\"mangled_name\":" + j_str(mangled_method)
+                                    result = result + ",\"mangled_struct_name\":" + j_str(mangled_struct)
+                                    result = result + ",\"type_args\":[]"
+                                    result = result + ",\"is_async\":" + j_bool(fn_data.is_async)
+
+                                    // Emit params with concrete types from MethodInfo
+                                    // FunctionData (from checker) excludes self, so we
+                                    // emit self separately then all FunctionData params.
+                                    let fn_idx: i32 = info.fn_data_idx
+                                    if fn_idx >= 0 and fn_idx < tc.type_functions.len() {
+                                        let fd: FunctionData = tc.type_functions[fn_idx]
+                                        var params: string = ""
+                                        // Determine self type from original AST param's type expression
+                                        if fn_data.params_count > 0 {
+                                            let fp: FnParam = tc.extra_params[fn_data.params_start]
+                                            if fp.param_name == "self" or fp.param_name == "inout self" {
+                                                // Check the type expression to detect ref/inout
+                                                let te: TypeExpr = tc.type_exprs[fp.type_expr.id]
+                                                match te {
+                                                    TypeExpr::Reference(ref_data) => {
+                                                        if ref_data.is_mut {
+                                                            params = "{\"name\":\"self\",\"type\":{\"kind\":\"reference\",\"inner\":{\"kind\":\"struct\",\"name\":" + j_str(mangled_struct) + "},\"mutable\":true}}"
+                                                        } else {
+                                                            params = "{\"name\":\"self\",\"type\":{\"kind\":\"reference\",\"inner\":{\"kind\":\"struct\",\"name\":" + j_str(mangled_struct) + "},\"mutable\":false}}"
+                                                        }
+                                                    }
+                                                    _ => {
+                                                        // By-value self
+                                                        params = "{\"name\":\"self\",\"type\":{\"kind\":\"struct\",\"name\":" + j_str(mangled_struct) + "}}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        // Add non-self params with concrete types
+                                        var pi: i32 = 0
+                                        while pi < fd.params_count {
+                                            let pt: KlarType = get_resolved_type(tc, fd.params_start + pi)
+                                            if params != "" { params = params + "," }
+                                            // Get param name from original declaration (offset by 1 for self)
+                                            var pname: string = "p" + pi.to_string().as_str()
+                                            let orig_pi: i32 = pi + 1
+                                            if orig_pi < fn_data.params_count {
+                                                let fp: FnParam = tc.extra_params[fn_data.params_start + orig_pi]
+                                                pname = fp.param_name
+                                            }
+                                            params = params + "{\"name\":" + j_str(pname) + ",\"type\":" + type_to_json(tc, pt) + "}"
+                                            pi = pi + 1
+                                        }
+                                        result = result + ",\"params\":[" + params + "]"
+                                        // Return type
+                                        let ret: KlarType = get_resolved_type(tc, fd.return_type.id)
+                                        result = result + ",\"return_type\":" + type_to_json(tc, ret)
+                                    } else {
+                                        result = result + ",\"params\":[],\"return_type\":{\"kind\":\"void\"}"
+                                    }
+
+                                    // Body — from original method declaration
+                                    if fn_data.body_count > 0 {
+                                        let body: string = emit_block_stmts(tc, fn_data.body_start, fn_data.body_count)
+                                        result = result + ",\"body\":{\"statements\":[" + body + "],\"final_expr\":null}"
+                                    } else {
+                                        result = result + ",\"body\":null"
+                                    }
+                                    result = result + "}"
+                                    count = count + 1
+                                }
+                                None => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                    mi = mi + 1
+                }
+            }
+            ii = ii + 1
+        }
+        ski = ski + 1
+    }
+    return result + "]"
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Top-Level Emitter
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub fn emit_typed_ast(tc_in: TypeChecker, m: AstModule) -> string {
+    let tc: TypeChecker = tc_in
+    var s: string = "{\"format\":\"typed-ast\",\"version\":1"
+
+    // module_decl
+    s = s + ",\"module_decl\":null"
+
+    // imports (scan declarations for ImportDecl)
+    var imports: string = ""
+    var decls: string = ""
+    var import_count: i32 = 0
+    var decl_count: i32 = 0
+    var i: i32 = 0
+    while i < m.decls_count {
+        let did: DeclId = DeclId { id: m.decls_start + i }
+        let d: Decl = tc.decls[did.id]
+        match d {
+            Decl::ImportDecl(data) => {
+                if import_count > 0 { imports = imports + "," }
+                imports = imports + emit_import_decl(tc, data)
+                import_count = import_count + 1
+            }
+            Decl::ModuleDecl(data) => {
+                // Set module_decl instead of adding to declarations
+                s = "{\"format\":\"typed-ast\",\"version\":1,\"module_decl\":{\"kind\":\"module\",\"name\":" + j_str(data.mod_name) + "}"
+            }
+            _ => {
+                if decl_count > 0 { decls = decls + "," }
+                var decl_json: string = emit_decl(tc, did)
+                // Inject annotation from stored raw JSON
+                if i < tc.decl_meta_json.len() {
+                    let mj: string = tc.decl_meta_json[i]
+                    if mj != "null" {
+                        // Insert annotation key before final "}"
+                        let mkey: string = "\"" + "m" + "eta\""
+                        let len: i32 = decl_json.len()
+                        if len > 1 {
+                            decl_json = decl_json.slice(0, len - 1) + "," + mkey + ":" + mj + "}"
+                        }
+                    }
+                }
+                decls = decls + decl_json
+                decl_count = decl_count + 1
+            }
+        }
+        i = i + 1
+    }
+
+    s = s + ",\"imports\":[" + imports + "]"
+    s = s + ",\"declarations\":[" + decls + "]"
+    let fmkey: string = "\"file_" + "m" + "eta\""
+    s = s + "," + fmkey + ":" + m.file_meta_json
+
+    // Monomorphized tables
+    s = s + ",\"monomorphized_functions\":" + emit_mono_functions(tc)
+    s = s + ",\"monomorphized_structs\":" + emit_mono_structs(tc)
+    s = s + ",\"monomorphized_enums\":[]"
+    s = s + ",\"monomorphized_methods\":" + emit_mono_methods(tc)
+
+    // Side tables (empty for now)
+    s = s + ",\"call_resolutions\":{}"
+    s = s + ",\"comptime_values\":{}"
+    s = s + ",\"error_conversions\":{}"
+    s = s + ",\"debug_call_types\":{}"
+
+    return s + "}"
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Multi-Module Typed AST Emitter
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Emit a single module's entry for the multi-module envelope.
+// Contains declarations, imports, and file_meta but no monomorphized tables.
+fn emit_module_entry(tc_in: TypeChecker, m: AstModule, mod_name: string, is_entry: bool) -> string {
+    let tc: TypeChecker = tc_in
+    var s: string = "{\"name\":" + j_str(mod_name) + ",\"is_entry\":"
+    if is_entry { s = s + "true" } else { s = s + "false" }
+
+    // module_decl — emit path array format for Zig buildModule compatibility
+    var found_module_decl: bool = false
+    var i: i32 = 0
+    while i < m.decls_count {
+        let did: DeclId = DeclId { id: m.decls_start + i }
+        let d: Decl = tc.decls[did.id]
+        match d {
+            Decl::ModuleDecl(data) => {
+                s = s + ",\"module_decl\":{\"path\":[" + j_str(data.mod_name) + "]}"
+                found_module_decl = true
+                break
+            }
+            _ => {}
+        }
+        i = i + 1
+    }
+    if not found_module_decl {
+        s = s + ",\"module_decl\":null"
+    }
+
+    // imports and declarations (same scan as emit_typed_ast)
+    var imports: string = ""
+    var decls: string = ""
+    var import_count: i32 = 0
+    var decl_count: i32 = 0
+    i = 0
+    while i < m.decls_count {
+        let did: DeclId = DeclId { id: m.decls_start + i }
+        let d: Decl = tc.decls[did.id]
+        match d {
+            Decl::ImportDecl(data) => {
+                if import_count > 0 { imports = imports + "," }
+                imports = imports + emit_import_decl(tc, data)
+                import_count = import_count + 1
+            }
+            Decl::ModuleDecl(_) => {}
+            _ => {
+                if decl_count > 0 { decls = decls + "," }
+                var decl_json: string = emit_decl(tc, did)
+                // Inject annotation from stored raw JSON
+                // Use global index (m.decls_start + i) since decl_meta_json
+                // accumulates across all modules in multi-module mode
+                let meta_idx: i32 = m.decls_start + i
+                if meta_idx < tc.decl_meta_json.len() {
+                    let mj: string = tc.decl_meta_json[meta_idx]
+                    if mj != "null" {
+                        let mkey: string = "\"" + "m" + "eta\""
+                        let len: i32 = decl_json.len()
+                        if len > 1 {
+                            decl_json = decl_json.slice(0, len - 1) + "," + mkey + ":" + mj + "}"
+                        }
+                    }
+                }
+                decls = decls + decl_json
+                decl_count = decl_count + 1
+            }
+        }
+        i = i + 1
+    }
+
+    s = s + ",\"imports\":[" + imports + "]"
+    s = s + ",\"declarations\":[" + decls + "]"
+    let fmkey: string = "\"file_" + "m" + "eta\""
+    s = s + "," + fmkey + ":" + m.file_meta_json
+
+    return s + "}"
+}
+
+// Emit the multi-module typed AST envelope.
+// Modules are provided as parallel lists (module ASTs, names, is_entry flags).
+// Monomorphized tables are emitted once at the top level (shared across modules).
+pub fn emit_multi_typed_ast(tc_in: TypeChecker,
+    modules: List#[AstModule], names: List#[string], is_entries: List#[bool]) -> string {
+    let tc: TypeChecker = tc_in
+    var s: string = "{\"format\":\"typed-ast-multi\",\"version\":1,\"modules\":["
+
+    var i: i32 = 0
+    while i < modules.len() {
+        if i > 0 { s = s + "," }
+        s = s + emit_module_entry(tc, modules[i], names[i], is_entries[i])
+        i = i + 1
+    }
+    s = s + "]"
+
+    // Global monomorphized tables
+    s = s + ",\"monomorphized_functions\":" + emit_mono_functions(tc)
+    s = s + ",\"monomorphized_structs\":" + emit_mono_structs(tc)
+    s = s + ",\"monomorphized_enums\":[]"
+    s = s + ",\"monomorphized_methods\":" + emit_mono_methods(tc)
+
+    return s + "}"
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Smoke Test
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn main() -> i32 {
+    // Test type_to_json for primitives
+    let tc: TypeChecker = TypeChecker.new()
+
+    let j1: string = type_to_json(tc, KlarType { kind: TypeKind::Primitive, payload: 2 })
+    if j1 != "{\"kind\":\"i32\"}" {
+        println("FAIL: i32 type_to_json: " + j1)
+        return 1
+    }
+
+    let j2: string = type_to_json(tc, KlarType { kind: TypeKind::Void, payload: -1 })
+    if j2 != "{\"kind\":\"void\"}" {
+        println("FAIL: void type_to_json: " + j2)
+        return 2
+    }
+
+    let j3: string = type_to_json(tc, KlarType { kind: TypeKind::Never, payload: -1 })
+    if j3 != "{\"kind\":\"never\"}" {
+        println("FAIL: never type_to_json: " + j3)
+        return 3
+    }
+
+    // Test json_escape
+    let e1: string = json_escape("hello")
+    if e1 != "hello" {
+        println("FAIL: json_escape basic")
+        return 4
+    }
+
+    let e2: string = json_escape("a\"b")
+    if e2 != "a\\\"b" {
+        println("FAIL: json_escape quote")
+        return 5
+    }
+
+    // Test op mappings
+    if binary_op_json(BinaryOp::Add) != "add" {
+        println("FAIL: add op")
+        return 6
+    }
+    if binary_op_json(BinaryOp::And) != "and_" {
+        println("FAIL: and_ op")
+        return 7
+    }
+
+    println("emitter.kl: all smoke tests passed")
+    return 0
+}
+
+test main {
+    let tc: TypeChecker = TypeChecker.new()
+
+    // Primitive type JSON
+    assert(type_to_json(tc, KlarType { kind: TypeKind::Primitive, payload: 2 }) == "{\"kind\":\"i32\"}")
+    assert(type_to_json(tc, KlarType { kind: TypeKind::Void, payload: -1 }) == "{\"kind\":\"void\"}")
+    assert(type_to_json(tc, KlarType { kind: TypeKind::Never, payload: -1 }) == "{\"kind\":\"never\"}")
+
+    // JSON helpers
+    assert(j_str("hello") == "\"hello\"")
+    assert(j_bool(true) == "true")
+    assert(j_bool(false) == "false")
+    assert(j_int(42) == "42")
+
+    // Op mappings
+    assert(binary_op_json(BinaryOp::Add) == "add")
+    assert(binary_op_json(BinaryOp::Neq) == "not_eq")
+    assert(binary_op_json(BinaryOp::And) == "and_")
+    assert(binary_op_json(BinaryOp::Or) == "or_")
+    assert(unary_op_json(UnaryOp::Not) == "not")
+    assert(postfix_op_json(PostfixOp::Try) == "try")
+    assert(assign_op_json(AssignOp::Plain) == "assign")
+}

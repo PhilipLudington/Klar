@@ -1,0 +1,1852 @@
+//! stdlib/yaml.kl - YAML parsing and stringification
+//!
+//! Pure Klar YAML library providing:
+//! - Parsing: yaml_parse(string) -> Result#[YamlValue, YamlError]
+//! - Stringification: yaml_stringify(value) -> string
+//! - Accessors: yaml_get, yaml_get_string, yaml_get_int, yaml_get_float, yaml_get_bool, yaml_get_sequence, yaml_get_mapping
+//! - Builders: yaml_null, yaml_bool, yaml_int, yaml_float, yaml_string, yaml_sequence, yaml_mapping
+
+module stdlib.yaml
+
+// ============================================================================
+// YAML Value Type
+// ============================================================================
+
+pub enum YamlValue {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Str(string),
+    Sequence(List#[YamlValue]),
+    Mapping(Map#[string, YamlValue]),
+}
+
+// ============================================================================
+// YAML Error Type
+// ============================================================================
+
+pub struct YamlError {
+    pub message: string,
+    pub line: i32,
+}
+
+// ============================================================================
+// Builder Functions
+// ============================================================================
+
+pub fn yaml_null() -> YamlValue {
+    return YamlValue::Null
+}
+
+pub fn yaml_bool(b: bool) -> YamlValue {
+    return YamlValue::Bool(b)
+}
+
+pub fn yaml_int(n: i64) -> YamlValue {
+    return YamlValue::Int(n)
+}
+
+pub fn yaml_float(n: f64) -> YamlValue {
+    return YamlValue::Float(n)
+}
+
+pub fn yaml_string(s: string) -> YamlValue {
+    return YamlValue::Str(s)
+}
+
+pub fn yaml_sequence() -> YamlValue {
+    return YamlValue::Sequence(List.new#[YamlValue]())
+}
+
+pub fn yaml_mapping() -> YamlValue {
+    var m: Map#[string, YamlValue] = Map.new#[string, YamlValue]()
+    m.insert("", YamlValue::Null)
+    return YamlValue::Mapping(m)
+}
+
+// ============================================================================
+// Accessor Functions
+// ============================================================================
+
+pub fn yaml_get(mapping: YamlValue, key: string) -> ?YamlValue {
+    match mapping {
+        YamlValue.Mapping(m) => {
+            return m.get(key)
+        }
+        _ => {}
+    }
+    // implicit None
+}
+
+pub fn yaml_get_string(mapping: YamlValue, key: string) -> ?string {
+    let val: ?YamlValue = yaml_get(mapping, key)
+    match val {
+        Some(v) => {
+            match v {
+                YamlValue.Str(s) => { return Some(s) }
+                _ => {}
+            }
+        }
+        None => {}
+    }
+    // implicit None
+}
+
+pub fn yaml_get_int(mapping: YamlValue, key: string) -> ?i64 {
+    let val: ?YamlValue = yaml_get(mapping, key)
+    match val {
+        Some(v) => {
+            match v {
+                YamlValue.Int(n) => { return Some(n) }
+                _ => {}
+            }
+        }
+        None => {}
+    }
+    // implicit None
+}
+
+pub fn yaml_get_float(mapping: YamlValue, key: string) -> ?f64 {
+    let val: ?YamlValue = yaml_get(mapping, key)
+    match val {
+        Some(v) => {
+            match v {
+                YamlValue.Float(n) => { return Some(n) }
+                _ => {}
+            }
+        }
+        None => {}
+    }
+    // implicit None
+}
+
+pub fn yaml_get_bool(mapping: YamlValue, key: string) -> ?bool {
+    let val: ?YamlValue = yaml_get(mapping, key)
+    match val {
+        Some(v) => {
+            match v {
+                YamlValue.Bool(b) => { return Some(b) }
+                _ => {}
+            }
+        }
+        None => {}
+    }
+    // implicit None
+}
+
+pub fn yaml_get_sequence(mapping: YamlValue, key: string) -> ?List#[YamlValue] {
+    let val: ?YamlValue = yaml_get(mapping, key)
+    match val {
+        Some(v) => {
+            match v {
+                YamlValue.Sequence(a) => { return Some(a) }
+                _ => {}
+            }
+        }
+        None => {}
+    }
+    // implicit None
+}
+
+pub fn yaml_get_mapping(mapping: YamlValue, key: string) -> ?Map#[string, YamlValue] {
+    let val: ?YamlValue = yaml_get(mapping, key)
+    match val {
+        Some(v) => {
+            match v {
+                YamlValue.Mapping(m) => { return Some(m) }
+                _ => {}
+            }
+        }
+        None => {}
+    }
+    // implicit None
+}
+
+// ============================================================================
+// ASCII Reference
+// ============================================================================
+// Tab=9  LF=10  CR=13  Space=32  !=33  "=34  #=35  '=39  +=43  ,=44
+// -=45  .=46  0=48  9=57  :=58  ==61  A=65  E=69  F=70  Z=90
+// [=91  \=92  ]=93  _=95  a=97  e=101  f=102  i=105  n=110
+// o=111  r=114  t=116  u=117  x=120  y=121  z=122  {=123  |=124  }=125  ~=126
+
+// ============================================================================
+// Parser Helpers
+// ============================================================================
+
+fn make_error(msg: string, line: i32) -> YamlError {
+    return YamlError { message: msg, line: line }
+}
+
+fn char_to_str(c: char) -> string {
+    return from_byte(c.as#[u8])
+}
+
+fn is_ws(code: i32) -> bool {
+    return code == 32 or code == 9
+}
+
+fn is_newline(code: i32) -> bool {
+    return code == 10 or code == 13
+}
+
+fn is_digit(code: i32) -> bool {
+    return code >= 48 and code <= 57
+}
+
+fn is_alpha(code: i32) -> bool {
+    return (code >= 65 and code <= 90) or (code >= 97 and code <= 122)
+}
+
+// Count line number from start to position
+fn count_lines(chars: [char], end: i32) -> i32 {
+    var line: i32 = 1
+    var i: i32 = 0
+    while i < end {
+        if chars[i].as#[i32] == 10 {
+            line = line + 1
+        }
+        i = i + 1
+    }
+    return line
+}
+
+// Get column (0-based) of position in current line
+fn get_column(chars: [char], pos: i32) -> i32 {
+    var col: i32 = 0
+    var i: i32 = pos - 1
+    while i >= 0 {
+        if chars[i].as#[i32] == 10 {
+            break
+        }
+        col = col + 1
+        i = i - 1
+    }
+    return col
+}
+
+// Skip spaces and tabs (not newlines)
+fn skip_ws(chars: [char], pos: i32, len: i32) -> i32 {
+    var i: i32 = pos
+    while i < len {
+        let c: i32 = chars[i].as#[i32]
+        if c != 32 and c != 9 {
+            break
+        }
+        i = i + 1
+    }
+    return i
+}
+
+// Skip spaces, tabs, and inline comments (to end of line or input)
+fn skip_ws_and_comment(chars: [char], pos: i32, len: i32) -> i32 {
+    var i: i32 = skip_ws(chars, pos, len)
+    if i < len and chars[i].as#[i32] == 35 {
+        while i < len and chars[i].as#[i32] != 10 {
+            i = i + 1
+        }
+    }
+    return i
+}
+
+// Skip past newline (CR, LF, or CRLF)
+fn skip_newline(chars: [char], pos: i32, len: i32) -> i32 {
+    var i: i32 = pos
+    if i < len and chars[i].as#[i32] == 13 {
+        i = i + 1
+    }
+    if i < len and chars[i].as#[i32] == 10 {
+        i = i + 1
+    }
+    return i
+}
+
+// Skip blank lines and comment-only lines, return pos at next content
+fn skip_blank_lines(chars: [char], pos: i32, len: i32) -> i32 {
+    var i: i32 = pos
+    while i < len {
+        let p: i32 = skip_ws(chars, i, len)
+        if p >= len {
+            return p
+        }
+        let c: i32 = chars[p].as#[i32]
+        if c == 10 or c == 13 {
+            i = skip_newline(chars, p, len)
+        } else if c == 35 {
+            // Comment line — skip to end
+            var j: i32 = p
+            while j < len and chars[j].as#[i32] != 10 {
+                j = j + 1
+            }
+            i = skip_newline(chars, j, len)
+        } else {
+            break
+        }
+    }
+    return i
+}
+
+// Measure indentation (number of spaces) at current line start
+fn measure_indent(chars: [char], pos: i32, len: i32) -> i32 {
+    var count: i32 = 0
+    var i: i32 = pos
+    while i < len and chars[i].as#[i32] == 32 {
+        count = count + 1
+        i = i + 1
+    }
+    return count
+}
+
+// ============================================================================
+// Scalar Parsing
+// ============================================================================
+
+// Parse a double-quoted string
+fn parse_double_quoted(chars: [char], pos: i32, len: i32) -> Result#[(string, i32), YamlError] {
+    var p: i32 = pos + 1  // skip opening "
+    var result: string = ""
+    while p < len {
+        let c: i32 = chars[p].as#[i32]
+        if c == 34 {
+            // closing "
+            return Ok((result, p + 1))
+        }
+        if c == 92 {
+            // escape sequence
+            p = p + 1
+            if p >= len {
+                return Err(make_error("unterminated escape in string", count_lines(chars, pos)))
+            }
+            let e: i32 = chars[p].as#[i32]
+            if e == 110 { result = result + "\n" }
+            else if e == 116 { result = result + "\t" }
+            else if e == 114 { result = result + "\r" }
+            else if e == 92 { result = result + "\\" }
+            else if e == 34 { result = result + "\"" }
+            else if e == 47 { result = result + "/" }
+            else if e == 48 { result = result + from_byte(0.as#[u8]) }
+            else {
+                result = result + "\\" + char_to_str(chars[p])
+            }
+            p = p + 1
+        } else {
+            result = result + char_to_str(chars[p])
+            p = p + 1
+        }
+    }
+    return Err(make_error("unterminated double-quoted string", count_lines(chars, pos)))
+}
+
+// Parse a single-quoted string (no escape processing)
+fn parse_single_quoted(chars: [char], pos: i32, len: i32) -> Result#[(string, i32), YamlError] {
+    var p: i32 = pos + 1  // skip opening '
+    var result: string = ""
+    while p < len {
+        let c: i32 = chars[p].as#[i32]
+        if c == 39 {
+            // Check for escaped single quote ''
+            if p + 1 < len and chars[p + 1].as#[i32] == 39 {
+                result = result + "'"
+                p = p + 2
+            } else {
+                return Ok((result, p + 1))
+            }
+        } else {
+            result = result + char_to_str(chars[p])
+            p = p + 1
+        }
+    }
+    return Err(make_error("unterminated single-quoted string", count_lines(chars, pos)))
+}
+
+// Check if a plain scalar string represents a boolean, null, int, or float
+// and return the appropriate YamlValue
+fn classify_scalar(s: string) -> YamlValue {
+    // Null values
+    if s == "null" or s == "~" or s == "Null" or s == "NULL" {
+        return YamlValue::Null
+    }
+
+    // Boolean values
+    if s == "true" or s == "True" or s == "TRUE" or s == "yes" or s == "Yes" or s == "YES" or s == "on" or s == "On" or s == "ON" {
+        return YamlValue::Bool(true)
+    }
+    if s == "false" or s == "False" or s == "FALSE" or s == "no" or s == "No" or s == "NO" or s == "off" or s == "Off" or s == "OFF" {
+        return YamlValue::Bool(false)
+    }
+
+    // Special float values
+    if s == ".inf" or s == ".Inf" or s == ".INF" {
+        return YamlValue::Float(1.0 / 0.0)
+    }
+    if s == "-.inf" or s == "-.Inf" or s == "-.INF" {
+        return YamlValue::Float(-1.0 / 0.0)
+    }
+    if s == ".nan" or s == ".NaN" or s == ".NAN" {
+        return YamlValue::Float(0.0 / 0.0)
+    }
+
+    // Try integer
+    let int_r: ?i64 = try_parse_int(s)
+    match int_r {
+        Some(n) => { return YamlValue::Int(n) }
+        None => {}
+    }
+
+    // Try float
+    let float_r: ?f64 = try_parse_float(s)
+    match float_r {
+        Some(n) => { return YamlValue::Float(n) }
+        None => {}
+    }
+
+    // Plain string
+    return YamlValue::Str(s)
+}
+
+fn try_parse_int(s: string) -> ?i64 {
+    let slen: i32 = s.len()
+    if slen == 0 { return None }
+
+    var start: i32 = 0
+    var negative: bool = false
+    let first: i32 = s.byte_at(0).as#[i32]
+
+    if first == 43 {
+        start = 1
+    } else if first == 45 {
+        negative = true
+        start = 1
+    }
+
+    if start >= slen { return None }
+
+    // Check for hex (0x), octal (0o), binary (0b)
+    if start + 1 < slen and s.byte_at(start).as#[i32] == 48 {
+        let prefix: i32 = s.byte_at(start + 1).as#[i32]
+        if prefix == 120 or prefix == 88 {
+            return try_parse_hex(s, start + 2, slen, negative)
+        }
+        if prefix == 111 or prefix == 79 {
+            return try_parse_oct(s, start + 2, slen, negative)
+        }
+        if prefix == 98 or prefix == 66 {
+            return try_parse_bin(s, start + 2, slen, negative)
+        }
+    }
+
+    // Decimal integer
+    var result: i64 = 0.as#[i64]
+    var i: i32 = start
+    var has_digit: bool = false
+    while i < slen {
+        let c: i32 = s.byte_at(i).as#[i32]
+        if c == 95 {
+            i = i + 1
+        } else if c >= 48 and c <= 57 {
+            result = result * 10.as#[i64] + (c - 48).as#[i64]
+            has_digit = true
+            i = i + 1
+        } else {
+            return None
+        }
+    }
+    if not has_digit { return None }
+    if negative { result = 0.as#[i64] - result }
+    return Some(result)
+}
+
+fn try_parse_hex(s: string, start: i32, slen: i32, negative: bool) -> ?i64 {
+    var result: i64 = 0.as#[i64]
+    var i: i32 = start
+    var has_digit: bool = false
+    while i < slen {
+        let c: i32 = s.byte_at(i).as#[i32]
+        if c == 95 {
+            i = i + 1
+        } else if c >= 48 and c <= 57 {
+            result = result * 16.as#[i64] + (c - 48).as#[i64]
+            has_digit = true
+            i = i + 1
+        } else if c >= 97 and c <= 102 {
+            result = result * 16.as#[i64] + (c - 97 + 10).as#[i64]
+            has_digit = true
+            i = i + 1
+        } else if c >= 65 and c <= 70 {
+            result = result * 16.as#[i64] + (c - 65 + 10).as#[i64]
+            has_digit = true
+            i = i + 1
+        } else {
+            return None
+        }
+    }
+    if not has_digit { return None }
+    if negative { result = 0.as#[i64] - result }
+    return Some(result)
+}
+
+fn try_parse_oct(s: string, start: i32, slen: i32, negative: bool) -> ?i64 {
+    var result: i64 = 0.as#[i64]
+    var i: i32 = start
+    var has_digit: bool = false
+    while i < slen {
+        let c: i32 = s.byte_at(i).as#[i32]
+        if c == 95 {
+            i = i + 1
+        } else if c >= 48 and c <= 55 {
+            result = result * 8.as#[i64] + (c - 48).as#[i64]
+            has_digit = true
+            i = i + 1
+        } else {
+            return None
+        }
+    }
+    if not has_digit { return None }
+    if negative { result = 0.as#[i64] - result }
+    return Some(result)
+}
+
+fn try_parse_bin(s: string, start: i32, slen: i32, negative: bool) -> ?i64 {
+    var result: i64 = 0.as#[i64]
+    var i: i32 = start
+    var has_digit: bool = false
+    while i < slen {
+        let c: i32 = s.byte_at(i).as#[i32]
+        if c == 95 {
+            i = i + 1
+        } else if c == 48 or c == 49 {
+            result = result * 2.as#[i64] + (c - 48).as#[i64]
+            has_digit = true
+            i = i + 1
+        } else {
+            return None
+        }
+    }
+    if not has_digit { return None }
+    if negative { result = 0.as#[i64] - result }
+    return Some(result)
+}
+
+fn try_parse_float(s: string) -> ?f64 {
+    let slen: i32 = s.len()
+    if slen == 0 { return None }
+
+    var start: i32 = 0
+    var negative: bool = false
+    let first: i32 = s.byte_at(0).as#[i32]
+
+    if first == 43 {
+        start = 1
+    } else if first == 45 {
+        negative = true
+        start = 1
+    }
+
+    if start >= slen { return None }
+
+    // Must have at least one digit before dot, or dot followed by digit
+    var has_dot: bool = false
+    var has_exp: bool = false
+    var has_digit: bool = false
+    var i: i32 = start
+    while i < slen {
+        let c: i32 = s.byte_at(i).as#[i32]
+        if c == 46 {
+            if has_dot or has_exp { return None }
+            has_dot = true
+            i = i + 1
+        } else if c == 101 or c == 69 {
+            if has_exp or not has_digit { return None }
+            has_exp = true
+            i = i + 1
+            if i < slen {
+                let ec: i32 = s.byte_at(i).as#[i32]
+                if ec == 43 or ec == 45 {
+                    i = i + 1
+                }
+            }
+        } else if c == 95 {
+            i = i + 1
+        } else if c >= 48 and c <= 57 {
+            has_digit = true
+            i = i + 1
+        } else {
+            return None
+        }
+    }
+
+    if not has_digit { return None }
+    if not has_dot and not has_exp { return None }
+
+    // Build float manually: integer part + fractional part + exponent
+    var int_part: f64 = 0.0
+    var frac_part: f64 = 0.0
+    var frac_divisor: f64 = 1.0
+    var exp_val: i32 = 0
+    var exp_neg: bool = false
+    var in_frac: bool = false
+    var in_exp: bool = false
+
+    i = start
+    while i < slen {
+        let c: i32 = s.byte_at(i).as#[i32]
+        if c == 95 {
+            i = i + 1
+        } else if c == 46 {
+            in_frac = true
+            i = i + 1
+        } else if c == 101 or c == 69 {
+            in_exp = true
+            in_frac = false
+            i = i + 1
+            if i < slen {
+                let ec: i32 = s.byte_at(i).as#[i32]
+                if ec == 43 { i = i + 1 }
+                else if ec == 45 { exp_neg = true; i = i + 1 }
+            }
+        } else if c >= 48 and c <= 57 {
+            if in_exp {
+                exp_val = exp_val * 10 + (c - 48)
+            } else if in_frac {
+                frac_divisor = frac_divisor * 10.0
+                frac_part = frac_part + (c - 48).as#[f64] / frac_divisor
+            } else {
+                int_part = int_part * 10.0 + (c - 48).as#[f64]
+            }
+            i = i + 1
+        } else {
+            i = i + 1
+        }
+    }
+
+    var result: f64 = int_part + frac_part
+
+    // Apply exponent
+    if has_exp {
+        var exp_mult: f64 = 1.0
+        var ei: i32 = 0
+        while ei < exp_val {
+            exp_mult = exp_mult * 10.0
+            ei = ei + 1
+        }
+        if exp_neg {
+            result = result / exp_mult
+        } else {
+            result = result * exp_mult
+        }
+    }
+
+    if negative { result = 0.0 - result }
+    return Some(result)
+}
+
+// Parse a plain (unquoted) scalar, stopping at indicators or end of line
+fn parse_plain_scalar(chars: [char], pos: i32, len: i32) -> (string, i32) {
+    var p: i32 = pos
+    var result: string = ""
+    while p < len {
+        let c: i32 = chars[p].as#[i32]
+        // Stop at newline
+        if c == 10 or c == 13 {
+            break
+        }
+        // Stop at comment preceded by space
+        if c == 35 and p > pos {
+            let prev: i32 = chars[p - 1].as#[i32]
+            if prev == 32 or prev == 9 {
+                break
+            }
+        }
+        // Stop at flow indicators when not first char
+        if c == 44 or c == 93 or c == 125 {
+            break
+        }
+        // Stop at colon followed by space (mapping indicator)
+        if c == 58 and p + 1 < len {
+            let next: i32 = chars[p + 1].as#[i32]
+            if next == 32 or next == 10 or next == 13 or next == 9 {
+                break
+            }
+        }
+        result = result + char_to_str(chars[p])
+        p = p + 1
+    }
+    // Trim trailing whitespace
+    result = trim_right(result)
+    return (result, p)
+}
+
+fn trim_right(s: string) -> string {
+    let slen: i32 = s.len()
+    var end: i32 = slen
+    while end > 0 {
+        let c: i32 = s.byte_at(end - 1).as#[i32]
+        if c != 32 and c != 9 {
+            break
+        }
+        end = end - 1
+    }
+    if end == slen { return s }
+    if end == 0 { return "" }
+    return s.slice(0, end)
+}
+
+// ============================================================================
+// Block Scalar Parsing (| and >)
+// ============================================================================
+
+// Parse a literal block scalar (|) or folded block scalar (>)
+fn parse_block_scalar(chars: [char], pos: i32, len: i32) -> Result#[(string, i32), YamlError] {
+    let indicator: i32 = chars[pos].as#[i32]
+    var p: i32 = pos + 1
+    let is_literal: bool = indicator == 124  // |
+
+    // Check for chomping indicator
+    var chomp: i32 = 0  // 0=clip, 1=strip(-), 2=keep(+)
+    if p < len {
+        let c: i32 = chars[p].as#[i32]
+        if c == 45 { chomp = 1; p = p + 1 }
+        else if c == 43 { chomp = 2; p = p + 1 }
+    }
+
+    // Skip to end of indicator line
+    p = skip_ws_and_comment(chars, p, len)
+    if p < len and is_newline(chars[p].as#[i32]) {
+        p = skip_newline(chars, p, len)
+    }
+
+    // Determine block indentation from first content line
+    var block_indent: i32 = -1
+    var scan: i32 = p
+    while scan < len {
+        let si: i32 = measure_indent(chars, scan, len)
+        let sp: i32 = scan + si
+        if sp >= len or is_newline(chars[sp].as#[i32]) {
+            // blank line — skip
+            scan = skip_newline(chars, sp, len)
+        } else {
+            block_indent = si
+            break
+        }
+    }
+
+    if block_indent <= 0 {
+        // No content lines found
+        return Ok(("", p))
+    }
+
+    // Collect lines
+    var result: string = ""
+    var first_line: bool = true
+    var trailing_newlines: i32 = 0
+
+    while p < len {
+        let line_indent: i32 = measure_indent(chars, p, len)
+        let line_start: i32 = p + line_indent
+
+        // Check for blank line
+        if line_start >= len or is_newline(chars[line_start].as#[i32]) {
+            trailing_newlines = trailing_newlines + 1
+            p = skip_newline(chars, line_start, len)
+        } else if line_indent < block_indent {
+            // De-indented — end of block
+            break
+        } else {
+            // Add any buffered blank lines
+            var bi: i32 = 0
+            while bi < trailing_newlines {
+                result = result + "\n"
+                bi = bi + 1
+            }
+            trailing_newlines = 0
+
+            // Content line
+            if not first_line {
+                if is_literal {
+                    result = result + "\n"
+                } else {
+                    // Folded: newline becomes space (unless line is more-indented)
+                    if line_indent > block_indent {
+                        result = result + "\n"
+                    } else {
+                        result = result + " "
+                    }
+                }
+            }
+            first_line = false
+
+            // Extract line content (with extra indent for more-indented lines)
+            var lp: i32 = p + block_indent
+            var line_content: string = ""
+            while lp < len and not is_newline(chars[lp].as#[i32]) {
+                line_content = line_content + char_to_str(chars[lp])
+                lp = lp + 1
+            }
+            result = result + line_content
+            p = skip_newline(chars, lp, len)
+        }
+    }
+
+    // Apply chomping
+    if chomp == 0 {
+        // clip: single trailing newline
+        result = result + "\n"
+    } else if chomp == 2 {
+        // keep: preserve trailing newlines
+        var ki: i32 = 0
+        while ki < trailing_newlines {
+            result = result + "\n"
+            ki = ki + 1
+        }
+        result = result + "\n"
+    }
+    // strip (chomp==1): no trailing newline
+
+    return Ok((result, p))
+}
+
+// ============================================================================
+// Flow Collection Parsing
+// ============================================================================
+
+// Parse a flow sequence: [item1, item2, ...]
+fn parse_flow_sequence(chars: [char], pos: i32, len: i32) -> Result#[(YamlValue, i32), YamlError] {
+    var p: i32 = pos + 1  // skip [
+    var items: List#[YamlValue] = List.new#[YamlValue]()
+
+    p = skip_flow_ws(chars, p, len)
+
+    if p < len and chars[p].as#[i32] == 93 {
+        // empty sequence
+        return Ok((YamlValue::Sequence(items), p + 1))
+    }
+
+    while p < len {
+        p = skip_flow_ws(chars, p, len)
+        if p >= len {
+            return Err(make_error("unterminated flow sequence", count_lines(chars, pos)))
+        }
+
+        // Parse value
+        let val_r: Result#[(YamlValue, i32), YamlError] = parse_flow_value(chars, p, len)
+        match val_r {
+            Ok(vv) => {
+                items.push(vv.0)
+                p = vv.1
+            }
+            Err(e) => { return Err(e) }
+        }
+
+        p = skip_flow_ws(chars, p, len)
+        if p >= len {
+            return Err(make_error("unterminated flow sequence", count_lines(chars, pos)))
+        }
+
+        let c: i32 = chars[p].as#[i32]
+        if c == 93 {
+            return Ok((YamlValue::Sequence(items), p + 1))
+        }
+        if c == 44 {
+            p = p + 1
+        }
+    }
+
+    return Err(make_error("unterminated flow sequence", count_lines(chars, pos)))
+}
+
+// Parse a flow mapping: {key: value, ...}
+fn parse_flow_mapping(chars: [char], pos: i32, len: i32) -> Result#[(YamlValue, i32), YamlError] {
+    var p: i32 = pos + 1  // skip {
+    var entries: Map#[string, YamlValue] = Map.new#[string, YamlValue]()
+    entries.insert("", YamlValue::Null)
+
+    p = skip_flow_ws(chars, p, len)
+
+    if p < len and chars[p].as#[i32] == 125 {
+        // empty mapping
+        return Ok((YamlValue::Mapping(entries), p + 1))
+    }
+
+    while p < len {
+        p = skip_flow_ws(chars, p, len)
+        if p >= len {
+            return Err(make_error("unterminated flow mapping", count_lines(chars, pos)))
+        }
+
+        // Parse key
+        let key_r: Result#[(string, i32), YamlError] = parse_flow_key(chars, p, len)
+        var key: string = ""
+        match key_r {
+            Ok(kv) => {
+                key = kv.0
+                p = kv.1
+            }
+            Err(e) => { return Err(e) }
+        }
+
+        p = skip_flow_ws(chars, p, len)
+
+        // Expect colon
+        if p >= len or chars[p].as#[i32] != 58 {
+            return Err(make_error("expected ':' in flow mapping", count_lines(chars, p)))
+        }
+        p = p + 1
+        p = skip_flow_ws(chars, p, len)
+
+        // Parse value
+        let val_r: Result#[(YamlValue, i32), YamlError] = parse_flow_value(chars, p, len)
+        match val_r {
+            Ok(vv) => {
+                entries.insert(key, vv.0)
+                p = vv.1
+            }
+            Err(e) => { return Err(e) }
+        }
+
+        p = skip_flow_ws(chars, p, len)
+        if p >= len {
+            return Err(make_error("unterminated flow mapping", count_lines(chars, pos)))
+        }
+
+        let c: i32 = chars[p].as#[i32]
+        if c == 125 {
+            return Ok((YamlValue::Mapping(entries), p + 1))
+        }
+        if c == 44 {
+            p = p + 1
+        }
+    }
+
+    return Err(make_error("unterminated flow mapping", count_lines(chars, pos)))
+}
+
+// Skip whitespace including newlines (for flow context)
+fn skip_flow_ws(chars: [char], pos: i32, len: i32) -> i32 {
+    var i: i32 = pos
+    while i < len {
+        let c: i32 = chars[i].as#[i32]
+        if c == 32 or c == 9 or c == 10 or c == 13 {
+            i = i + 1
+        } else if c == 35 {
+            // Comment in flow context — skip to newline
+            while i < len and chars[i].as#[i32] != 10 {
+                i = i + 1
+            }
+        } else {
+            break
+        }
+    }
+    return i
+}
+
+// Parse a flow key (plain or quoted string)
+fn parse_flow_key(chars: [char], pos: i32, len: i32) -> Result#[(string, i32), YamlError] {
+    if pos >= len {
+        return Err(make_error("expected key", count_lines(chars, pos)))
+    }
+    let c: i32 = chars[pos].as#[i32]
+    if c == 34 {
+        return parse_double_quoted(chars, pos, len)
+    }
+    if c == 39 {
+        return parse_single_quoted(chars, pos, len)
+    }
+    // Plain key — read until : or , or }
+    var p: i32 = pos
+    var result: string = ""
+    while p < len {
+        let cc: i32 = chars[p].as#[i32]
+        if cc == 58 or cc == 44 or cc == 125 or cc == 10 or cc == 13 {
+            break
+        }
+        result = result + char_to_str(chars[p])
+        p = p + 1
+    }
+    return Ok((trim_right(result), p))
+}
+
+// Parse a value in flow context
+fn parse_flow_value(chars: [char], pos: i32, len: i32) -> Result#[(YamlValue, i32), YamlError] {
+    if pos >= len {
+        return Err(make_error("expected value", count_lines(chars, pos)))
+    }
+    let c: i32 = chars[pos].as#[i32]
+
+    // Nested flow sequence
+    if c == 91 {
+        return parse_flow_sequence(chars, pos, len)
+    }
+    // Nested flow mapping
+    if c == 123 {
+        return parse_flow_mapping(chars, pos, len)
+    }
+    // Quoted string
+    if c == 34 {
+        let sr: Result#[(string, i32), YamlError] = parse_double_quoted(chars, pos, len)
+        match sr {
+            Ok(sv) => { return Ok((YamlValue::Str(sv.0), sv.1)) }
+            Err(e) => { return Err(e) }
+        }
+    }
+    if c == 39 {
+        let sr: Result#[(string, i32), YamlError] = parse_single_quoted(chars, pos, len)
+        match sr {
+            Ok(sv) => { return Ok((YamlValue::Str(sv.0), sv.1)) }
+            Err(e) => { return Err(e) }
+        }
+    }
+
+    // Plain scalar — stop at flow indicators
+    var p: i32 = pos
+    var result: string = ""
+    while p < len {
+        let cc: i32 = chars[p].as#[i32]
+        if cc == 44 or cc == 93 or cc == 125 or cc == 10 or cc == 13 {
+            break
+        }
+        // Colon followed by space in flow context
+        if cc == 58 and p + 1 < len {
+            let next: i32 = chars[p + 1].as#[i32]
+            if next == 32 or next == 44 or next == 93 or next == 125 {
+                break
+            }
+        }
+        result = result + char_to_str(chars[p])
+        p = p + 1
+    }
+    result = trim_right(result)
+    return Ok((classify_scalar(result), p))
+}
+
+// ============================================================================
+// Block Structure Parsing
+// ============================================================================
+
+// Main parser: parse a YAML document
+pub fn yaml_parse(input: string) -> Result#[YamlValue, YamlError] {
+    let chars: [char] = input.chars()
+    let len: i32 = input.len()
+
+    if len == 0 {
+        return Ok(YamlValue::Null)
+    }
+
+    var pos: i32 = 0
+
+    // Skip document start marker (---)
+    pos = skip_blank_lines(chars, pos, len)
+    if pos + 2 < len and chars[pos].as#[i32] == 45 and chars[pos+1].as#[i32] == 45 and chars[pos+2].as#[i32] == 45 {
+        pos = pos + 3
+        // Skip to next line
+        pos = skip_ws_and_comment(chars, pos, len)
+        if pos < len and is_newline(chars[pos].as#[i32]) {
+            pos = skip_newline(chars, pos, len)
+        }
+    }
+
+    pos = skip_blank_lines(chars, pos, len)
+
+    if pos >= len {
+        return Ok(YamlValue::Null)
+    }
+
+    let result: Result#[(YamlValue, i32), YamlError] = parse_block_node(chars, pos, len, -1)
+    match result {
+        Ok(rv) => { return Ok(rv.0) }
+        Err(e) => { return Err(e) }
+    }
+}
+
+// Parse a block node (mapping, sequence, or scalar) at or past the given indent
+fn parse_block_node(chars: [char], pos: i32, len: i32, min_indent: i32) -> Result#[(YamlValue, i32), YamlError] {
+    var p: i32 = skip_blank_lines(chars, pos, len)
+    if p >= len {
+        return Ok((YamlValue::Null, p))
+    }
+
+    let c: i32 = chars[p].as#[i32]
+
+    // Flow sequence
+    if c == 91 {
+        return parse_flow_sequence(chars, p, len)
+    }
+    // Flow mapping
+    if c == 123 {
+        return parse_flow_mapping(chars, p, len)
+    }
+    // Block scalar
+    if c == 124 or c == 62 {
+        let bs_r: Result#[(string, i32), YamlError] = parse_block_scalar(chars, p, len)
+        match bs_r {
+            Ok(bv) => { return Ok((YamlValue::Str(bv.0), bv.1)) }
+            Err(e) => { return Err(e) }
+        }
+    }
+
+    let indent: i32 = measure_indent(chars, p, len)
+
+    // Check for sequence indicator (-)
+    let content_pos: i32 = p + indent
+    if content_pos < len and chars[content_pos].as#[i32] == 45 {
+        // Check it's "- " or "- \n" (not ---)
+        if content_pos + 1 < len {
+            let next: i32 = chars[content_pos + 1].as#[i32]
+            if next == 32 or next == 10 or next == 13 or next == 9 {
+                return parse_block_sequence(chars, p, len, indent)
+            }
+        } else {
+            // - at end of input
+            return parse_block_sequence(chars, p, len, indent)
+        }
+    }
+
+    // Check for mapping (key: value)
+    if is_mapping_line(chars, content_pos, len) {
+        return parse_block_mapping(chars, p, len, indent)
+    }
+
+    // Quoted scalar at block level
+    if content_pos < len {
+        let qc: i32 = chars[content_pos].as#[i32]
+        if qc == 34 {
+            let sr: Result#[(string, i32), YamlError] = parse_double_quoted(chars, content_pos, len)
+            match sr {
+                Ok(sv) => {
+                    var ep: i32 = sv.1
+                    ep = skip_ws_and_comment(chars, ep, len)
+                    if ep < len and is_newline(chars[ep].as#[i32]) {
+                        ep = skip_newline(chars, ep, len)
+                    }
+                    return Ok((YamlValue::Str(sv.0), ep))
+                }
+                Err(e) => { return Err(e) }
+            }
+        }
+        if qc == 39 {
+            let sr: Result#[(string, i32), YamlError] = parse_single_quoted(chars, content_pos, len)
+            match sr {
+                Ok(sv) => {
+                    var ep: i32 = sv.1
+                    ep = skip_ws_and_comment(chars, ep, len)
+                    if ep < len and is_newline(chars[ep].as#[i32]) {
+                        ep = skip_newline(chars, ep, len)
+                    }
+                    return Ok((YamlValue::Str(sv.0), ep))
+                }
+                Err(e) => { return Err(e) }
+            }
+        }
+        // Block scalar from content position
+        if qc == 124 or qc == 62 {
+            let bs_r: Result#[(string, i32), YamlError] = parse_block_scalar(chars, content_pos, len)
+            match bs_r {
+                Ok(bv) => { return Ok((YamlValue::Str(bv.0), bv.1)) }
+                Err(e) => { return Err(e) }
+            }
+        }
+    }
+
+    // Plain scalar
+    let scalar: (string, i32) = parse_plain_scalar(chars, content_pos, len)
+    var ep: i32 = scalar.1
+    ep = skip_ws_and_comment(chars, ep, len)
+    if ep < len and is_newline(chars[ep].as#[i32]) {
+        ep = skip_newline(chars, ep, len)
+    }
+    return Ok((classify_scalar(scalar.0), ep))
+}
+
+// Check if a line starting at pos looks like a mapping (has key: pattern)
+fn is_mapping_line(chars: [char], pos: i32, len: i32) -> bool {
+    var p: i32 = pos
+    if p >= len { return false }
+
+    let first: i32 = chars[p].as#[i32]
+
+    // Quoted key
+    if first == 34 or first == 39 {
+        var end_quote: i32 = 34
+        if first == 39 { end_quote = 39 }
+        p = p + 1
+        while p < len and chars[p].as#[i32] != end_quote {
+            if chars[p].as#[i32] == 92 and first == 34 {
+                p = p + 1  // skip escape
+            }
+            p = p + 1
+        }
+        if p < len { p = p + 1 }  // skip closing quote
+        // Skip ws after key
+        while p < len and chars[p].as#[i32] == 32 {
+            p = p + 1
+        }
+        return p < len and chars[p].as#[i32] == 58
+    }
+
+    // Plain key — look for ": " or ":\n"
+    while p < len {
+        let c: i32 = chars[p].as#[i32]
+        if c == 10 or c == 13 {
+            return false
+        }
+        if c == 58 {
+            if p + 1 >= len {
+                return true
+            }
+            let next: i32 = chars[p + 1].as#[i32]
+            if next == 32 or next == 10 or next == 13 or next == 9 {
+                return true
+            }
+        }
+        p = p + 1
+    }
+    return false
+}
+
+// Parse a block mapping at a given indent level
+fn parse_block_mapping(chars: [char], pos: i32, len: i32, indent: i32) -> Result#[(YamlValue, i32), YamlError] {
+    var entries: Map#[string, YamlValue] = Map.new#[string, YamlValue]()
+    entries.insert("", YamlValue::Null)
+    var p: i32 = pos
+
+    while p < len {
+        p = skip_blank_lines(chars, p, len)
+        if p >= len { break }
+
+        let line_indent: i32 = measure_indent(chars, p, len)
+        if line_indent < indent { break }
+        if line_indent != indent { break }
+
+        let content_pos: i32 = p + indent
+
+        // Check if this is still a mapping entry (not a sequence)
+        if content_pos < len and chars[content_pos].as#[i32] == 45 {
+            if content_pos + 1 < len {
+                let nc: i32 = chars[content_pos + 1].as#[i32]
+                if nc == 32 or nc == 10 or nc == 13 {
+                    break
+                }
+            }
+        }
+
+        // Parse key
+        var key: string = ""
+        var key_end: i32 = content_pos
+
+        let kc: i32 = chars[content_pos].as#[i32]
+        if kc == 34 {
+            let kr: Result#[(string, i32), YamlError] = parse_double_quoted(chars, content_pos, len)
+            match kr {
+                Ok(kv) => { key = kv.0; key_end = kv.1 }
+                Err(e) => { return Err(e) }
+            }
+        } else if kc == 39 {
+            let kr: Result#[(string, i32), YamlError] = parse_single_quoted(chars, content_pos, len)
+            match kr {
+                Ok(kv) => { key = kv.0; key_end = kv.1 }
+                Err(e) => { return Err(e) }
+            }
+        } else {
+            // Plain key
+            var kp: i32 = content_pos
+            while kp < len {
+                let cc: i32 = chars[kp].as#[i32]
+                if cc == 10 or cc == 13 { break }
+                if cc == 58 {
+                    if kp + 1 >= len or chars[kp + 1].as#[i32] == 32 or
+                       chars[kp + 1].as#[i32] == 10 or chars[kp + 1].as#[i32] == 13 or
+                       chars[kp + 1].as#[i32] == 9 {
+                        break
+                    }
+                }
+                key = key + char_to_str(chars[kp])
+                kp = kp + 1
+            }
+            key = trim_right(key)
+            key_end = kp
+        }
+
+        // Skip whitespace between key and colon
+        key_end = skip_ws(chars, key_end, len)
+
+        // Expect colon
+        if key_end >= len or chars[key_end].as#[i32] != 58 {
+            return Err(make_error("expected ':' after key", count_lines(chars, key_end)))
+        }
+        var val_pos: i32 = key_end + 1
+
+        // Skip whitespace after colon
+        val_pos = skip_ws(chars, val_pos, len)
+
+        // Determine value
+        if val_pos >= len or is_newline(chars[val_pos].as#[i32]) {
+            // Value is on next line(s) — block value
+            if val_pos < len {
+                val_pos = skip_newline(chars, val_pos, len)
+            }
+            let val_r: Result#[(YamlValue, i32), YamlError] = parse_block_node(chars, val_pos, len, indent + 1)
+            match val_r {
+                Ok(vv) => {
+                    entries.insert(key, vv.0)
+                    p = vv.1
+                }
+                Err(e) => { return Err(e) }
+            }
+        } else {
+            // Inline value
+            let vc: i32 = chars[val_pos].as#[i32]
+            if vc == 91 {
+                let val_r: Result#[(YamlValue, i32), YamlError] = parse_flow_sequence(chars, val_pos, len)
+                match val_r {
+                    Ok(vv) => {
+                        entries.insert(key, vv.0)
+                        p = vv.1
+                        p = skip_ws_and_comment(chars, p, len)
+                        if p < len and is_newline(chars[p].as#[i32]) {
+                            p = skip_newline(chars, p, len)
+                        }
+                    }
+                    Err(e) => { return Err(e) }
+                }
+            } else if vc == 123 {
+                let val_r: Result#[(YamlValue, i32), YamlError] = parse_flow_mapping(chars, val_pos, len)
+                match val_r {
+                    Ok(vv) => {
+                        entries.insert(key, vv.0)
+                        p = vv.1
+                        p = skip_ws_and_comment(chars, p, len)
+                        if p < len and is_newline(chars[p].as#[i32]) {
+                            p = skip_newline(chars, p, len)
+                        }
+                    }
+                    Err(e) => { return Err(e) }
+                }
+            } else if vc == 124 or vc == 62 {
+                let bs_r: Result#[(string, i32), YamlError] = parse_block_scalar(chars, val_pos, len)
+                match bs_r {
+                    Ok(bv) => {
+                        entries.insert(key, YamlValue::Str(bv.0))
+                        p = bv.1
+                    }
+                    Err(e) => { return Err(e) }
+                }
+            } else if vc == 34 {
+                let sr: Result#[(string, i32), YamlError] = parse_double_quoted(chars, val_pos, len)
+                match sr {
+                    Ok(sv) => {
+                        entries.insert(key, YamlValue::Str(sv.0))
+                        p = sv.1
+                        p = skip_ws_and_comment(chars, p, len)
+                        if p < len and is_newline(chars[p].as#[i32]) {
+                            p = skip_newline(chars, p, len)
+                        }
+                    }
+                    Err(e) => { return Err(e) }
+                }
+            } else if vc == 39 {
+                let sr: Result#[(string, i32), YamlError] = parse_single_quoted(chars, val_pos, len)
+                match sr {
+                    Ok(sv) => {
+                        entries.insert(key, YamlValue::Str(sv.0))
+                        p = sv.1
+                        p = skip_ws_and_comment(chars, p, len)
+                        if p < len and is_newline(chars[p].as#[i32]) {
+                            p = skip_newline(chars, p, len)
+                        }
+                    }
+                    Err(e) => { return Err(e) }
+                }
+            } else {
+                // Plain scalar value
+                let sv: (string, i32) = parse_plain_scalar(chars, val_pos, len)
+                entries.insert(key, classify_scalar(sv.0))
+                p = sv.1
+                p = skip_ws_and_comment(chars, p, len)
+                if p < len and is_newline(chars[p].as#[i32]) {
+                    p = skip_newline(chars, p, len)
+                }
+            }
+        }
+    }
+
+    return Ok((YamlValue::Mapping(entries), p))
+}
+
+// Parse a block sequence at a given indent level
+fn parse_block_sequence(chars: [char], pos: i32, len: i32, indent: i32) -> Result#[(YamlValue, i32), YamlError] {
+    var items: List#[YamlValue] = List.new#[YamlValue]()
+    var p: i32 = pos
+
+    while p < len {
+        p = skip_blank_lines(chars, p, len)
+        if p >= len { break }
+
+        let line_indent: i32 = measure_indent(chars, p, len)
+        if line_indent < indent { break }
+        if line_indent != indent { break }
+
+        let content_pos: i32 = p + indent
+
+        // Must be a sequence indicator
+        if content_pos >= len or chars[content_pos].as#[i32] != 45 {
+            break
+        }
+
+        // Verify it's "- " not "---"
+        if content_pos + 1 < len {
+            let nc: i32 = chars[content_pos + 1].as#[i32]
+            if nc != 32 and nc != 10 and nc != 13 and nc != 9 {
+                break
+            }
+        }
+
+        // Skip "- "
+        var val_pos: i32 = content_pos + 1
+        if val_pos < len and chars[val_pos].as#[i32] == 32 {
+            val_pos = val_pos + 1
+        }
+
+        // Skip whitespace after dash
+        val_pos = skip_ws(chars, val_pos, len)
+
+        if val_pos >= len or is_newline(chars[val_pos].as#[i32]) {
+            // Value on next line(s)
+            if val_pos < len {
+                val_pos = skip_newline(chars, val_pos, len)
+            }
+            let val_r: Result#[(YamlValue, i32), YamlError] = parse_block_node(chars, val_pos, len, indent + 1)
+            match val_r {
+                Ok(vv) => {
+                    items.push(vv.0)
+                    p = vv.1
+                }
+                Err(e) => { return Err(e) }
+            }
+        } else {
+            // Inline value after "- "
+            let vc: i32 = chars[val_pos].as#[i32]
+            if vc == 91 {
+                let val_r: Result#[(YamlValue, i32), YamlError] = parse_flow_sequence(chars, val_pos, len)
+                match val_r {
+                    Ok(vv) => {
+                        items.push(vv.0)
+                        p = vv.1
+                        p = skip_ws_and_comment(chars, p, len)
+                        if p < len and is_newline(chars[p].as#[i32]) {
+                            p = skip_newline(chars, p, len)
+                        }
+                    }
+                    Err(e) => { return Err(e) }
+                }
+            } else if vc == 123 {
+                let val_r: Result#[(YamlValue, i32), YamlError] = parse_flow_mapping(chars, val_pos, len)
+                match val_r {
+                    Ok(vv) => {
+                        items.push(vv.0)
+                        p = vv.1
+                        p = skip_ws_and_comment(chars, p, len)
+                        if p < len and is_newline(chars[p].as#[i32]) {
+                            p = skip_newline(chars, p, len)
+                        }
+                    }
+                    Err(e) => { return Err(e) }
+                }
+            } else if vc == 124 or vc == 62 {
+                let bs_r: Result#[(string, i32), YamlError] = parse_block_scalar(chars, val_pos, len)
+                match bs_r {
+                    Ok(bv) => {
+                        items.push(YamlValue::Str(bv.0))
+                        p = bv.1
+                    }
+                    Err(e) => { return Err(e) }
+                }
+            } else if vc == 34 {
+                let sr: Result#[(string, i32), YamlError] = parse_double_quoted(chars, val_pos, len)
+                match sr {
+                    Ok(sv) => {
+                        items.push(YamlValue::Str(sv.0))
+                        p = sv.1
+                        p = skip_ws_and_comment(chars, p, len)
+                        if p < len and is_newline(chars[p].as#[i32]) {
+                            p = skip_newline(chars, p, len)
+                        }
+                    }
+                    Err(e) => { return Err(e) }
+                }
+            } else if vc == 39 {
+                let sr: Result#[(string, i32), YamlError] = parse_single_quoted(chars, val_pos, len)
+                match sr {
+                    Ok(sv) => {
+                        items.push(YamlValue::Str(sv.0))
+                        p = sv.1
+                        p = skip_ws_and_comment(chars, p, len)
+                        if p < len and is_newline(chars[p].as#[i32]) {
+                            p = skip_newline(chars, p, len)
+                        }
+                    }
+                    Err(e) => { return Err(e) }
+                }
+            } else {
+                // Check if inline scalar is followed by a mapping on next lines
+                // (compact notation: "- key: value")
+                if is_mapping_line(chars, val_pos, len) {
+                    // Parse as nested mapping starting at val_pos column
+                    let nested_indent: i32 = val_pos - (p + indent)
+                    let val_r: Result#[(YamlValue, i32), YamlError] = parse_compact_mapping_in_seq(chars, val_pos, len, indent, nested_indent)
+                    match val_r {
+                        Ok(vv) => {
+                            items.push(vv.0)
+                            p = vv.1
+                        }
+                        Err(e) => { return Err(e) }
+                    }
+                } else {
+                    let sv: (string, i32) = parse_plain_scalar(chars, val_pos, len)
+                    items.push(classify_scalar(sv.0))
+                    p = sv.1
+                    p = skip_ws_and_comment(chars, p, len)
+                    if p < len and is_newline(chars[p].as#[i32]) {
+                        p = skip_newline(chars, p, len)
+                    }
+                }
+            }
+        }
+    }
+
+    return Ok((YamlValue::Sequence(items), p))
+}
+
+// Parse compact mapping notation inside a sequence entry
+// e.g., "- name: foo\n  age: 42" where the mapping starts right after "- "
+fn parse_compact_mapping_in_seq(chars: [char], pos: i32, len: i32, seq_indent: i32, offset: i32) -> Result#[(YamlValue, i32), YamlError] {
+    var entries: Map#[string, YamlValue] = Map.new#[string, YamlValue]()
+    entries.insert("", YamlValue::Null)
+    var p: i32 = pos
+    let map_indent: i32 = seq_indent + offset  // column of mapping keys on continuation lines
+    var first: bool = true
+
+    while p < len {
+        if not first {
+            p = skip_blank_lines(chars, p, len)
+            if p >= len { break }
+            let line_indent: i32 = measure_indent(chars, p, len)
+            if line_indent < map_indent { break }
+            if line_indent != map_indent { break }
+            p = p + line_indent
+        }
+        first = false
+
+        // Parse key
+        var key: string = ""
+        var key_end: i32 = p
+
+        let kc: i32 = chars[p].as#[i32]
+        if kc == 34 {
+            let kr: Result#[(string, i32), YamlError] = parse_double_quoted(chars, p, len)
+            match kr {
+                Ok(kv) => { key = kv.0; key_end = kv.1 }
+                Err(e) => { return Err(e) }
+            }
+        } else if kc == 39 {
+            let kr: Result#[(string, i32), YamlError] = parse_single_quoted(chars, p, len)
+            match kr {
+                Ok(kv) => { key = kv.0; key_end = kv.1 }
+                Err(e) => { return Err(e) }
+            }
+        } else {
+            while key_end < len {
+                let cc: i32 = chars[key_end].as#[i32]
+                if cc == 10 or cc == 13 { break }
+                if cc == 58 {
+                    if key_end + 1 >= len or chars[key_end + 1].as#[i32] == 32 or
+                       chars[key_end + 1].as#[i32] == 10 or chars[key_end + 1].as#[i32] == 13 {
+                        break
+                    }
+                }
+                key = key + char_to_str(chars[key_end])
+                key_end = key_end + 1
+            }
+            key = trim_right(key)
+        }
+
+        key_end = skip_ws(chars, key_end, len)
+
+        // Expect colon
+        if key_end >= len or chars[key_end].as#[i32] != 58 {
+            return Err(make_error("expected ':' after key", count_lines(chars, key_end)))
+        }
+        var val_pos: i32 = key_end + 1
+        val_pos = skip_ws(chars, val_pos, len)
+
+        if val_pos >= len or is_newline(chars[val_pos].as#[i32]) {
+            // Block value
+            if val_pos < len {
+                val_pos = skip_newline(chars, val_pos, len)
+            }
+            let val_r: Result#[(YamlValue, i32), YamlError] = parse_block_node(chars, val_pos, len, map_indent + 1)
+            match val_r {
+                Ok(vv) => {
+                    entries.insert(key, vv.0)
+                    p = vv.1
+                }
+                Err(e) => { return Err(e) }
+            }
+        } else {
+            // Inline value
+            let vc: i32 = chars[val_pos].as#[i32]
+            if vc == 91 {
+                let vr: Result#[(YamlValue, i32), YamlError] = parse_flow_sequence(chars, val_pos, len)
+                match vr {
+                    Ok(vv) => { entries.insert(key, vv.0); p = vv.1 }
+                    Err(e) => { return Err(e) }
+                }
+            } else if vc == 123 {
+                let vr: Result#[(YamlValue, i32), YamlError] = parse_flow_mapping(chars, val_pos, len)
+                match vr {
+                    Ok(vv) => { entries.insert(key, vv.0); p = vv.1 }
+                    Err(e) => { return Err(e) }
+                }
+            } else if vc == 124 or vc == 62 {
+                let bs_r: Result#[(string, i32), YamlError] = parse_block_scalar(chars, val_pos, len)
+                match bs_r {
+                    Ok(bv) => { entries.insert(key, YamlValue::Str(bv.0)); p = bv.1 }
+                    Err(e) => { return Err(e) }
+                }
+            } else if vc == 34 {
+                let sr: Result#[(string, i32), YamlError] = parse_double_quoted(chars, val_pos, len)
+                match sr {
+                    Ok(sv) => { entries.insert(key, YamlValue::Str(sv.0)); p = sv.1 }
+                    Err(e) => { return Err(e) }
+                }
+            } else if vc == 39 {
+                let sr: Result#[(string, i32), YamlError] = parse_single_quoted(chars, val_pos, len)
+                match sr {
+                    Ok(sv) => { entries.insert(key, YamlValue::Str(sv.0)); p = sv.1 }
+                    Err(e) => { return Err(e) }
+                }
+            } else {
+                let sv: (string, i32) = parse_plain_scalar(chars, val_pos, len)
+                entries.insert(key, classify_scalar(sv.0))
+                p = sv.1
+            }
+            p = skip_ws_and_comment(chars, p, len)
+            if p < len and is_newline(chars[p].as#[i32]) {
+                p = skip_newline(chars, p, len)
+            }
+        }
+    }
+
+    return Ok((YamlValue::Mapping(entries), p))
+}
+
+// ============================================================================
+// Stringify
+// ============================================================================
+
+pub fn yaml_stringify(value: YamlValue) -> string {
+    return stringify_value(value, 0, true)
+}
+
+fn stringify_value(value: YamlValue, indent: i32, top_level: bool) -> string {
+    match value {
+        YamlValue.Null => { return "null\n" }
+        YamlValue.Bool(b) => {
+            if b { return "true\n" }
+            return "false\n"
+        }
+        YamlValue.Int(n) => {
+            return n.to_string().as_str() + "\n"
+        }
+        YamlValue.Float(n) => {
+            // NaN check
+            if not (n == n) {
+                return ".nan\n"
+            }
+            // Infinity check
+            if (n - n) != 0.0 {
+                if n > 0.0 {
+                    return ".inf\n"
+                }
+                return "-.inf\n"
+            }
+            let int_val: i64 = n.as#[i64]
+            if int_val.as#[f64] == n {
+                return int_val.to_string().as_str() + ".0\n"
+            }
+            return n.to_string().as_str() + "\n"
+        }
+        YamlValue.Str(s) => {
+            if needs_quoting(s) {
+                return "\"" + escape_yaml_string(s) + "\"\n"
+            }
+            return s + "\n"
+        }
+        YamlValue.Sequence(items) => {
+            if items.len() == 0 {
+                return "[]\n"
+            }
+            return stringify_sequence_items(items, indent, 0, items.len())
+        }
+        YamlValue.Mapping(entries) => {
+            let keys: List#[string] = entries.keys()
+            if keys.len() == 0 or (keys.len() == 1 and keys.get(0)! == "") {
+                return "{}\n"
+            }
+            return stringify_mapping_entries(entries, keys, indent, 0, keys.len())
+        }
+    }
+}
+
+fn stringify_sequence_items(items: List#[YamlValue], indent: i32, idx: i32, total: i32) -> string {
+    if idx >= total { return "" }
+    let item: YamlValue = items.get(idx)!
+    let prefix: string = make_indent(indent) + "- "
+
+    var item_str: string = ""
+    var is_compound: bool = false
+    match item {
+        YamlValue.Mapping(_) => { is_compound = true }
+        YamlValue.Sequence(_) => { is_compound = true }
+        _ => {}
+    }
+
+    if is_compound {
+        let inner: string = stringify_value(item, indent + 2, false)
+        // For compound types after "- ", we need to inline the first line
+        item_str = prefix + inline_first_line(inner, indent + 2)
+    } else {
+        item_str = prefix + stringify_value(item, indent + 2, false)
+    }
+
+    return item_str + stringify_sequence_items(items, indent, idx + 1, total)
+}
+
+fn stringify_mapping_entries(entries: Map#[string, YamlValue], keys: List#[string], indent: i32, idx: i32, total: i32) -> string {
+    if idx >= total { return "" }
+    let key: string = keys.get(idx)!
+
+    // Skip the priming empty key
+    if key == "" {
+        return stringify_mapping_entries(entries, keys, indent, idx + 1, total)
+    }
+
+    let value: YamlValue = entries.get(key)!
+    let key_prefix: string = make_indent(indent) + stringify_key(key) + ":"
+
+    var value_str: string = ""
+    var is_compound: bool = false
+    match value {
+        YamlValue.Mapping(_) => { is_compound = true }
+        YamlValue.Sequence(_) => { is_compound = true }
+        _ => {}
+    }
+
+    if is_compound {
+        value_str = key_prefix + "\n" + stringify_value(value, indent + 2, false)
+    } else {
+        value_str = key_prefix + " " + stringify_value(value, indent + 2, false)
+    }
+
+    return value_str + stringify_mapping_entries(entries, keys, indent, idx + 1, total)
+}
+
+fn make_indent(n: i32) -> string {
+    var result: string = ""
+    var i: i32 = 0
+    while i < n {
+        result = result + " "
+        i = i + 1
+    }
+    return result
+}
+
+fn stringify_key(key: string) -> string {
+    if needs_quoting(key) {
+        return "\"" + escape_yaml_string(key) + "\""
+    }
+    return key
+}
+
+fn needs_quoting(s: string) -> bool {
+    let slen: i32 = s.len()
+    if slen == 0 { return true }
+
+    // Check if it would be interpreted as non-string scalar
+    if s == "null" or s == "~" or s == "Null" or s == "NULL" { return true }
+    if s == "true" or s == "True" or s == "TRUE" { return true }
+    if s == "false" or s == "False" or s == "FALSE" { return true }
+    if s == "yes" or s == "Yes" or s == "YES" { return true }
+    if s == "no" or s == "No" or s == "NO" { return true }
+    if s == "on" or s == "On" or s == "ON" { return true }
+    if s == "off" or s == "Off" or s == "OFF" { return true }
+    if s == ".inf" or s == ".Inf" or s == ".INF" { return true }
+    if s == "-.inf" or s == "-.Inf" or s == "-.INF" { return true }
+    if s == ".nan" or s == ".NaN" or s == ".NAN" { return true }
+
+    // Check if it looks like a number
+    let first: i32 = s.byte_at(0).as#[i32]
+    if is_digit(first) or first == 45 or first == 43 or first == 46 {
+        let int_r: ?i64 = try_parse_int(s)
+        match int_r {
+            Some(_) => { return true }
+            None => {}
+        }
+        let float_r: ?f64 = try_parse_float(s)
+        match float_r {
+            Some(_) => { return true }
+            None => {}
+        }
+    }
+
+    // Check for special characters that need quoting
+    var i: i32 = 0
+    while i < slen {
+        let c: i32 = s.byte_at(i).as#[i32]
+        if c == 58 or c == 35 or c == 91 or c == 93 or c == 123 or c == 125 or
+           c == 44 or c == 38 or c == 42 or c == 63 or c == 124 or c == 62 or
+           c == 39 or c == 34 or c == 96 or c == 64 or c == 10 or c == 13 or
+           c == 9 or c == 37 {
+            return true
+        }
+        i = i + 1
+    }
+
+    // Leading/trailing spaces
+    if s.byte_at(0).as#[i32] == 32 or s.byte_at(slen - 1).as#[i32] == 32 {
+        return true
+    }
+
+    return false
+}
+
+fn escape_yaml_string(s: string) -> string {
+    var result: string = ""
+    var i: i32 = 0
+    let slen: i32 = s.len()
+    while i < slen {
+        let c: i32 = s.byte_at(i).as#[i32]
+        if c == 34 { result = result + "\\\"" }
+        else if c == 92 { result = result + "\\\\" }
+        else if c == 10 { result = result + "\\n" }
+        else if c == 13 { result = result + "\\r" }
+        else if c == 9 { result = result + "\\t" }
+        else { result = result + from_byte(c.as#[u8]) }
+        i = i + 1
+    }
+    return result
+}
+
+// Take multi-line block output and inline the first line after "- "
+fn inline_first_line(block: string, indent: i32) -> string {
+    let slen: i32 = block.len()
+    if slen == 0 { return block }
+
+    // Skip leading indentation of first line
+    var i: i32 = 0
+    while i < slen and block.byte_at(i).as#[i32] == 32 {
+        i = i + 1
+    }
+    if i >= slen { return block }
+
+    return block.slice(i, slen)
+}

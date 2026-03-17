@@ -1,0 +1,23 @@
+// Benchmark: Recursive Fibonacci
+// Calculates fib(40) = 102334155
+// Classic CPU-bound benchmark for function call overhead and recursion.
+// Works on both VM and native backends.
+
+fn fib(n: i32) -> i32 {
+    if n <= 1 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn main() -> i32 {
+    let result: i32 = fib(40)
+    // Expected: 102334155
+    // Verify correctness: 102334155 mod 256 = 155
+    if result != 102334155 {
+        println("FAIL: fib(40) incorrect")
+        return 1
+    }
+    println("OK")
+    return 0
+}

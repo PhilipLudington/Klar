@@ -20,6 +20,7 @@ const Disassembler = @import("disasm.zig").Disassembler;
 const VM = @import("vm.zig").VM;
 const codegen = if (has_llvm) @import("codegen/mod.zig") else struct {};
 const ast_from_json = @import("ast_from_json.zig");
+const typed_ast_loader = @import("typed_ast_loader.zig");
 const ir = if (has_llvm) @import("ir/mod.zig") else struct {};
 const ownership = @import("ownership/mod.zig");
 const opt = if (has_llvm) @import("opt/mod.zig") else struct {};
@@ -29,9 +30,13 @@ const ModuleInfo = module_resolver.ModuleInfo;
 const Repl = @import("repl.zig").Repl;
 const manifest = @import("pkg/manifest.zig");
 const lockfile = @import("pkg/lockfile.zig");
+const registry = @import("pkg/registry.zig");
 const formatter = @import("formatter.zig");
+const doc_gen = @import("doc_gen.zig");
 const lsp = @import("lsp.zig");
 const meta_query = @import("meta_query.zig");
+const kira_manifest = @import("interop/kira_manifest.zig");
+const kira_build = @import("interop/kira_build.zig");
 
 // Cross-platform IO helpers
 fn getStdOut() std.fs.File {
@@ -72,6 +77,7 @@ const CheckCommandOptions = struct {
     expected_line: ?usize = null,
     expected_column: ?usize = null,
     ast_input_path: ?[]const u8 = null,
+    timing: bool = false,
 };
 
 const TestFileResult = struct {
@@ -215,6 +221,103 @@ fn sourceOffsetFromLineColumn(source: []const u8, line: usize, column: usize) ?u
     const offset = line_start + (column - 1);
     if (offset > line_end) return null;
     return offset;
+}
+
+/// Extract the text of a specific line from source (1-based line number).
+fn getSourceLine(source: []const u8, line: u32) ?[]const u8 {
+    if (line == 0) return null;
+    var current_line: u32 = 1;
+    var line_start: usize = 0;
+    var i: usize = 0;
+
+    while (i < source.len and current_line < line) : (i += 1) {
+        if (source[i] == '\n') {
+            current_line += 1;
+            line_start = i + 1;
+        }
+    }
+
+    if (current_line != line) return null;
+
+    // Find end of line
+    var line_end = source.len;
+    i = line_start;
+    while (i < source.len) : (i += 1) {
+        if (source[i] == '\n') {
+            line_end = i;
+            break;
+        }
+    }
+
+    // Strip trailing \r for Windows line endings
+    if (line_end > line_start and source[line_end - 1] == '\r') {
+        line_end -= 1;
+    }
+
+    return source[line_start..line_end];
+}
+
+/// Write a source snippet with caret pointer for an error span.
+fn writeErrorSnippet(stderr: anytype, source: []const u8, span: ast.Span) !void {
+    const line_text = getSourceLine(source, span.line) orelse return;
+
+    // Format line number
+    var line_num_buf: [16]u8 = undefined;
+    const line_str = std.fmt.bufPrint(&line_num_buf, "{d}", .{span.line}) catch return;
+    const line_width = line_str.len;
+
+    // Print source line: "  3 | let x: i32 = "hello""
+    const max_line_len: usize = 200;
+    const display_text = if (line_text.len > max_line_len) line_text[0..max_line_len] else line_text;
+    var buf: [512]u8 = undefined;
+    const snippet = std.fmt.bufPrint(&buf, "  {s} | {s}\n", .{ line_str, display_text }) catch return;
+    try stderr.writeAll(snippet);
+
+    // Print caret line: "    |          ^"
+    const col: usize = if (span.column > 0) span.column - 1 else 0;
+    const prefix_len = 2 + line_width + 3; // "  " + line_num + " | "
+    const total_indent = prefix_len + col;
+    if (total_indent > 500) return; // sanity check
+
+    var caret_buf: [512]u8 = undefined;
+    var pos: usize = 0;
+    while (pos < total_indent) : (pos += 1) {
+        caret_buf[pos] = ' ';
+    }
+    caret_buf[pos] = '^';
+    pos += 1;
+    caret_buf[pos] = '\n';
+    pos += 1;
+    try stderr.writeAll(caret_buf[0..pos]);
+}
+
+/// Write type check errors with optional source snippets.
+/// `source` is the source text for single-file compilation; pass null for multi-module.
+/// When `include_kind` is true, the error kind tag is included (e.g. "[type_mismatch]").
+fn writeCheckErrors(checker: *const TypeChecker, stderr: anytype, source: ?[]const u8, include_kind: bool) !void {
+    var buf: [512]u8 = undefined;
+    for (checker.errors.items) |check_err| {
+        if (check_err.kind == .meta_warning) continue;
+        if (include_kind) {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d} [{s}]: {s}\n", .{
+                check_err.span.line,
+                check_err.span.column,
+                @tagName(check_err.kind),
+                check_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        } else {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                check_err.span.line,
+                check_err.span.column,
+                check_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        }
+        if (source) |src| {
+            try writeErrorSnippet(stderr, src, check_err.span);
+        }
+    }
 }
 
 fn symbolKindName(kind: checker_mod.Symbol.Kind) []const u8 {
@@ -393,6 +496,7 @@ pub fn main() !void {
         var debug_mode = false;
         var use_interpreter = false;
         var run_ast_input_path: ?[]const u8 = null;
+        var run_typed_ast_input_path: ?[]const u8 = null;
         var source_file: ?[]const u8 = null;
         var program_args_start: usize = args.len; // Default: no program args
 
@@ -414,6 +518,11 @@ pub fn main() !void {
                 i += 1;
             } else if (std.mem.startsWith(u8, arg, "--ast-input=")) {
                 run_ast_input_path = arg["--ast-input=".len..];
+            } else if (std.mem.eql(u8, arg, "--typed-ast-input") and i + 1 < args.len) {
+                run_typed_ast_input_path = args[i + 1];
+                i += 1;
+            } else if (std.mem.startsWith(u8, arg, "--typed-ast-input=")) {
+                run_typed_ast_input_path = arg["--typed-ast-input=".len..];
             } else if (!std.mem.startsWith(u8, arg, "-") and source_file == null) {
                 // First non-flag argument is the source file
                 source_file = arg;
@@ -462,8 +571,8 @@ pub fn main() !void {
         const search_paths = if (dep_resolution) |dr| dr.paths.items else &[_][]const u8{};
 
         if (use_vm or use_interpreter) {
-            if (run_ast_input_path != null) {
-                try getStdErr().writeAll("Error: --ast-input is not compatible with --vm or --interpret\n");
+            if (run_ast_input_path != null or run_typed_ast_input_path != null) {
+                try getStdErr().writeAll("Error: --ast-input/--typed-ast-input is not compatible with --vm or --interpret\n");
                 return;
             }
             if (use_interpreter) {
@@ -473,7 +582,7 @@ pub fn main() !void {
             }
         } else if (comptime has_llvm) {
             // Default: compile to native and run
-            try runNativeFileWithOptions(allocator, final_source, program_args, search_paths, run_ast_input_path);
+            try runNativeFileWithOptions(allocator, final_source, program_args, search_paths, run_ast_input_path, run_typed_ast_input_path);
         } else {
             // LLVM not available, fall back to VM
             try runVmFile(allocator, final_source, debug_mode, program_args);
@@ -524,7 +633,9 @@ pub fn main() !void {
         var entry_point: ?[]const u8 = null;
         var linker_script: ?[]const u8 = null;
         var compile_only = false;
+        var no_cache = false;
         var ast_input_path: ?[]const u8 = null;
+        var typed_ast_input_path: ?[]const u8 = null;
         var source_file: ?[]const u8 = null;
 
         var i: usize = 2;
@@ -600,6 +711,8 @@ pub fn main() !void {
                 i += 1;
             } else if (std.mem.startsWith(u8, arg, "--linker-script=")) {
                 linker_script = arg["--linker-script=".len..];
+            } else if (std.mem.eql(u8, arg, "--no-cache")) {
+                no_cache = true;
             } else if (std.mem.eql(u8, arg, "-c")) {
                 compile_only = true;
             } else if (std.mem.eql(u8, arg, "--ast-input") and i + 1 < args.len) {
@@ -607,6 +720,11 @@ pub fn main() !void {
                 i += 1;
             } else if (std.mem.startsWith(u8, arg, "--ast-input=")) {
                 ast_input_path = arg["--ast-input=".len..];
+            } else if (std.mem.eql(u8, arg, "--typed-ast-input") and i + 1 < args.len) {
+                typed_ast_input_path = args[i + 1];
+                i += 1;
+            } else if (std.mem.startsWith(u8, arg, "--typed-ast-input=")) {
+                typed_ast_input_path = arg["--typed-ast-input=".len..];
             } else if (!std.mem.startsWith(u8, arg, "-") and source_file == null) {
                 // Non-flag argument is the source file
                 source_file = arg;
@@ -663,6 +781,52 @@ pub fn main() !void {
 
         const search_paths = if (dep_resolution) |dr| dr.paths.items else &[_][]const u8{};
 
+        // Build Kira dependencies (if any declared in klar.json)
+        var kira_result: ?kira_build.KiraBuildResult = null;
+        defer if (kira_result) |*kr| kr.deinit();
+
+        if (loaded_manifest) |m| {
+            if (m.kira_dependencies.count() > 0) {
+                const build_output_dir = if (final_output) |o|
+                    std.fs.path.dirname(o) orelse "build"
+                else
+                    "build";
+                kira_result = kira_build.buildKiraDependencies(
+                    allocator,
+                    m.kira_dependencies,
+                    m.root_dir,
+                    build_output_dir,
+                    getStdErr(),
+                ) catch |err| {
+                    switch (err) {
+                        error.KiraNotFound, error.KiraBuildFailed, error.CCompilerNotFound,
+                        error.CCompileFailed, error.ImportKiraFailed, error.DependencyPathNotFound,
+                        error.EntryFileNotFound => return, // Error already printed
+                        error.OutOfMemory => {
+                            try getStdErr().writeAll("Error: out of memory building Kira dependencies\n");
+                            return;
+                        },
+                    }
+                };
+            }
+        }
+
+        // Merge Kira build results into search paths and extra objects
+        var all_search_paths = std.ArrayListUnmanaged([]const u8){};
+        defer all_search_paths.deinit(allocator);
+        all_search_paths.appendSlice(allocator, search_paths) catch {
+            try getStdErr().writeAll("Error: out of memory\n");
+            return;
+        };
+        if (kira_result) |kr| {
+            all_search_paths.appendSlice(allocator, kr.search_paths.items) catch {
+                try getStdErr().writeAll("Error: out of memory\n");
+                return;
+            };
+        }
+
+        const extra_objects = if (kira_result) |kr| kr.extra_objects.items else &[_][]const u8{};
+
         try buildNative(allocator, final_source, .{
             .output_path = final_output,
             .emit_llvm_ir = emit_llvm,
@@ -675,12 +839,14 @@ pub fn main() !void {
             .target_triple = target_triple,
             .link_libs = link_libs.items,
             .link_paths = link_paths.items,
+            .extra_objects = extra_objects,
             .freestanding = freestanding,
             .entry_point = entry_point,
             .linker_script = linker_script,
             .compile_only = compile_only,
-            .search_paths = search_paths,
-        }, ast_input_path);
+            .no_cache = no_cache,
+            .search_paths = all_search_paths.items,
+        }, ast_input_path, typed_ast_input_path);
     } else if (std.mem.eql(u8, command, "check")) {
         var options = CheckCommandOptions{};
         var input_path: ?[]const u8 = null;
@@ -732,6 +898,8 @@ pub fn main() !void {
                 };
                 options.expected_line = parsed.line;
                 options.expected_column = parsed.column;
+            } else if (std.mem.eql(u8, arg, "--timing")) {
+                options.timing = true;
             } else if (std.mem.eql(u8, arg, "--ast-input") and i + 1 < args.len) {
                 options.ast_input_path = args[i + 1];
                 i += 1;
@@ -796,6 +964,18 @@ pub fn main() !void {
         try initProject(allocator, project_name, is_lib);
     } else if (std.mem.eql(u8, command, "update")) {
         try updateLockfile(allocator);
+    } else if (std.mem.eql(u8, command, "add")) {
+        if (args.len < 3) {
+            try getStdErr().writeAll("Error: missing package name\nUsage: klar add <package> or klar add <package>@<version>\n");
+            return;
+        }
+        try addPackage(allocator, args[2]);
+    } else if (std.mem.eql(u8, command, "publish")) {
+        try publishPackageCommand(allocator);
+    } else if (std.mem.eql(u8, command, "import-kira")) {
+        try kira_manifest.importKiraCommand(allocator, args);
+    } else if (std.mem.eql(u8, command, "clean")) {
+        try cleanCommand(allocator);
     } else if (std.mem.eql(u8, command, "test")) {
         var input_path: ?[]const u8 = null;
         var fn_filter: ?[]const u8 = null;
@@ -851,6 +1031,8 @@ pub fn main() !void {
         };
     } else if (std.mem.eql(u8, command, "fmt")) {
         try fmtCommand(allocator, args);
+    } else if (std.mem.eql(u8, command, "doc")) {
+        try docCommand(allocator, args);
     } else if (std.mem.eql(u8, command, "meta")) {
         try meta_query.metaCommand(allocator, args);
     } else if (std.mem.eql(u8, command, "lsp")) {
@@ -1069,19 +1251,8 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
 
         // Error check (before multi-module execution)
         if (checker.hasErrors()) {
-            var buf: [512]u8 = undefined;
-            const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
-            try stderr.writeAll(header);
-
-            for (checker.errors.items) |check_err| {
-                if (check_err.kind == .meta_warning) continue;
-                const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
-                    check_err.span.line,
-                    check_err.span.column,
-                    check_err.message,
-                }) catch continue;
-                try stderr.writeAll(err_msg);
-            }
+            try stderr.writeAll("Type error(s):\n");
+            try writeCheckErrors(&checker, stderr, null, false);
             try printMetaWarnings(&checker, stderr);
             return;
         }
@@ -1174,19 +1345,8 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
 
     // Single-module error check
     if (checker.hasErrors()) {
-        var buf: [512]u8 = undefined;
-        const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
-        try stderr.writeAll(header);
-
-        for (checker.errors.items) |check_err| {
-            if (check_err.kind == .meta_warning) continue;
-            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
-                check_err.span.line,
-                check_err.span.column,
-                check_err.message,
-            }) catch continue;
-            try stderr.writeAll(err_msg);
-        }
+        try stderr.writeAll("Type error(s):\n");
+        try writeCheckErrors(&checker, stderr, source, false);
         try printMetaWarnings(&checker, stderr);
         return;
     }
@@ -1477,6 +1637,12 @@ fn dumpOneMetaAnnotation(out: std.fs.File, ann: ast.MetaAnnotation) anyerror!voi
                 }
             }
             try out.writeAll("]}");
+        },
+        .require => {
+            try out.writeAll("{\"kind\":\"require\"}");
+        },
+        .ensure => {
+            try out.writeAll("{\"kind\":\"ensure\"}");
         },
     }
 }
@@ -2704,60 +2870,12 @@ fn discoverImports(
     }
 }
 
-fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.CompileOptions, ast_input_path: ?[]const u8) !void {
+fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.CompileOptions, ast_input_path: ?[]const u8, typed_ast_input_path: ?[]const u8) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
     const stderr = getStdErr();
     const stdout = getStdOut();
-
-    // Either load AST from JSON or parse from source
-    var source_buf: ?[]u8 = null;
-    defer if (source_buf) |s| allocator.free(s);
-
-    const module = if (ast_input_path) |json_path| blk: {
-        const json_content = readSourceFile(allocator, json_path) catch |err| {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Error reading AST input '{s}': {}\n", .{ json_path, err }) catch "Error reading AST input\n";
-            try stderr.writeAll(msg);
-            return;
-        };
-        defer allocator.free(json_content);
-        break :blk ast_from_json.moduleFromJson(allocator, arena.allocator(), json_content) catch |err| {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Error parsing AST JSON '{s}': {s}\n", .{ json_path, @errorName(err) }) catch "Error parsing AST JSON\n";
-            try stderr.writeAll(msg);
-            return;
-        };
-    } else blk: {
-        const source = readSourceFile(allocator, path) catch |err| {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
-            try stderr.writeAll(msg);
-            return;
-        };
-        source_buf = source;
-
-        // Parse the source
-        var lexer = Lexer.init(source);
-        var parser = Parser.init(arena.allocator(), &lexer, source);
-
-        break :blk parser.parseModule() catch |err| {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
-            try stderr.writeAll(msg);
-
-            for (parser.errors.items) |parse_err| {
-                const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
-                    parse_err.span.line,
-                    parse_err.span.column,
-                    parse_err.message,
-                }) catch continue;
-                try stderr.writeAll(err_msg);
-            }
-            return;
-        };
-    };
 
     // Type check
     var checker = TypeChecker.init(allocator);
@@ -2786,159 +2904,253 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         module_sources.deinit(allocator);
     }
 
-    // Check if this module has imports (multi-file compilation)
-    if (module.imports.len > 0) {
-        // Set up module resolver for multi-file compilation
-        var resolver = ModuleResolver.init(allocator);
-        defer resolver.deinit();
+    // Source buffer must outlive codegen — AST string slices point into it.
+    var source_buf: ?[]u8 = null;
+    defer if (source_buf) |s| allocator.free(s);
 
-        // Try to find standard library
-        if (findStdLibPath(allocator)) |std_path| {
-            resolver.setStdLibPath(std_path);
-            defer allocator.free(std_path);
-        }
-
-        // Add current working directory as a search path
-        // This allows imports to resolve relative to where the command is run,
-        // enabling test files in subdirectories to import from sibling directories
-        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-        if (std.fs.cwd().realpath(".", &cwd_buf)) |cwd_path| {
-            resolver.addSearchPath(cwd_path) catch {};
-        } else |_| {}
-
-        // Add additional search paths (e.g., from package dependencies)
-        for (options.search_paths) |search_path| {
-            resolver.addSearchPath(search_path) catch {};
-        }
-
-        // Register entry module
-        const entry = resolver.resolveEntry(path) catch {
-            try stderr.writeAll("Error: could not resolve entry module\n");
-            return;
-        };
-        entry.module_ast = module;
-        entry.state = .parsed;
-
-        // Discover all imported modules (breadth-first)
-        var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo){};
-        defer modules_to_process.deinit(allocator);
-        try modules_to_process.append(allocator, entry);
-
-        var processed_idx: usize = 0;
-        while (processed_idx < modules_to_process.items.len) {
-            const mod = modules_to_process.items[processed_idx];
-            processed_idx += 1;
-
-            // Parse if not already parsed
-            if (mod.state == .discovered) {
-                const src = parseModuleSource(allocator, arena.allocator(), mod) catch continue;
-                try module_sources.append(allocator, src);
-            }
-
-            // Discover imports
-            if (mod.module_ast) |mod_ast| {
-                for (mod_ast.imports) |import_decl| {
-                    const dep = resolver.resolve(import_decl.path, mod) catch continue;
-                    if (dep.state == .discovered) {
-                        try modules_to_process.append(allocator, dep);
-                    }
-                }
-            }
-        }
-
-        // Check for resolution errors
-        if (resolver.hasErrors()) {
+    if (typed_ast_input_path) |json_path| {
+        // Typed AST input: load pre-checked AST and populate checker from JSON.
+        // Bypasses lexer/parser/checker — goes directly to codegen.
+        const json_content = readSourceFile(allocator, json_path) catch |err| {
             var buf: [512]u8 = undefined;
-            for (resolver.errors.items) |err| {
-                const err_msg = std.fmt.bufPrint(&buf, "Module error: {s}\n", .{err.message}) catch continue;
-                try stderr.writeAll(err_msg);
-            }
-            return;
-        }
-
-        // Get topological order
-        const compilation_order = resolver.getCompilationOrder() catch {
+            const msg = std.fmt.bufPrint(&buf, "Error reading typed AST input '{s}': {}\n", .{ json_path, err }) catch "Error reading typed AST input\n";
+            try stderr.writeAll(msg);
             return;
         };
-        defer allocator.free(compilation_order);
+        defer allocator.free(json_content);
 
-        _ = warnCircularImports(&resolver, stderr);
+        if (typed_ast_loader.isMultiModuleFormat(json_content)) {
+            // Multi-module typed AST: load all modules and populate checker
+            typed_ast_loader.loadMultiTypedAst(
+                allocator,
+                arena.allocator(),
+                json_content,
+                &checker,
+                &modules_to_emit,
+                &module_prefixes,
+            ) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error loading multi-module typed AST '{s}': {s}\n", .{ json_path, @errorName(err) }) catch "Error loading multi-module typed AST\n";
+                try stderr.writeAll(msg);
+                return;
+            };
 
-        // Set up checker with module resolver
-        checker.setModuleResolver(&resolver);
-
-        // Phase 1: Register all declarations, export symbols, and collect for emission
-        for (compilation_order) |mod| {
-            if (mod.module_ast) |mod_ast| {
-                // Prepare fresh scope for this module (keeps builtins and type registry)
-                checker.prepareForNewModule();
-                checker.setCurrentModule(mod);
-                checker.checkModuleDeclarations(mod_ast);
-
-                // Register exports WHILE in this module's scope (before switching)
-                checker.registerModuleExports(mod) catch {};
-                checker.saveModuleScope(mod);
-
-                // Collect for emission
-                try modules_to_emit.append(allocator, mod_ast);
-
-                // Build module prefix for non-pub function namespacing.
-                // Entry module gets null (no prefix) since its functions are the "main" ones.
-                if (mod.is_entry) {
-                    try module_prefixes.append(allocator, null);
-                } else {
-                    // Build "stdlib.json" style prefix from path segments
-                    var prefix_len: usize = 0;
-                    for (mod.path, 0..) |segment, si| {
-                        if (si > 0) prefix_len += 1; // for '.'
-                        prefix_len += segment.len;
-                    }
-                    const prefix = allocator.alloc(u8, prefix_len) catch {
-                        try module_prefixes.append(allocator, null);
-                        continue;
-                    };
-                    var pos: usize = 0;
-                    for (mod.path, 0..) |segment, si| {
-                        if (si > 0) {
-                            prefix[pos] = '.';
-                            pos += 1;
-                        }
-                        @memcpy(prefix[pos..][0..segment.len], segment);
-                        pos += segment.len;
-                    }
-                    try module_prefixes.append(allocator, prefix);
-                }
+            // Check bodies for all modules to populate side tables for codegen
+            for (modules_to_emit.items) |mod| {
+                checker.checkModuleBodies(mod);
             }
-        }
-        // Phase 2: Check all bodies (all exports now available)
-        for (compilation_order) |mod| {
-            if (mod.module_ast) |_| {
-                checker.restoreModuleScope(mod);
-                checker.setCurrentModule(mod);
-                checker.checkModuleBodies(mod.module_ast.?);
+            if (checker.error_count > 0) {
+                var buf: [256]u8 = undefined;
+                const warn_msg = std.fmt.bufPrint(&buf, "Warning: {d} type error(s) during body check of multi-module typed AST (proceeding anyway)\n", .{checker.error_count}) catch "Warning: type errors during body check of typed AST\n";
+                try stderr.writeAll(warn_msg);
             }
+            checker.clearErrors();
+        } else {
+            // Single-module typed AST
+            const module = typed_ast_loader.loadTypedAst(allocator, arena.allocator(), json_content, &checker) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error loading typed AST '{s}': {s}\n", .{ json_path, @errorName(err) }) catch "Error loading typed AST\n";
+                try stderr.writeAll(msg);
+                return;
+            };
+
+            // Phase 2: check function bodies to populate side tables needed by codegen
+            // (closure captures, comptime values, async function names, monomorphization).
+            // Errors are expected since the typed AST may reference types/functions not
+            // fully visible to the checker — we log warnings but proceed to codegen.
+            checker.checkModuleBodies(module);
+            if (checker.error_count > 0) {
+                var buf: [256]u8 = undefined;
+                const warn_msg = std.fmt.bufPrint(&buf, "Warning: {d} type error(s) during body check of typed AST (proceeding anyway)\n", .{checker.error_count}) catch "Warning: type errors during body check of typed AST\n";
+                try stderr.writeAll(warn_msg);
+            }
+            checker.clearErrors();
+
+            try modules_to_emit.append(allocator, module);
+            try module_prefixes.append(allocator, null);
         }
     } else {
-        // Single-file compilation (no imports)
-        checker.checkModule(module);
-        try modules_to_emit.append(allocator, module);
-        try module_prefixes.append(allocator, null); // No prefix for single-module
+        // Standard path: load AST from JSON or parse from source, then type check.
+
+        const module = if (ast_input_path) |json_path| blk: {
+            const json_content = readSourceFile(allocator, json_path) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error reading AST input '{s}': {}\n", .{ json_path, err }) catch "Error reading AST input\n";
+                try stderr.writeAll(msg);
+                return;
+            };
+            defer allocator.free(json_content);
+            break :blk ast_from_json.moduleFromJson(allocator, arena.allocator(), json_content) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error parsing AST JSON '{s}': {s}\n", .{ json_path, @errorName(err) }) catch "Error parsing AST JSON\n";
+                try stderr.writeAll(msg);
+                return;
+            };
+        } else blk: {
+            const source = readSourceFile(allocator, path) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
+                try stderr.writeAll(msg);
+                return;
+            };
+            source_buf = source;
+
+            // Parse the source
+            var lexer = Lexer.init(source);
+            var parser = Parser.init(arena.allocator(), &lexer, source);
+
+            break :blk parser.parseModule() catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
+                try stderr.writeAll(msg);
+
+                for (parser.errors.items) |parse_err| {
+                    const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                        parse_err.span.line,
+                        parse_err.span.column,
+                        parse_err.message,
+                    }) catch continue;
+                    try stderr.writeAll(err_msg);
+                }
+                return;
+            };
+        };
+
+        // Check if this module has imports (multi-file compilation)
+        if (module.imports.len > 0) {
+            // Set up module resolver for multi-file compilation
+            var resolver = ModuleResolver.init(allocator);
+            defer resolver.deinit();
+
+            // Try to find standard library
+            if (findStdLibPath(allocator)) |std_path| {
+                resolver.setStdLibPath(std_path);
+                defer allocator.free(std_path);
+            }
+
+            // Add current working directory as a search path
+            var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+            if (std.fs.cwd().realpath(".", &cwd_buf)) |cwd_path| {
+                resolver.addSearchPath(cwd_path) catch {};
+            } else |_| {}
+
+            // Add additional search paths (e.g., from package dependencies)
+            for (options.search_paths) |search_path| {
+                resolver.addSearchPath(search_path) catch {};
+            }
+
+            // Register entry module
+            const entry = resolver.resolveEntry(path) catch {
+                try stderr.writeAll("Error: could not resolve entry module\n");
+                return;
+            };
+            entry.module_ast = module;
+            entry.state = .parsed;
+
+            // Discover all imported modules (breadth-first)
+            var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo){};
+            defer modules_to_process.deinit(allocator);
+            try modules_to_process.append(allocator, entry);
+
+            var processed_idx: usize = 0;
+            while (processed_idx < modules_to_process.items.len) {
+                const mod = modules_to_process.items[processed_idx];
+                processed_idx += 1;
+
+                // Parse if not already parsed
+                if (mod.state == .discovered) {
+                    const src = parseModuleSource(allocator, arena.allocator(), mod) catch continue;
+                    try module_sources.append(allocator, src);
+                }
+
+                // Discover imports
+                if (mod.module_ast) |mod_ast| {
+                    for (mod_ast.imports) |import_decl| {
+                        const dep = resolver.resolve(import_decl.path, mod) catch continue;
+                        if (dep.state == .discovered) {
+                            try modules_to_process.append(allocator, dep);
+                        }
+                    }
+                }
+            }
+
+            // Check for resolution errors
+            if (resolver.hasErrors()) {
+                var buf: [512]u8 = undefined;
+                for (resolver.errors.items) |err| {
+                    const err_msg = std.fmt.bufPrint(&buf, "Module error: {s}\n", .{err.message}) catch continue;
+                    try stderr.writeAll(err_msg);
+                }
+                return;
+            }
+
+            // Get topological order
+            const compilation_order = resolver.getCompilationOrder() catch {
+                return;
+            };
+            defer allocator.free(compilation_order);
+
+            _ = warnCircularImports(&resolver, stderr);
+
+            // Set up checker with module resolver
+            checker.setModuleResolver(&resolver);
+
+            // Phase 1: Register all declarations, export symbols, and collect for emission
+            for (compilation_order) |mod| {
+                if (mod.module_ast) |mod_ast| {
+                    checker.prepareForNewModule();
+                    checker.setCurrentModule(mod);
+                    checker.checkModuleDeclarations(mod_ast);
+
+                    checker.registerModuleExports(mod) catch {};
+                    checker.saveModuleScope(mod);
+
+                    try modules_to_emit.append(allocator, mod_ast);
+
+                    if (mod.is_entry) {
+                        try module_prefixes.append(allocator, null);
+                    } else {
+                        var prefix_len: usize = 0;
+                        for (mod.path, 0..) |segment, si| {
+                            if (si > 0) prefix_len += 1;
+                            prefix_len += segment.len;
+                        }
+                        const prefix = allocator.alloc(u8, prefix_len) catch {
+                            try module_prefixes.append(allocator, null);
+                            continue;
+                        };
+                        var pos: usize = 0;
+                        for (mod.path, 0..) |segment, si| {
+                            if (si > 0) {
+                                prefix[pos] = '.';
+                                pos += 1;
+                            }
+                            @memcpy(prefix[pos..][0..segment.len], segment);
+                            pos += segment.len;
+                        }
+                        try module_prefixes.append(allocator, prefix);
+                    }
+                }
+            }
+            // Phase 2: Check all bodies (all exports now available)
+            for (compilation_order) |mod| {
+                if (mod.module_ast) |_| {
+                    checker.restoreModuleScope(mod);
+                    checker.setCurrentModule(mod);
+                    checker.checkModuleBodies(mod.module_ast.?);
+                }
+            }
+        } else {
+            // Single-file compilation (no imports)
+            checker.checkModule(module);
+            try modules_to_emit.append(allocator, module);
+            try module_prefixes.append(allocator, null);
+        }
     }
 
     if (checker.hasErrors()) {
-        var buf: [512]u8 = undefined;
-        const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
-        try stderr.writeAll(header);
-
-        for (checker.errors.items) |check_err| {
-            if (check_err.kind == .meta_warning) continue;
-            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
-                check_err.span.line,
-                check_err.span.column,
-                check_err.message,
-            }) catch continue;
-            try stderr.writeAll(err_msg);
-        }
+        try stderr.writeAll("Type error(s):\n");
+        try writeCheckErrors(&checker, stderr, source_buf, false);
         try printMetaWarnings(&checker, stderr);
         return;
     }
@@ -2982,7 +3194,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         var lowerer = ir.lower.Lowerer.init(arena.allocator(), &ir_module);
         defer lowerer.deinit();
 
-        lowerer.lowerModule(module) catch |err| {
+        lowerer.lowerModule(modules_to_emit.items[0]) catch |err| {
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "IR lowering error: {s}\n", .{@errorName(err)}) catch "IR lowering error\n";
             try stderr.writeAll(msg);
@@ -3158,7 +3370,8 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             emitter.setModulePrefix(module_prefixes.items[i]);
             emitter.emitModuleBodies(mod_to_emit) catch |err| {
                 var buf: [512]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "Codegen error: {s}\n", .{@errorName(err)}) catch "Codegen error\n";
+                const prefix_name = module_prefixes.items[i] orelse "(entry)";
+                const msg = std.fmt.bufPrint(&buf, "Codegen error in module '{s}': {s}\n", .{ prefix_name, @errorName(err) }) catch "Codegen error\n";
                 try stderr.writeAll(msg);
                 return;
             };
@@ -3314,19 +3527,93 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     };
     defer allocator.free(obj_path);
 
-    // Print optimization info if verbose
-    if (options.verbose_opt and options.opt_level != .O0) {
-        var buf2: [256]u8 = undefined;
-        const opt_msg = std.fmt.bufPrint(&buf2, "Optimization level: {s}\n", .{options.opt_level.toString()}) catch "Optimization enabled\n";
-        try stdout.writeAll(opt_msg);
-    }
+    // ═══════════════════════════════════════════════════════════════════════
+    // Build cache: skip LLVM codegen if object file is cached
+    // ═══════════════════════════════════════════════════════════════════════
+    // Disable cache for --ast-input/--typed-ast-input (content not hashable)
+    const use_cache = !options.no_cache and ast_input_path == null and typed_ast_input_path == null;
+    const cache_hit = if (use_cache) blk: {
+        // Compute content hash of all sources + build options
+        var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+        // Hash source file path (distinguishes programs even with --ast-input)
+        hasher.update(path);
+        // Hash all module sources
+        if (source_buf) |sb| hasher.update(sb);
+        for (module_sources.items) |src| hasher.update(src);
+        // Hash build-affecting options
+        hasher.update(options.opt_level.toString());
+        hasher.update(if (options.debug_info) "g" else "");
+        if (options.target_triple) |tt| hasher.update(tt);
+        const hash = hasher.finalResult();
+        var hash_hex: [64]u8 = undefined;
+        for (hash, 0..) |byte, idx| {
+            _ = std.fmt.bufPrint(hash_hex[idx * 2 .. idx * 2 + 2], "{x:0>2}", .{byte}) catch {};
+        }
 
-    codegen.llvm.targetMachineEmitToFile(tm, emitter.getModule(), obj_path, codegen.llvm.c.LLVMObjectFile) catch |err| {
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Failed to emit object file: {s}\n", .{@errorName(err)}) catch "Failed to emit object file\n";
-        try stderr.writeAll(msg);
-        return;
-    };
+        // Check cache directory for this hash
+        const cache_dir = "build/.cache";
+        std.fs.cwd().makePath(cache_dir) catch {};
+        const cached_obj_path = std.fmt.allocPrint(allocator, "{s}/{s}{s}", .{ cache_dir, hash_hex, obj_ext }) catch break :blk false;
+        defer allocator.free(cached_obj_path);
+
+        if (std.fs.cwd().access(cached_obj_path, .{})) {
+            // Cache hit: copy cached .o to expected obj_path
+            std.fs.cwd().copyFile(cached_obj_path, std.fs.cwd(), obj_path, .{}) catch break :blk false;
+            break :blk true;
+        } else |_| {
+            break :blk false;
+        }
+    } else false;
+
+    if (!cache_hit) {
+        // Print optimization info if verbose
+        if (options.verbose_opt and options.opt_level != .O0) {
+            var buf2: [256]u8 = undefined;
+            const opt_msg = std.fmt.bufPrint(&buf2, "Optimization level: {s}\n", .{options.opt_level.toString()}) catch "Optimization enabled\n";
+            try stdout.writeAll(opt_msg);
+        }
+
+        // Run LLVM optimization passes (inlining, mem2reg, GVN, loop opts, etc.)
+        if (options.opt_level != .O0) {
+            const pass_pipeline: [:0]const u8 = switch (options.opt_level) {
+                .O0 => unreachable,
+                .O1 => "default<O1>",
+                .O2 => "default<O2>",
+                .O3 => "default<O3>",
+            };
+            codegen.llvm.runPasses(emitter.getModule(), pass_pipeline, tm) catch {
+                try stderr.writeAll("Warning: LLVM optimization passes failed, continuing without optimization\n");
+            };
+        }
+
+        codegen.llvm.targetMachineEmitToFile(tm, emitter.getModule(), obj_path, codegen.llvm.c.LLVMObjectFile) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Failed to emit object file: {s}\n", .{@errorName(err)}) catch "Failed to emit object file\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+
+        // Save to cache (if caching enabled)
+        if (use_cache) {
+            var hasher2 = std.crypto.hash.sha2.Sha256.init(.{});
+            hasher2.update(path);
+            if (source_buf) |sb| hasher2.update(sb);
+            for (module_sources.items) |src| hasher2.update(src);
+            hasher2.update(options.opt_level.toString());
+            hasher2.update(if (options.debug_info) "g" else "");
+            if (options.target_triple) |tt| hasher2.update(tt);
+            const hash2 = hasher2.finalResult();
+            var hash_hex2: [64]u8 = undefined;
+            for (hash2, 0..) |byte, idx| {
+                _ = std.fmt.bufPrint(hash_hex2[idx * 2 .. idx * 2 + 2], "{x:0>2}", .{byte}) catch {};
+            }
+            const cache_path = std.fmt.allocPrint(allocator, "build/.cache/{s}{s}", .{ hash_hex2, obj_ext }) catch null;
+            if (cache_path) |cp| {
+                defer allocator.free(cp);
+                std.fs.cwd().copyFile(obj_path, std.fs.cwd(), cp, .{}) catch {};
+            }
+        }
+    }
 
     // If compile only (-c), don't link - just keep the object file
     if (options.compile_only) {
@@ -3387,6 +3674,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     const linker_options = codegen.linker.LinkerOptions{
         .link_libs = options.link_libs,
         .link_paths = options.link_paths,
+        .extra_objects = options.extra_objects,
         .linker_script = options.linker_script,
         .freestanding = options.freestanding,
     };
@@ -3410,6 +3698,13 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         return;
     };
 
+    // On macOS with debug info, run dsymutil to create .dSYM bundle before deleting .o
+    if (options.debug_info and builtin.os.tag == .macos) {
+        const dsymutil_args = [_][]const u8{ "dsymutil", exe_path };
+        var dsymutil = std.process.Child.init(&dsymutil_args, allocator);
+        _ = dsymutil.spawnAndWait() catch {};
+    }
+
     // Clean up object file (only on success)
     std.fs.cwd().deleteFile(obj_path) catch {};
 
@@ -3421,10 +3716,10 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
 }
 
 fn runNativeFile(allocator: std.mem.Allocator, path: []const u8, program_args: []const []const u8) !void {
-    return runNativeFileWithOptions(allocator, path, program_args, &.{}, null);
+    return runNativeFileWithOptions(allocator, path, program_args, &.{}, null, null);
 }
 
-fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, program_args: []const []const u8, search_paths: []const []const u8, run_ast_input_path: ?[]const u8) !void {
+fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, program_args: []const []const u8, search_paths: []const []const u8, run_ast_input_path: ?[]const u8, run_typed_ast_input_path: ?[]const u8) !void {
     // Generate a unique temp path for the executable (cross-platform)
     const timestamp = std.time.timestamp();
     const exe_ext = comptime if (builtin.os.tag == .windows) ".exe" else "";
@@ -3454,7 +3749,7 @@ fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, prog
     };
 
     // Build the executable
-    buildNative(allocator, path, options, run_ast_input_path) catch {
+    buildNative(allocator, path, options, run_ast_input_path, run_typed_ast_input_path) catch {
         // Errors already printed by buildNative
         return;
     };
@@ -3987,6 +4282,8 @@ fn shouldSkipPath(path: []const u8) bool {
 }
 
 fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckCommandOptions) !void {
+    const timing_enabled = options.timing;
+    const t_start = if (timing_enabled) std.time.nanoTimestamp() else 0;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
@@ -4065,8 +4362,16 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
         }
     };
 
-    // Type check the module
-    var checker = TypeChecker.init(allocator);
+    const t_parsed = if (timing_enabled) std.time.nanoTimestamp() else 0;
+
+    // Type check — use arena for single-file, gpa for multi-module (module resolver needs gpa)
+    var checker_arena_store: ?std.heap.ArenaAllocator = null;
+    defer if (checker_arena_store) |*ca| ca.deinit();
+    const checker_alloc = if (module.imports.len == 0) blk: {
+        checker_arena_store = std.heap.ArenaAllocator.init(allocator);
+        break :blk checker_arena_store.?.allocator();
+    } else allocator;
+    var checker = TypeChecker.init(checker_alloc);
     defer checker.deinit();
     checker.setTestMode(true);
     var scope_root: ?*const checker_mod.Scope = null;
@@ -4187,17 +4492,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
     if (has_type_errors) {
         const header = std.fmt.bufPrint(&buf, "Type check failed with {d} error(s):\n", .{checker.error_count}) catch "Type check failed:\n";
         try stderr.writeAll(header);
-
-        for (checker.errors.items) |check_err| {
-            if (check_err.kind == .meta_warning) continue;
-            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d} [{s}]: {s}\n", .{
-                check_err.span.line,
-                check_err.span.column,
-                @tagName(check_err.kind),
-                check_err.message,
-            }) catch continue;
-            try stderr.writeAll(err_msg);
-        }
+        try writeCheckErrors(&checker, stderr, source_buf, true);
         try printMetaWarnings(&checker, stderr);
         if (options.scope_line == null and options.expected_line == null) return; // Query modes can proceed for tooling.
     }
@@ -4353,6 +4648,17 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
         const decl_count = module.declarations.len;
         const stats = std.fmt.bufPrint(&buf, "  {d} declaration(s)\n", .{decl_count}) catch "";
         try stdout.writeAll(stats);
+    }
+
+    // Print timing info if requested
+    if (timing_enabled) {
+        const t_end = std.time.nanoTimestamp();
+        const parse_ms = @as(f64, @floatFromInt(t_parsed - t_start)) / 1_000_000.0;
+        const check_ms = @as(f64, @floatFromInt(t_end - t_parsed)) / 1_000_000.0;
+        const total_ms = @as(f64, @floatFromInt(t_end - t_start)) / 1_000_000.0;
+        var timing_buf: [256]u8 = undefined;
+        const timing_msg = std.fmt.bufPrint(&timing_buf, "Timing: parse={d:.1}ms check={d:.1}ms total={d:.1}ms\n", .{ parse_ms, check_ms, total_ms }) catch "";
+        try stderr.writeAll(timing_msg);
     }
 }
 
@@ -5046,19 +5352,8 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                     .file_failed = true,
                 };
             }
-            var buf: [512]u8 = undefined;
-            const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
-            try stderr.writeAll(header);
-
-            for (checker.errors.items) |check_err| {
-                if (check_err.kind == .meta_warning) continue;
-                const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
-                    check_err.span.line,
-                    check_err.span.column,
-                    check_err.message,
-                }) catch continue;
-                try stderr.writeAll(err_msg);
-            }
+            try stderr.writeAll("Type error(s):\n");
+            try writeCheckErrors(&checker, stderr, null, false);
             return error.TestsFailed;
         }
 
@@ -5370,19 +5665,8 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                     .file_failed = true,
                 };
             }
-            var buf: [512]u8 = undefined;
-            const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
-            try stderr.writeAll(header);
-
-            for (checker.errors.items) |check_err| {
-                if (check_err.kind == .meta_warning) continue;
-                const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
-                    check_err.span.line,
-                    check_err.span.column,
-                    check_err.message,
-                }) catch continue;
-                try stderr.writeAll(err_msg);
-            }
+            try stderr.writeAll("Type error(s):\n");
+            try writeCheckErrors(&checker, stderr, source, false);
             return error.TestsFailed;
         }
 
@@ -5748,19 +6032,9 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
     }
 
     if (checker.hasErrors()) {
-        var buf: [512]u8 = undefined;
-        const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
-        try stderr.writeAll(header);
-
-        for (checker.errors.items) |check_err| {
-            if (check_err.kind == .meta_warning) continue;
-            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
-                check_err.span.line,
-                check_err.span.column,
-                check_err.message,
-            }) catch continue;
-            try stderr.writeAll(err_msg);
-        }
+        try stderr.writeAll("Type error(s):\n");
+        const snippet_source: ?[]const u8 = if (module.imports.len == 0) source else null;
+        try writeCheckErrors(&checker, stderr, snippet_source, false);
         try printMetaWarnings(&checker, stderr);
         return;
     }
@@ -5889,26 +6163,17 @@ fn disasmFile(allocator: std.mem.Allocator, path: []const u8) !void {
         return;
     };
 
-    // Type check
-    var checker = TypeChecker.init(allocator);
+    // Type check — use arena for checker allocations
+    var checker_arena = std.heap.ArenaAllocator.init(allocator);
+    defer checker_arena.deinit();
+    var checker = TypeChecker.init(checker_arena.allocator());
     defer checker.deinit();
 
     checker.checkModule(module);
 
     if (checker.hasErrors()) {
-        var buf: [512]u8 = undefined;
-        const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
-        try stderr.writeAll(header);
-
-        for (checker.errors.items) |check_err| {
-            if (check_err.kind == .meta_warning) continue;
-            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
-                check_err.span.line,
-                check_err.span.column,
-                check_err.message,
-            }) catch continue;
-            try stderr.writeAll(err_msg);
-        }
+        try stderr.writeAll("Type error(s):\n");
+        try writeCheckErrors(&checker, stderr, source, false);
         try printMetaWarnings(&checker, stderr);
         return;
     }
@@ -6236,6 +6501,661 @@ fn updateLockfile(allocator: std.mem.Allocator) !void {
     }
 }
 
+/// Add a package from the registry. Supports "name" or "name@version".
+fn addPackage(allocator: std.mem.Allocator, package_spec: []const u8) !void {
+    const stdout = getStdOut();
+    const stderr = getStdErr();
+
+    // Parse package spec: "name" or "name@version"
+    var package_name: []const u8 = package_spec;
+    var requested_version: ?[]const u8 = null;
+
+    if (std.mem.indexOfScalar(u8, package_spec, '@')) |at_pos| {
+        package_name = package_spec[0..at_pos];
+        requested_version = package_spec[at_pos + 1 ..];
+    }
+
+    if (package_name.len == 0) {
+        try stderr.writeAll("Error: empty package name\n");
+        return;
+    }
+
+    // Validate name format: [a-z0-9_-]+ (same as klar publish)
+    for (package_name) |c| {
+        if (!std.ascii.isLower(c) and !std.ascii.isDigit(c) and c != '_' and c != '-') {
+            try stderr.writeAll("Error: package name must contain only lowercase letters, digits, hyphens, and underscores\n");
+            return;
+        }
+    }
+
+    // Load klar.json
+    var loaded_manifest = switch (loadManifestWithErrors(allocator, "klar.json", "add")) {
+        .success => |m| m,
+        .failure => return,
+    };
+    defer loaded_manifest.deinit();
+
+    // Check if already in dependencies
+    if (loaded_manifest.dependencies.contains(package_name)) {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Package '{s}' is already in dependencies\n", .{package_name}) catch "Package already in dependencies\n";
+        try stdout.writeAll(msg);
+        return;
+    }
+
+    // Get registry URL
+    const registry_url_owned = std.process.getEnvVarOwned(allocator, "KLAR_REGISTRY") catch null;
+    defer if (registry_url_owned) |r| allocator.free(r);
+    const registry_url: []const u8 = registry_url_owned orelse "http://localhost:8080";
+
+    // Fetch metadata
+    var metadata = registry.fetchPackageMetadata(allocator, registry_url, package_name) catch |err| {
+        switch (err) {
+            error.PackageNotFound => {
+                var buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error: package '{s}' not found in registry\n", .{package_name}) catch "Error: package not found\n";
+                try stderr.writeAll(msg);
+            },
+            error.ConnectionFailed => try stderr.writeAll("Error: could not connect to package registry\n"),
+            else => try stderr.writeAll("Error: failed to fetch package metadata\n"),
+        }
+        return;
+    };
+    defer metadata.deinit();
+
+    // Resolve version
+    const resolved_version = if (requested_version) |rv| blk: {
+        // Verify requested version exists
+        var found = false;
+        for (metadata.versions) |v| {
+            if (std.mem.eql(u8, v, rv)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Error: version '{s}' not found for package '{s}'\n", .{ rv, package_name }) catch "Error: version not found\n";
+            try stderr.writeAll(msg);
+            return;
+        }
+        break :blk rv;
+    } else metadata.latest;
+
+    // Fetch package archive
+    var archive = registry.fetchPackage(allocator, registry_url, package_name, resolved_version) catch |err| {
+        switch (err) {
+            error.VersionNotFound => try stderr.writeAll("Error: package version not found\n"),
+            else => try stderr.writeAll("Error: failed to download package\n"),
+        }
+        return;
+    };
+    defer archive.deinit();
+
+    // Create deps/{name}/ and write files
+    const deps_dir = std.fmt.allocPrint(allocator, "deps/{s}", .{package_name}) catch {
+        try stderr.writeAll("Error: allocation failed\n");
+        return;
+    };
+    defer allocator.free(deps_dir);
+
+    std.fs.cwd().makePath(deps_dir) catch {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error: could not create directory {s}\n", .{deps_dir}) catch "Error: could not create deps directory\n";
+        try stderr.writeAll(msg);
+        return;
+    };
+
+    // Write each file from the archive
+    for (archive.file_paths, archive.file_contents) |rel_path, content| {
+        // Reject path traversal attempts
+        if (rel_path.len == 0) continue;
+        if (rel_path[0] == '/') continue;
+        if (std.mem.indexOf(u8, rel_path, "..") != null) continue;
+
+        const full_path = std.fmt.allocPrint(allocator, "deps/{s}/{s}", .{ package_name, rel_path }) catch continue;
+        defer allocator.free(full_path);
+
+        // Ensure parent directory exists
+        if (std.fs.path.dirname(full_path)) |dir| {
+            std.fs.cwd().makePath(dir) catch {};
+        }
+
+        const file = std.fs.cwd().createFile(full_path, .{}) catch continue;
+        defer file.close();
+        file.writeAll(content) catch {};
+    }
+
+    // Update klar.json: add the dependency
+    updateManifestAddDep(allocator, package_name, resolved_version) catch {
+        try stderr.writeAll("Error: failed to update klar.json\n");
+        return;
+    };
+
+    // Update klar.lock
+    updateLockfileAddDep(allocator, package_name, resolved_version, registry_url, deps_dir) catch {
+        try stderr.writeAll("Warning: could not update klar.lock\n");
+    };
+
+    var buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "Added {s} v{s} to deps/\n", .{ package_name, resolved_version }) catch "Package added\n";
+    try stdout.writeAll(msg);
+}
+
+/// Update klar.json to add a registry dependency.
+/// Reads the existing JSON, finds the dependencies section, and appends the new entry.
+fn updateManifestAddDep(allocator: std.mem.Allocator, name: []const u8, version_str: []const u8) !void {
+    // Read the raw klar.json
+    const file = try std.fs.cwd().openFile("klar.json", .{});
+    defer file.close();
+    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(content);
+
+    // Parse to get structure, then rebuild
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
+    defer parsed.deinit();
+
+    const root = parsed.value;
+    if (root != .object) return error.InvalidJson;
+
+    // Rebuild the JSON manually with the new dependency added
+    var output = std.ArrayListUnmanaged(u8){};
+    defer output.deinit(allocator);
+    const writer = output.writer(allocator);
+
+    try writer.writeAll("{\n");
+
+    // Write package section
+    if (root.object.get("package")) |pkg| {
+        try writer.writeAll("  \"package\": {\n");
+        if (pkg == .object) {
+            var first = true;
+            // Write in consistent order: name, version, entry, then others
+            const ordered_keys = &[_][]const u8{ "name", "version", "entry", "description", "license" };
+            for (ordered_keys) |key| {
+                if (pkg.object.get(key)) |val| {
+                    if (!first) try writer.writeAll(",\n");
+                    first = false;
+                    try writer.print("    \"{s}\": ", .{key});
+                    try writeJsonValue(writer, val);
+                }
+            }
+            // Write authors array if present
+            if (pkg.object.get("authors")) |authors| {
+                if (!first) try writer.writeAll(",\n");
+                first = false;
+                try writer.writeAll("    \"authors\": ");
+                try writeJsonValue(writer, authors);
+            }
+        }
+        try writer.writeAll("\n  },\n");
+    }
+
+    // Write dependencies section with the new entry added
+    try writer.writeAll("  \"dependencies\": {");
+    const has_deps = if (root.object.get("dependencies")) |d| d == .object and d.object.count() > 0 else false;
+
+    if (has_deps) {
+        const deps = root.object.get("dependencies").?.object;
+        var dep_it = deps.iterator();
+        while (dep_it.next()) |entry| {
+            try writer.writeAll("\n    \"");
+            try writeJsonEscapedMain(writer, entry.key_ptr.*);
+            try writer.writeAll("\": ");
+            try writeJsonValue(writer, entry.value_ptr.*);
+            try writer.writeByte(',');
+        }
+    }
+
+    // Add the new dependency
+    try writer.writeAll("\n    \"");
+    try writeJsonEscapedMain(writer, name);
+    try writer.print("\": {{\"version\": \"{s}\"}}", .{version_str});
+    try writer.writeAll("\n  }");
+
+    // Write dev-dependencies if present
+    if (root.object.get("dev-dependencies")) |dev_deps| {
+        try writer.writeAll(",\n  \"dev-dependencies\": ");
+        try writeJsonValue(writer, dev_deps);
+    }
+
+    try writer.writeAll("\n}\n");
+
+    const out_file = try std.fs.cwd().createFile("klar.json", .{});
+    defer out_file.close();
+    try out_file.writeAll(output.items);
+}
+
+/// Write a JSON value (used for manifest serialization).
+fn writeJsonValue(writer: anytype, value: std.json.Value) !void {
+    switch (value) {
+        .string => |s| {
+            try writer.writeByte('"');
+            try writeJsonEscapedMain(writer, s);
+            try writer.writeByte('"');
+        },
+        .integer => |i| try writer.print("{d}", .{i}),
+        .float => |f| try writer.print("{d}", .{f}),
+        .bool => |b| try writer.writeAll(if (b) "true" else "false"),
+        .null => try writer.writeAll("null"),
+        .array => |arr| {
+            try writer.writeByte('[');
+            for (arr.items, 0..) |item, idx| {
+                if (idx > 0) try writer.writeAll(", ");
+                try writeJsonValue(writer, item);
+            }
+            try writer.writeByte(']');
+        },
+        .object => |obj| {
+            try writer.writeByte('{');
+            var first = true;
+            var it = obj.iterator();
+            while (it.next()) |entry| {
+                if (!first) try writer.writeAll(", ");
+                first = false;
+                try writer.writeByte('"');
+                try writeJsonEscapedMain(writer, entry.key_ptr.*);
+                try writer.writeAll("\": ");
+                try writeJsonValue(writer, entry.value_ptr.*);
+            }
+            try writer.writeByte('}');
+        },
+        .number_string => |s| try writer.writeAll(s),
+    }
+}
+
+/// Write a JSON-escaped string (for manifest serialization).
+fn writeJsonEscapedMain(writer: anytype, str: []const u8) !void {
+    for (str) |c| {
+        switch (c) {
+            '\\' => try writer.writeAll("\\\\"),
+            '"' => try writer.writeAll("\\\""),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            0x00...0x08, 0x0B, 0x0C, 0x0E...0x1F => {
+                try writer.print("\\u{x:0>4}", .{c});
+            },
+            else => try writer.writeByte(c),
+        }
+    }
+}
+
+/// Update klar.lock to add a registry dependency.
+fn updateLockfileAddDep(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    version_str: []const u8,
+    registry_url: []const u8,
+    resolved_path: []const u8,
+) !void {
+    // Load existing lockfile or create new
+    var lf = lockfile.loadLockfile(allocator, "klar.lock") catch |err| blk: {
+        if (err == error.FileNotFound) {
+            break :blk lockfile.Lockfile.init(allocator);
+        }
+        return err;
+    };
+    defer lf.deinit();
+
+    // Resolve to absolute path
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const resolved = std.fs.cwd().realpath(resolved_path, &path_buf) catch resolved_path;
+
+    try lf.addDependency(name, .{
+        .source = .registry,
+        .original = registry_url,
+        .resolved = resolved,
+        .version = version_str,
+    });
+
+    try lockfile.saveLockfile(&lf, "klar.lock");
+}
+
+/// Publish the current project to the package registry.
+fn cleanCommand(allocator: std.mem.Allocator) !void {
+    const stdout = getStdOut();
+    const stderr = getStdErr();
+    _ = allocator;
+
+    var removed: u32 = 0;
+
+    // Remove build/ directory (compiled executables and Kira object files)
+    if (std.fs.cwd().openDir("build", .{})) |_| {
+        std.fs.cwd().deleteTree("build") catch {
+            stderr.writeAll("Warning: could not remove build/\n") catch {};
+        };
+        removed += 1;
+    } else |_| {}
+
+    // Remove generated Kira interop files from deps/ (kira_*.kl only)
+    if (std.fs.cwd().openDir("deps", .{ .iterate = true })) |*dir_handle| {
+        var dir = dir_handle.*;
+        defer dir.close();
+        var iter = dir.iterate();
+        var kira_files = std.ArrayListUnmanaged([]const u8){};
+        defer {
+            for (kira_files.items) |name| {
+                std.heap.page_allocator.free(name);
+            }
+            kira_files.deinit(std.heap.page_allocator);
+        }
+        // Collect names first, then delete (avoid modifying dir during iteration)
+        while (iter.next() catch null) |entry| {
+            if (entry.kind == .file) {
+                if (std.mem.startsWith(u8, entry.name, "kira_") and std.mem.endsWith(u8, entry.name, ".kl")) {
+                    const name_copy = std.heap.page_allocator.dupe(u8, entry.name) catch continue;
+                    kira_files.append(std.heap.page_allocator, name_copy) catch {
+                        std.heap.page_allocator.free(name_copy);
+                        continue;
+                    };
+                }
+            }
+        }
+        for (kira_files.items) |name| {
+            dir.deleteFile(name) catch {};
+            removed += 1;
+        }
+    } else |_| {}
+
+    if (removed > 0) {
+        var msg_buf: [64]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "Cleaned {d} artifact(s)\n", .{removed}) catch "Cleaned artifacts\n";
+        stdout.writeAll(msg) catch {};
+    } else {
+        stdout.writeAll("Nothing to clean\n") catch {};
+    }
+}
+
+fn publishPackageCommand(allocator: std.mem.Allocator) !void {
+    const stdout = getStdOut();
+    const stderr = getStdErr();
+
+    // Load klar.json
+    var loaded_manifest = switch (loadManifestWithErrors(allocator, "klar.json", "publish")) {
+        .success => |m| m,
+        .failure => return,
+    };
+    defer loaded_manifest.deinit();
+
+    // Validate required fields
+    if (loaded_manifest.package.name.len == 0) {
+        try stderr.writeAll("Error: package name is required in klar.json\n");
+        return;
+    }
+
+    // Validate name format: [a-z0-9_-]+
+    for (loaded_manifest.package.name) |c| {
+        if (!std.ascii.isLower(c) and !std.ascii.isDigit(c) and c != '_' and c != '-') {
+            try stderr.writeAll("Error: package name must contain only lowercase letters, digits, hyphens, and underscores\n");
+            return;
+        }
+    }
+
+    // Collect source files
+    var file_paths = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (file_paths.items) |p| allocator.free(p);
+        file_paths.deinit(allocator);
+    }
+    var file_contents = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (file_contents.items) |c| allocator.free(c);
+        file_contents.deinit(allocator);
+    }
+
+    // Always include klar.json
+    {
+        const klar_json = std.fs.cwd().openFile("klar.json", .{}) catch {
+            try stderr.writeAll("Error: could not read klar.json\n");
+            return;
+        };
+        defer klar_json.close();
+        const content = klar_json.readToEndAlloc(allocator, 1024 * 1024) catch {
+            try stderr.writeAll("Error: could not read klar.json\n");
+            return;
+        };
+        try file_paths.append(allocator, try allocator.dupe(u8, "klar.json"));
+        try file_contents.append(allocator, content);
+    }
+
+    // Walk the source directory for .kl files
+    const entry_dir = if (loaded_manifest.package.entry) |e|
+        std.fs.path.dirname(e) orelse "src"
+    else
+        "src";
+
+    collectSourceFiles(allocator, entry_dir, &file_paths, &file_contents) catch {
+        try stderr.writeAll("Error: failed to collect source files\n");
+        return;
+    };
+
+    if (file_paths.items.len <= 1) {
+        try stderr.writeAll("Error: no source files found to publish\n");
+        return;
+    }
+
+    // Build version string
+    const version_str = loaded_manifest.package.version.toString(allocator) catch {
+        try stderr.writeAll("Error: invalid version\n");
+        return;
+    };
+    defer allocator.free(version_str);
+
+    // Build archive JSON
+    const archive_json = registry.buildArchiveJson(
+        allocator,
+        loaded_manifest.package.name,
+        version_str,
+        file_paths.items,
+        file_contents.items,
+    ) catch {
+        try stderr.writeAll("Error: failed to build package archive\n");
+        return;
+    };
+    defer allocator.free(archive_json);
+
+    // Get registry URL
+    const registry_url_owned = std.process.getEnvVarOwned(allocator, "KLAR_REGISTRY") catch null;
+    defer if (registry_url_owned) |r| allocator.free(r);
+    const registry_url: []const u8 = registry_url_owned orelse "http://localhost:8080";
+
+    // Publish
+    registry.publishPackage(allocator, registry_url, archive_json) catch |err| {
+        switch (err) {
+            error.PublishFailed => try stderr.writeAll("Error: publish failed (version may already exist)\n"),
+            error.ConnectionFailed => try stderr.writeAll("Error: could not connect to package registry\n"),
+            else => try stderr.writeAll("Error: failed to publish package\n"),
+        }
+        return;
+    };
+
+    var buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "Published {s} v{s}\n", .{ loaded_manifest.package.name, version_str }) catch "Package published\n";
+    try stdout.writeAll(msg);
+}
+
+/// Recursively collect .kl source files from a directory.
+fn collectSourceFiles(
+    allocator: std.mem.Allocator,
+    dir_path: []const u8,
+    paths: *std.ArrayListUnmanaged([]const u8),
+    contents: *std.ArrayListUnmanaged([]const u8),
+) !void {
+    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
+    defer dir.close();
+
+    var walker = try dir.walk(allocator);
+    defer walker.deinit();
+
+    while (try walker.next()) |entry| {
+        if (entry.kind != .file) continue;
+
+        // Only collect .kl files
+        if (!std.mem.endsWith(u8, entry.path, ".kl")) continue;
+
+        // Skip hidden files and build artifacts
+        if (std.mem.startsWith(u8, entry.basename, ".")) continue;
+
+        const rel_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, entry.path });
+        errdefer allocator.free(rel_path);
+
+        // Read file content
+        const file = dir.openFile(entry.path, .{}) catch continue;
+        defer file.close();
+        const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch continue;
+
+        try paths.append(allocator, rel_path);
+        try contents.append(allocator, content);
+    }
+}
+
+/// Generate HTML documentation from Klar source files.
+fn docCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    const stdout = getStdOut();
+    const stderr = getStdErr();
+
+    // Parse arguments: klar doc [path...] [-o output_dir]
+    var paths = std.ArrayListUnmanaged([]const u8){};
+    defer paths.deinit(allocator);
+    var output_dir: []const u8 = "docs/api";
+
+    var i: usize = 2;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "-o")) {
+            if (i + 1 >= args.len) {
+                try stderr.writeAll("Error: missing value for -o\n");
+                return;
+            }
+            output_dir = args[i + 1];
+            i += 1;
+        } else if (!std.mem.startsWith(u8, arg, "-")) {
+            try paths.append(allocator, arg);
+        }
+    }
+
+    // If no paths given, try stdlib/ and src/ directories, or manifest entry
+    if (paths.items.len == 0) {
+        // Auto-discover: look for stdlib/ and src/ directories
+        if (std.fs.cwd().access("stdlib", .{})) |_| {
+            try collectKlFiles(allocator, "stdlib", &paths);
+        } else |_| {}
+
+        if (std.fs.cwd().access("src", .{})) |_| {
+            try collectKlFiles(allocator, "src", &paths);
+        } else |_| {}
+    }
+
+    if (paths.items.len == 0) {
+        try stderr.writeAll("Error: no source files found. Usage: klar doc [file.kl|dir] [-o output_dir]\n");
+        return;
+    }
+
+    // Extract documentation from each file
+    var modules = std.ArrayListUnmanaged(doc_gen.DocModule){};
+    defer modules.deinit(allocator);
+
+    for (paths.items) |path| {
+        // Check if path is a directory or file
+        const stat = std.fs.cwd().statFile(path) catch continue;
+        if (stat.kind == .directory) {
+            var dir_files = std.ArrayListUnmanaged([]const u8){};
+            defer {
+                for (dir_files.items) |p| allocator.free(p);
+                dir_files.deinit(allocator);
+            }
+            try collectKlFiles(allocator, path, &dir_files);
+            for (dir_files.items) |file_path| {
+                try processDocFile(allocator, file_path, &modules);
+            }
+        } else {
+            try processDocFile(allocator, path, &modules);
+        }
+    }
+
+    if (modules.items.len == 0) {
+        try stderr.writeAll("No documented modules found\n");
+        return;
+    }
+
+    // Create output directory
+    std.fs.cwd().makePath(output_dir) catch {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error: could not create output directory: {s}\n", .{output_dir}) catch "Error: could not create output directory\n";
+        try stderr.writeAll(msg);
+        return;
+    };
+
+    // Generate index page
+    const index_html = try doc_gen.generateIndexHtml(allocator, modules.items);
+    defer allocator.free(index_html);
+
+    const index_path = try std.fmt.allocPrint(allocator, "{s}/index.html", .{output_dir});
+    defer allocator.free(index_path);
+
+    const index_file = try std.fs.cwd().createFile(index_path, .{});
+    defer index_file.close();
+    try index_file.writeAll(index_html);
+
+    // Generate per-module pages
+    var doc_count: usize = 0;
+    for (modules.items) |*module| {
+        const html = try doc_gen.generateModuleHtml(allocator, module);
+        defer allocator.free(html);
+
+        const module_path = try std.fmt.allocPrint(allocator, "{s}/{s}.html", .{ output_dir, module.name });
+        defer allocator.free(module_path);
+
+        const module_file = try std.fs.cwd().createFile(module_path, .{});
+        defer module_file.close();
+        try module_file.writeAll(html);
+        doc_count += 1;
+    }
+
+    var buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "Generated documentation: {d} modules in {s}/\n", .{ doc_count, output_dir }) catch "Documentation generated\n";
+    try stdout.writeAll(msg);
+}
+
+/// Read a .kl file and extract its documentation, adding to modules list.
+fn processDocFile(allocator: std.mem.Allocator, path: []const u8, modules: *std.ArrayListUnmanaged(doc_gen.DocModule)) !void {
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return;
+    defer allocator.free(source);
+
+    // Derive module name from file path (e.g., "stdlib/http_server.kl" -> "http_server")
+    const basename = std.fs.path.basename(path);
+    const name = if (std.mem.endsWith(u8, basename, ".kl"))
+        basename[0 .. basename.len - 3]
+    else
+        basename;
+
+    const module = doc_gen.extractDocs(allocator, source, name, path) catch return;
+    if (module.items.len > 0 or module.module_doc.len > 0) {
+        try modules.append(allocator, module);
+    }
+}
+
+/// Collect all .kl files from a directory recursively.
+fn collectKlFiles(allocator: std.mem.Allocator, dir_path: []const u8, out: *std.ArrayListUnmanaged([]const u8)) !void {
+    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
+    defer dir.close();
+
+    var walker = try dir.walk(allocator);
+    defer walker.deinit();
+
+    while (try walker.next()) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.path, ".kl")) continue;
+        if (std.mem.startsWith(u8, entry.basename, ".")) continue;
+
+        const full_path = try std.fs.path.join(allocator, &.{ dir_path, entry.path });
+        try out.append(allocator, full_path);
+    }
+}
+
 fn initProject(allocator: std.mem.Allocator, name_arg: ?[]const u8, is_lib: bool) !void {
     const stdout = getStdOut();
     const stderr = getStdErr();
@@ -6342,6 +7262,12 @@ fn printUsage() !void {
         \\  build [file]         Build project or file to native executable
         \\  run [file]           Build and run project or file
         \\  update               Regenerate klar.lock from klar.json
+        \\  add <package>        Add a dependency from the package registry
+        \\  publish              Publish this package to the registry
+        \\  import-kira <json>   Generate Klar extern block from Kira manifest
+        \\    -o <file>            Output file (default: kira_<module>.kl)
+        \\  clean                Remove build artifacts and generated interop files
+        \\  doc [path] [-o dir]  Generate HTML documentation from source files
         \\  check <file>         Type check a file
         \\    --dump-ownership   Include ownership analysis details
         \\    --partial          Parse with recovery and type-check partial declarations
@@ -6449,6 +7375,8 @@ test {
     _ = @import("bytecode.zig");
     _ = @import("pkg/manifest.zig");
     _ = @import("pkg/lockfile.zig");
+    _ = @import("pkg/registry.zig");
+    _ = @import("doc_gen.zig");
     _ = @import("chunk.zig");
     _ = @import("compiler.zig");
     _ = @import("vm.zig");
@@ -6462,4 +7390,5 @@ test {
     _ = @import("repl.zig");
     _ = @import("lsp.zig");
     _ = @import("meta_query.zig");
+    _ = @import("interop/kira_manifest.zig");
 }

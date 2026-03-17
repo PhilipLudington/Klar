@@ -2,18 +2,25 @@
 // Milestone 9.11: Unified lexer → parser → checker pipeline
 //
 // Usage:
-//   klar run selfhost/main.kl -- check <file.kl>      Type-check a file
-//   klar run selfhost/main.kl -- dump-tokens <file.kl> Dump lexer tokens as JSON
-//   klar run selfhost/main.kl -- dump-ast <file.kl>    Dump parser AST as JSON
-//   klar run selfhost/main.kl -- help                  Show usage
+//   klar run selfhost/main.kl -- check <file.kl>         Type-check a single file
+//   klar run selfhost/main.kl -- check-multi <file.kl>    Type-check with all imports
+//   klar run selfhost/main.kl -- dump-tokens <file.kl>    Dump lexer tokens as JSON
+//   klar run selfhost/main.kl -- dump-ast <file.kl>       Dump parser AST as JSON
+//   klar run selfhost/main.kl -- emit-typed-ast <file.kl>       Emit typed AST JSON (single file)
+//   klar run selfhost/main.kl -- emit-typed-ast-multi <file.kl> Emit typed AST JSON (multi-module)
+//   klar run selfhost/main.kl -- help                           Show usage
 
 import lexer.{Lexer, Token, TokenKind, tag_name}
 import parser.{Parser, new_parser}
 import parser_decl.{parse_module}
 import ast.{AstModule}
-import checker.{TypeChecker, register_builtins, format_error}
-import checker_decl.{check_module}
+import checker.{TypeChecker, register_builtins, format_error, init_expr_types}
+import checker_decl.{check_module, process_imports, register_declarations,
+    check_declarations, register_module_exports_from_decls,
+    register_module_exports_from_ast}
 import ast_builder.{build_module}
+import emitter.{emit_typed_ast, emit_multi_typed_ast}
+import module_resolver.{ModuleGraph, discover_modules, topological_sort}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Commands
@@ -112,6 +119,268 @@ fn cmd_dump_ast(path: string) -> i32 {
     return 0
 }
 
+fn cmd_emit_typed_ast(path: string) -> i32 {
+    let src: string = read_file(path)
+    if src == "" {
+        return 2
+    }
+
+    // Parse source → JSON (try selfhost parser, fall back to Zig parser)
+    var json: string = ""
+    // Check if source uses features the selfhost parser can't handle
+    var needs_zig_parser: bool = src.contains("@[") or src.contains("@{") or src.contains("@pure") or src.contains("@deprecated") or src.contains("@intent") or src.contains("@guide") or src.contains("@tag") or src.contains("@hint") or src.contains("@related") or src.contains("@decision") or src.contains("@module") or src.contains("@define") or src.contains("meta ")
+    if not needs_zig_parser {
+        let p: Parser = new_parser(src)
+        let parse_result: (Parser, string) = parse_module(p)
+        if not parse_result.0.had_error {
+            json = parse_result.1
+        } else {
+            needs_zig_parser = true
+        }
+    }
+    if needs_zig_parser {
+        // Selfhost parser failed — fall back to Zig parser via process_run
+        // KLAR_BIN env var must be set to locate the Zig-based klar binary
+        let env_klar: ?string = env_get("KLAR_BIN")
+        if not env_klar.is_some() {
+            println("KLAR_BIN not set — cannot fall back to Zig parser for " + path)
+            return 1
+        }
+        let klar_bin: string = env_klar ?? ""
+        var args: List#[string] = List.new#[string]()
+        args.push(path)
+        let proc_result: Result#[ProcessOutput, IoError] = process_run(klar_bin + " dump-ast", args)
+        if not proc_result.is_ok() {
+            println("parse error in " + path)
+            return 1
+        }
+        let proc_out: ProcessOutput = proc_result!
+        if proc_out.exit_code != 0 {
+            println("parse error in " + path)
+            return 1
+        }
+        json = proc_out.stdout
+    }
+
+    // Build AST arenas from JSON → type check
+    var tc: TypeChecker = TypeChecker.new()
+    let build_result: (TypeChecker, AstModule) = build_module(tc, json)
+    tc = build_result.0
+    let m: AstModule = build_result.1
+
+    // Pre-fill expr_types for type storage during checking
+    tc = init_expr_types(tc, tc.exprs.len())
+
+    tc = register_builtins(tc)
+    tc = check_module(tc, m.decls_start, m.decls_count)
+
+    // Emit typed AST JSON (even if there are errors, for debugging)
+    let output: string = emit_typed_ast(tc, m)
+    println(output)
+
+    if tc.error_count > 0 {
+        return 1
+    }
+    return 0
+}
+
+fn cmd_check_multi(path: string) -> i32 {
+    // Discover all modules transitively imported from the entry file
+    let g: ModuleGraph = discover_modules(path)
+    let mod_count: i32 = g.names.len()
+    if mod_count == 0 {
+        println("error: could not discover modules from " + path)
+        return 1
+    }
+
+    // Get compilation order (dependencies before dependents)
+    let order: List#[i32] = topological_sort(g)
+
+    // Create a single TypeChecker shared across all modules
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Store built modules for the main pass
+    var mod_modules: List#[AstModule] = List.new#[AstModule]()
+
+    // ── Pre-pass: Build ASTs and register module exports (names only) ──
+    // This makes all module exports discoverable before checking bodies,
+    // enabling circular import resolution (e.g., parser_expr ↔ parser_stmt).
+    var pre_idx: i32 = 0
+    while pre_idx < order.len() {
+        let pre_mid: i32 = order[pre_idx]
+        let pre_name: string = g.names[pre_mid]
+        let pre_json: string = g.json_asts[pre_mid]
+
+        // Build AST arenas from JSON
+        let build_result: (TypeChecker, AstModule) = build_module(tc, pre_json)
+        tc = build_result.0
+        let m: AstModule = build_result.1
+        mod_modules.push(m)
+
+        // Pre-fill expr_types for this module's expressions
+        tc = init_expr_types(tc, tc.exprs.len())
+
+        // Register module exports from AST declarations (type=unknown)
+        if pre_name != "" {
+            tc = register_module_exports_from_ast(tc, pre_name,
+                m.decls_start, m.decls_count)
+        }
+
+        pre_idx = pre_idx + 1
+    }
+
+    // ── Main pass: Process imports, register declarations, check bodies ──
+    // Note: mod_modules[idx] corresponds to order[idx] since both loops
+    // iterate 0..order.len() in sequence and the pre-pass pushes in order.
+    var idx: i32 = 0
+    while idx < order.len() {
+        let mid: i32 = order[idx]
+        let mod_name: string = g.names[mid]
+        let m: AstModule = mod_modules[idx]
+
+        // Push module scope (on top of global/builtins scope)
+        tc.push_scope()
+
+        // Pass 0: process imports (all modules now discoverable)
+        tc = process_imports(tc, m.imports_start, m.imports_count)
+
+        // Pass 1: register type and function declarations
+        tc = register_declarations(tc, m.decls_start, m.decls_count)
+
+        // Pass 2: check function bodies
+        tc = check_declarations(tc, m.decls_start, m.decls_count)
+
+        // Re-register exports with real types (overwrites pre-pass entries)
+        if mod_name != "" {
+            tc = register_module_exports_from_decls(tc, mod_name,
+                m.decls_start, m.decls_count)
+        }
+
+        // Pop module scope
+        tc.pop_scope()
+
+        idx = idx + 1
+    }
+
+    if tc.error_count == 0 {
+        let checked: i32 = order.len()
+        println("check-pass (" + checked.to_string().as_str() + " modules)")
+        return 0
+    }
+
+    // Output structured errors
+    var i: i32 = 0
+    let err_count: i32 = tc.error_kinds.len()
+    while i < err_count {
+        println(format_error(tc, i))
+        i = i + 1
+    }
+
+    // Fallback: legacy errors
+    if err_count == 0 {
+        var j: i32 = 0
+        while j < tc.errors.len() {
+            println(tc.errors[j])
+            j = j + 1
+        }
+    }
+
+    return 1
+}
+
+fn cmd_emit_typed_ast_multi(path: string) -> i32 {
+    // Discover all modules transitively imported from the entry file
+    let g: ModuleGraph = discover_modules(path)
+    let mod_count: i32 = g.names.len()
+    if mod_count == 0 {
+        println("error: could not discover modules from " + path)
+        return 1
+    }
+
+    // Get compilation order (dependencies before dependents)
+    let order: List#[i32] = topological_sort(g)
+
+    // Create a single TypeChecker shared across all modules
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Store per-module info for emission
+    var mod_asts: List#[AstModule] = List.new#[AstModule]()
+    var mod_names: List#[string] = List.new#[string]()
+    var mod_entries: List#[bool] = List.new#[bool]()
+
+    // ── Pre-pass: Build ASTs and register module exports (names only) ──
+    var pre_idx: i32 = 0
+    while pre_idx < order.len() {
+        let pre_mid: i32 = order[pre_idx]
+        let pre_name: string = g.names[pre_mid]
+        let pre_json: string = g.json_asts[pre_mid]
+        let pre_entry: bool = g.is_entry[pre_mid]
+
+        // Build AST arenas from JSON
+        let build_result: (TypeChecker, AstModule) = build_module(tc, pre_json)
+        tc = build_result.0
+        let m: AstModule = build_result.1
+        mod_asts.push(m)
+        mod_names.push(pre_name)
+        mod_entries.push(pre_entry)
+
+        // Pre-fill expr_types
+        tc = init_expr_types(tc, tc.exprs.len())
+
+        // Register module exports from AST (type=unknown)
+        if pre_name != "" {
+            tc = register_module_exports_from_ast(tc, pre_name,
+                m.decls_start, m.decls_count)
+        }
+
+        pre_idx = pre_idx + 1
+    }
+
+    // ── Main pass: Process imports, register declarations, check bodies ──
+    // Note: mod_asts[idx] corresponds to order[idx] since both loops
+    // iterate 0..order.len() in sequence and the pre-pass pushes in order.
+    var idx: i32 = 0
+    while idx < order.len() {
+        let mid: i32 = order[idx]
+        let mod_name: string = g.names[mid]
+        let m: AstModule = mod_asts[idx]
+
+        // Push module scope
+        tc.push_scope()
+
+        // Pass 0: process imports (all modules now discoverable)
+        tc = process_imports(tc, m.imports_start, m.imports_count)
+
+        // Pass 1: register type and function declarations
+        tc = register_declarations(tc, m.decls_start, m.decls_count)
+
+        // Pass 2: check function bodies
+        tc = check_declarations(tc, m.decls_start, m.decls_count)
+
+        // Re-register exports with real types
+        if mod_name != "" {
+            tc = register_module_exports_from_decls(tc, mod_name,
+                m.decls_start, m.decls_count)
+        }
+
+        // Pop module scope
+        tc.pop_scope()
+
+        idx = idx + 1
+    }
+
+    // Emit multi-module typed AST JSON
+    let result: string = emit_multi_typed_ast(tc, mod_asts, mod_names, mod_entries)
+    println(result)
+
+    if tc.error_count > 0 {
+        return 1
+    }
+    return 0
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
@@ -146,10 +415,13 @@ fn print_usage() -> void {
     println("Klar self-hosted compiler frontend")
     println("")
     println("Usage:")
-    println("  klar-selfhost check <file.kl>       Type-check a file")
-    println("  klar-selfhost dump-tokens <file.kl>  Dump lexer tokens as JSON")
-    println("  klar-selfhost dump-ast <file.kl>     Dump parser AST as JSON")
-    println("  klar-selfhost help                   Show this message")
+    println("  klar-selfhost check <file.kl>         Type-check a single file")
+    println("  klar-selfhost check-multi <file.kl>    Type-check with all imports")
+    println("  klar-selfhost dump-tokens <file.kl>    Dump lexer tokens as JSON")
+    println("  klar-selfhost dump-ast <file.kl>       Dump parser AST as JSON")
+    println("  klar-selfhost emit-typed-ast <file.kl>       Emit typed AST JSON (single file)")
+    println("  klar-selfhost emit-typed-ast-multi <file.kl> Emit typed AST JSON (multi-module)")
+    println("  klar-selfhost help                           Show this message")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -195,6 +467,33 @@ fn main(args: [String]) -> i32 {
         }
         let file_arg: String = args[2]
         return cmd_dump_ast(file_arg.as_str())
+    }
+
+    if cmd == "emit-typed-ast" {
+        if args.len() < 3 {
+            println("error: emit-typed-ast requires a file path")
+            return 2
+        }
+        let file_arg: String = args[2]
+        return cmd_emit_typed_ast(file_arg.as_str())
+    }
+
+    if cmd == "check-multi" {
+        if args.len() < 3 {
+            println("error: check-multi requires a file path")
+            return 2
+        }
+        let file_arg: String = args[2]
+        return cmd_check_multi(file_arg.as_str())
+    }
+
+    if cmd == "emit-typed-ast-multi" {
+        if args.len() < 3 {
+            println("error: emit-typed-ast-multi requires a file path")
+            return 2
+        }
+        let file_arg: String = args[2]
+        return cmd_emit_typed_ast_multi(file_arg.as_str())
     }
 
     println("error: unknown command '" + cmd + "'")

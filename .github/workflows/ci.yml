@@ -57,8 +57,22 @@ jobs:
           7z x llvm.7z -oC:/llvm -y
           echo "LLVM_PREFIX=C:/llvm/llvm-18.1.8-windows-amd64-msvc17-msvcrt" >> $GITHUB_ENV
 
+      - name: Add LLVM to PATH
+        run: echo "C:/llvm/llvm-18.1.8-windows-amd64-msvc17-msvcrt/bin" >> $GITHUB_PATH
+
       - name: Build (with LLVM)
         run: ./run-build.sh
+
+      - name: Diagnostic — test klar build on simple file
+        run: |
+          echo 'fn main() -> i32 { return 42 }' > /tmp/test_diag.kl
+          echo "=== klar build diagnostic ==="
+          ./zig-out/bin/klar build /tmp/test_diag.kl -o build/test_diag 2>&1 || echo "Exit code: $?"
+          echo "=== checking output files ==="
+          ls -la build/test_diag* 2>/dev/null || echo "No output files found"
+          echo "=== checking LLVM libs ==="
+          ls "$LLVM_PREFIX/lib/"LLVM* 2>/dev/null | head -5 || echo "No LLVM libs found"
+          ls "$LLVM_PREFIX/bin/"LLVM* 2>/dev/null | head -5 || echo "No LLVM bins found"
 
       - name: Run all tests
         run: ./run-tests.sh
@@ -82,3 +96,43 @@ jobs:
 
       - name: Run all tests
         run: ./run-tests.sh
+
+  test-linux-arm64:
+    name: Linux ARM64 (full suite)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Install LLVM
+        run: sudo apt-get update && sudo apt-get install -y llvm-17 llvm-17-dev
+
+      - name: Build
+        run: ./run-build.sh
+
+      - name: Run all tests
+        run: ./run-tests.sh
+
+  cross-compile-windows-arm64:
+    name: Windows ARM64 (cross-compile check)
+    needs: test-linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Cross-compile for Windows ARM64 (no LLVM)
+        run: zig build -Dtarget=aarch64-windows
+
+      - name: Verify binary was produced
+        run: |
+          test -f zig-out/bin/klar.exe
+          file zig-out/bin/klar.exe

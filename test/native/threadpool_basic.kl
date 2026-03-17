@@ -1,0 +1,36 @@
+// Skip: windows (pthread not available on MSVC)
+// ThreadPool basic test
+// Tests: create/shutdown, spawn tasks, single-thread serialization
+// exit 0 = pass
+
+fn main() -> i32 {
+    // Test 1: Create and shutdown empty pool
+    let pool1: ThreadPool = ThreadPool.new(2)
+    pool1.shutdown()
+
+    // Test 2: Spawn a single task
+    let pool2: ThreadPool = ThreadPool.new(2)
+    let task1: fn() -> i32 = || -> i32 { return 0 }
+    pool2.spawn(task1)
+    pool2.shutdown()
+
+    // Test 3: Spawn multiple tasks
+    let pool3: ThreadPool = ThreadPool.new(2)
+    let task2: fn() -> i32 = || -> i32 { return 0 }
+    pool3.spawn(task2)
+    pool3.spawn(task2)
+    pool3.spawn(task2)
+    pool3.spawn(task2)
+    pool3.spawn(task2)
+    pool3.shutdown()
+
+    // Test 4: Pool with 1 thread (serializes tasks)
+    let pool4: ThreadPool = ThreadPool.new(1)
+    let task3: fn() -> i32 = || -> i32 { return 0 }
+    pool4.spawn(task3)
+    pool4.spawn(task3)
+    pool4.spawn(task3)
+    pool4.shutdown()
+
+    return 0
+}

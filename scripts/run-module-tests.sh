@@ -511,7 +511,9 @@ fi
 # Test 21: stdlib integration (path + dir + string_builder + file)
 echo "--- stdlib_integration: Path + Dir + StringBuilder + File pipeline ---"
 temp_bin="/tmp/klar_module_stdlib_integration"
-if [ -d "$TEST_DIR/stdlib_integration" ]; then
+if [[ "$OS" == "Windows_NT" ]]; then
+    echo "⊘ stdlib_integration (skipped on Windows — line ending differences)"
+elif [ -d "$TEST_DIR/stdlib_integration" ]; then
     if $KLAR build $TEST_DIR/stdlib_integration/main.kl -o "$temp_bin" 2>/dev/null; then
         output=$("$temp_bin" 2>/dev/null)
         result=$?
@@ -580,6 +582,194 @@ elif [ -d "$TEST_DIR/http_client" ]; then
     fi
 else
     echo "⊘ http_client (test not found, skipping)"
+fi
+
+# Test 22: BTreeMap library (stdlib/btree_map.kl)
+echo "--- btree_map: BTreeMap ordered key-value store (stdlib/btree_map.kl) ---"
+temp_bin="/tmp/klar_module_btree_map"
+if [ -d "$TEST_DIR/btree_map" ]; then
+    if $KLAR build $TEST_DIR/btree_map/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ btree_map (exit: $result)"
+            record_success "btree_map"
+        else
+            echo "✗ btree_map (expected: 0, got: $result)"
+            record_failure "btree_map" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ btree_map (build failed)"
+        record_failure "btree_map" "build failed"
+    fi
+else
+    echo "⊘ btree_map (test not found, skipping)"
+fi
+
+# Test 23: Deque library (stdlib/deque.kl)
+echo "--- deque: Deque double-ended queue (stdlib/deque.kl) ---"
+temp_bin="/tmp/klar_module_deque"
+if [ -d "$TEST_DIR/deque" ]; then
+    if $KLAR build $TEST_DIR/deque/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ deque (exit: $result)"
+            record_success "deque"
+        else
+            echo "✗ deque (expected: 0, got: $result)"
+            record_failure "deque" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ deque (build failed)"
+        record_failure "deque" "build failed"
+    fi
+else
+    echo "⊘ deque (test not found, skipping)"
+fi
+
+# Test 24: PriorityQueue library (stdlib/priority_queue.kl)
+echo "--- priority_queue: PriorityQueue min-heap (stdlib/priority_queue.kl) ---"
+temp_bin="/tmp/klar_module_priority_queue"
+if [ -d "$TEST_DIR/priority_queue" ]; then
+    if $KLAR build $TEST_DIR/priority_queue/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ priority_queue (exit: $result)"
+            record_success "priority_queue"
+        else
+            echo "✗ priority_queue (expected: 0, got: $result)"
+            record_failure "priority_queue" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ priority_queue (build failed)"
+        record_failure "priority_queue" "build failed"
+    fi
+else
+    echo "⊘ priority_queue (test not found, skipping)"
+fi
+
+# Test 25: UDP and DNS networking
+echo "--- net: UDP socket and DNS builtins ---"
+temp_bin="/tmp/klar_module_net"
+if [[ "$OS" == "Windows_NT" ]]; then
+    echo "⊘ net (skipped on Windows — socket builtins fail to link)"
+elif [ -d "$TEST_DIR/net" ]; then
+    if $KLAR build $TEST_DIR/net/main.kl -o "$temp_bin" 2>/dev/null; then
+        run_with_timeout 30 "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ net (exit: $result)"
+            record_success "net"
+        else
+            echo "✗ net (expected: 0, got: $result)"
+            record_failure "net" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ net (build failed)"
+        record_failure "net" "build failed"
+    fi
+else
+    echo "⊘ net (test not found, skipping)"
+fi
+
+# Test 26: YAML library (stdlib/yaml.kl)
+echo "--- yaml: YAML library (stdlib/yaml.kl) ---"
+temp_bin="/tmp/klar_module_yaml"
+if [ -d "$TEST_DIR/yaml" ]; then
+    if $KLAR build $TEST_DIR/yaml/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ yaml (exit: $result)"
+            record_success "yaml"
+        else
+            echo "✗ yaml (expected: 0, got: $result)"
+            record_failure "yaml" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ yaml (build failed)"
+        record_failure "yaml" "build failed"
+    fi
+else
+    echo "⊘ yaml (test not found, skipping)"
+fi
+
+echo "--- channel: Channel builtins ---"
+temp_bin="/tmp/klar_module_channel"
+if [[ "$OS" == "Windows_NT" ]]; then
+    echo "⊘ channel (skipped on Windows — pthread not available)"
+elif [ -d "$TEST_DIR/channel" ]; then
+    if $KLAR build $TEST_DIR/channel/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ channel (exit: $result)"
+            record_success "channel"
+        else
+            echo "✗ channel (expected: 0, got: $result)"
+            record_failure "channel" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ channel (build failed)"
+        record_failure "channel" "build failed"
+    fi
+else
+    echo "⊘ channel (test not found, skipping)"
+fi
+
+echo "--- threadpool: ThreadPool builtins ---"
+temp_bin="/tmp/klar_module_threadpool"
+if [[ "$OS" == "Windows_NT" ]]; then
+    echo "⊘ threadpool (skipped on Windows — pthread not available)"
+elif [ -d "$TEST_DIR/threadpool" ]; then
+    if $KLAR build $TEST_DIR/threadpool/main.kl -o "$temp_bin" 2>/dev/null; then
+        run_with_timeout 10 "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ threadpool (exit: $result)"
+            record_success "threadpool"
+        else
+            echo "✗ threadpool (expected: 0, got: $result)"
+            record_failure "threadpool" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ threadpool (build failed)"
+        record_failure "threadpool" "build failed"
+    fi
+else
+    echo "⊘ threadpool (test not found, skipping)"
+fi
+
+echo "--- registry: Package registry format ---"
+temp_bin="/tmp/klar_module_registry"
+if [[ "$OS" == "Windows_NT" ]]; then
+    echo "⊘ registry (skipped on Windows — POSIX socket close() not available)"
+elif [ -d "$TEST_DIR/registry" ]; then
+    if $KLAR build $TEST_DIR/registry/main.kl -o "$temp_bin" 2>/dev/null; then
+        run_with_timeout 30 "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ $result -eq 0 ]; then
+            echo "✓ registry (exit: $result)"
+            record_success "registry"
+        else
+            echo "✗ registry (expected: 0, got: $result)"
+            record_failure "registry" "expected 0, got $result"
+        fi
+    else
+        echo "✗ registry (build failed)"
+        record_failure "registry" "build failed"
+    fi
+else
+    echo "⊘ registry (test not found, skipping)"
 fi
 
 TOTAL=$((PASSED + FAILED))

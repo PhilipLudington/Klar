@@ -389,6 +389,16 @@ pub const Formatter = struct {
                 }
                 try self.writeByte(')');
             },
+            .require => |contract| {
+                try self.write("meta require(");
+                try self.formatExpr(contract.expr);
+                try self.writeByte(')');
+            },
+            .ensure => |contract| {
+                try self.write("meta ensure(");
+                try self.formatExpr(contract.expr);
+                try self.writeByte(')');
+            },
         }
     }
 

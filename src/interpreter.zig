@@ -287,6 +287,13 @@ pub const Interpreter = struct {
                 if (v == .builtin) self.allocator.destroy(v.builtin);
             }
         }
+        // Phase 9.2: UDP and DNS builtins
+        const udp_names = [_][]const u8{ "udp_bind", "udp_send_to", "udp_recv_from", "udp_close", "dns_lookup" };
+        for (udp_names) |name| {
+            if (self.global_env.get(name)) |v| {
+                if (v == .builtin) self.allocator.destroy(v.builtin);
+            }
+        }
         self.global_env.deinit();
         self.allocator.destroy(self.global_env);
     }
@@ -433,6 +440,20 @@ pub const Interpreter = struct {
             .{ .name = "tcp_listener_close", .func = &builtinStubTcpVoid },
         };
         for (builtins_phase6) |b| {
+            const fn_obj = try self.allocator.create(values.BuiltinFunction);
+            fn_obj.* = .{ .name = b.name, .func = b.func };
+            try self.global_env.define(b.name, .{ .builtin = fn_obj }, false);
+        }
+
+        // Phase 9.2: UDP socket and DNS builtins
+        const builtins_udp = [_]struct { name: []const u8, func: *const fn (Allocator, []const Value) RuntimeError!Value }{
+            .{ .name = "udp_bind", .func = &builtinStubTcp },
+            .{ .name = "udp_send_to", .func = &builtinStubTcp },
+            .{ .name = "udp_recv_from", .func = &builtinStubTcp },
+            .{ .name = "udp_close", .func = &builtinStubTcpVoid },
+            .{ .name = "dns_lookup", .func = &builtinStubTcp },
+        };
+        for (builtins_udp) |b| {
             const fn_obj = try self.allocator.create(values.BuiltinFunction);
             fn_obj.* = .{ .name = b.name, .func = b.func };
             try self.global_env.define(b.name, .{ .builtin = fn_obj }, false);
@@ -3212,10 +3233,7 @@ test "await returns completed future value in interpreter runtime" {
     interp.ensureBuilderInitialized();
 
     const ready = try interp.builder.futureCompleted(1, interp.builder.i32Val(42));
-    defer {
-        testing.allocator.destroy(ready.future.value.?);
-        testing.allocator.destroy(ready.future);
-    }
+    // No manual free needed — runtime_arena.deinit() (via interp.deinit()) handles cleanup
     try interp.current_env.define("ready", ready, false);
 
     const unary = try testing.allocator.create(ast.Unary);
@@ -3243,7 +3261,7 @@ test "await on pending future returns invalid operation" {
     interp.ensureBuilderInitialized();
 
     const pending = try interp.builder.futurePending(2);
-    defer testing.allocator.destroy(pending.future);
+    // No manual free needed — runtime_arena.deinit() (via interp.deinit()) handles cleanup
     try interp.current_env.define("pending", pending, false);
 
     const unary = try testing.allocator.create(ast.Unary);
@@ -3275,10 +3293,7 @@ test "await on failed future returns invalid operation with runtime message" {
     interp.ensureBuilderInitialized();
 
     const failed = try interp.builder.futureFailed(3, interp.builder.i32Val(9));
-    defer {
-        testing.allocator.destroy(failed.future.value.?);
-        testing.allocator.destroy(failed.future);
-    }
+    // No manual free needed — runtime_arena.deinit() (via interp.deinit()) handles cleanup
     try interp.current_env.define("failed", failed, false);
 
     const unary = try testing.allocator.create(ast.Unary);
@@ -3309,7 +3324,7 @@ test "await on cancelled future returns invalid operation with runtime message" 
     interp.ensureBuilderInitialized();
 
     const cancelled = try interp.builder.futureCancelled(4);
-    defer testing.allocator.destroy(cancelled.future);
+    // No manual free needed — runtime_arena.deinit() (via interp.deinit()) handles cleanup
     try interp.current_env.define("cancelled", cancelled, false);
 
     const unary = try testing.allocator.create(ast.Unary);

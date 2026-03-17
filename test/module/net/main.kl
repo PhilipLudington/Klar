@@ -1,0 +1,156 @@
+fn fail(test_num: i32, msg: string) -> i32 {
+    print("FAIL test ")
+    print(test_num.to_string().as_str())
+    print(": ")
+    println(msg)
+    return test_num
+}
+
+fn main() -> i32 {
+
+    // ====== UDP Tests ======
+
+    // Test 1: udp_bind creates a socket
+    let br: Result#[UdpSocket, IoError] = udp_bind("127.0.0.1", 19850)
+    if not br.is_ok() {
+        return fail(1, "udp_bind failed")
+    }
+    let sock: UdpSocket = br!
+    println("ok 1 - udp_bind")
+
+    // Test 2: udp_send_to sends data to the bound socket
+    let sr: Result#[i32, IoError] = udp_send_to(sock, "hello", "127.0.0.1", 19850)
+    if not sr.is_ok() {
+        udp_close(sock)
+        return fail(2, "udp_send_to failed")
+    }
+    let bytes_sent: i32 = sr!
+    if bytes_sent != 5 {
+        udp_close(sock)
+        return fail(2, "expected 5 bytes sent")
+    }
+    println("ok 2 - udp_send_to")
+
+    // Test 3: udp_recv_from receives the datagram
+    let rr: Result#[UdpMessage, IoError] = udp_recv_from(sock, 1024)
+    if not rr.is_ok() {
+        udp_close(sock)
+        return fail(3, "udp_recv_from failed")
+    }
+    let msg: UdpMessage = rr!
+    if msg.data != "hello" {
+        udp_close(sock)
+        return fail(3, "expected data 'hello'")
+    }
+    if msg.addr != "127.0.0.1" {
+        udp_close(sock)
+        return fail(3, "expected addr '127.0.0.1'")
+    }
+    if msg.port != 19850 {
+        udp_close(sock)
+        return fail(3, "expected port 19850")
+    }
+    println("ok 3 - udp_recv_from loopback")
+
+    // Test 4: multiple datagrams
+    let s2: Result#[i32, IoError] = udp_send_to(sock, "one", "127.0.0.1", 19850)
+    let s3: Result#[i32, IoError] = udp_send_to(sock, "two", "127.0.0.1", 19850)
+    if not s2.is_ok() or not s3.is_ok() {
+        udp_close(sock)
+        return fail(4, "multi send failed")
+    }
+    let r2: Result#[UdpMessage, IoError] = udp_recv_from(sock, 1024)
+    let r3: Result#[UdpMessage, IoError] = udp_recv_from(sock, 1024)
+    if not r2.is_ok() or not r3.is_ok() {
+        udp_close(sock)
+        return fail(4, "multi recv failed")
+    }
+    let m2: UdpMessage = r2!
+    let m3: UdpMessage = r3!
+    if m2.data != "one" {
+        udp_close(sock)
+        return fail(4, "expected 'one'")
+    }
+    if m3.data != "two" {
+        udp_close(sock)
+        return fail(4, "expected 'two'")
+    }
+    println("ok 4 - multiple datagrams")
+
+    // Test 5: buffer size handling (small buffer truncates)
+    let s5: Result#[i32, IoError] = udp_send_to(sock, "abcdefghij", "127.0.0.1", 19850)
+    if not s5.is_ok() {
+        udp_close(sock)
+        return fail(5, "send for buffer test failed")
+    }
+    let r5: Result#[UdpMessage, IoError] = udp_recv_from(sock, 5)
+    if not r5.is_ok() {
+        udp_close(sock)
+        return fail(5, "recv with small buffer failed")
+    }
+    let m5: UdpMessage = r5!
+    // recvfrom with a 5-byte buffer should receive at most 5 bytes
+    if m5.data.len() > 5 {
+        udp_close(sock)
+        return fail(5, "buffer exceeded max_bytes")
+    }
+    println("ok 5 - buffer size handling")
+
+    // Test 6: two sockets communicating
+    let br2: Result#[UdpSocket, IoError] = udp_bind("127.0.0.1", 19851)
+    if not br2.is_ok() {
+        udp_close(sock)
+        return fail(6, "second udp_bind failed")
+    }
+    let sock2: UdpSocket = br2!
+    let s6: Result#[i32, IoError] = udp_send_to(sock2, "ping", "127.0.0.1", 19850)
+    if not s6.is_ok() {
+        udp_close(sock)
+        udp_close(sock2)
+        return fail(6, "cross-socket send failed")
+    }
+    let r6: Result#[UdpMessage, IoError] = udp_recv_from(sock, 1024)
+    if not r6.is_ok() {
+        udp_close(sock)
+        udp_close(sock2)
+        return fail(6, "cross-socket recv failed")
+    }
+    let m6: UdpMessage = r6!
+    if m6.data != "ping" {
+        udp_close(sock)
+        udp_close(sock2)
+        return fail(6, "expected 'ping'")
+    }
+    if m6.port != 19851 {
+        udp_close(sock)
+        udp_close(sock2)
+        return fail(6, "expected sender port 19851")
+    }
+    println("ok 6 - two sockets communicating")
+
+    udp_close(sock2)
+    udp_close(sock)
+
+    // ====== DNS Tests ======
+
+    // Test 7: dns_lookup resolves localhost
+    let dr: Result#[string, IoError] = dns_lookup("localhost")
+    if not dr.is_ok() {
+        return fail(7, "dns_lookup localhost failed")
+    }
+    let addr: string = dr!
+    if addr != "127.0.0.1" {
+        return fail(7, "expected 127.0.0.1")
+    }
+    println("ok 7 - dns_lookup localhost")
+
+    // Test 8: dns_lookup fails on invalid hostname
+    let dr2: Result#[string, IoError] = dns_lookup("this.hostname.definitely.does.not.exist.invalid")
+    if dr2.is_ok() {
+        return fail(8, "expected dns_lookup to fail on invalid hostname")
+    }
+    println("ok 8 - dns_lookup invalid hostname")
+
+    println("all tests passed")
+    return 0
+}

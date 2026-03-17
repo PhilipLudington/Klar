@@ -2059,11 +2059,17 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
-        // ProcessHandle struct type: { pid: i32, stdout_fd: i32, stderr_fd: i32 }
+        // ProcessHandle struct type:
+        //   POSIX: { pid: i32, stdout_fd: i32, stderr_fd: i32 }
+        //   Windows: { pid: i64, stdout_fd: i64, stderr_fd: i64 } (HANDLEs are pointer-sized)
+        const handle_field_type = if (@import("builtin").os.tag == .windows)
+            self.type_builder.i64Type()
+        else
+            self.type_builder.i32Type();
         const process_handle_fields = try self.allocator.dupe(types.StructField, &[_]types.StructField{
-            .{ .name = "pid", .type_ = self.type_builder.i32Type(), .is_pub = true },
-            .{ .name = "stdout_fd", .type_ = self.type_builder.i32Type(), .is_pub = true },
-            .{ .name = "stderr_fd", .type_ = self.type_builder.i32Type(), .is_pub = true },
+            .{ .name = "pid", .type_ = handle_field_type, .is_pub = true },
+            .{ .name = "stdout_fd", .type_ = handle_field_type, .is_pub = true },
+            .{ .name = "stderr_fd", .type_ = handle_field_type, .is_pub = true },
         });
         const process_handle_struct = try self.allocator.create(types.StructType);
         process_handle_struct.* = .{
@@ -2283,6 +2289,144 @@ pub const TypeChecker = struct {
         });
 
         // ====================================================================
+        // Phase 9.2: UDP socket and DNS builtins
+        // ====================================================================
+
+        // UdpSocket struct type: { fd: i32 }
+        const udp_socket_fields = try self.allocator.dupe(types.StructField, &[_]types.StructField{
+            .{ .name = "fd", .type_ = self.type_builder.i32Type(), .is_pub = true },
+        });
+        const udp_socket_struct = try self.allocator.create(types.StructType);
+        udp_socket_struct.* = .{
+            .name = "UdpSocket",
+            .type_params = &.{},
+            .fields = udp_socket_fields,
+            .traits = &.{},
+            .is_copy = true,
+        };
+        try self.generic_struct_types.append(self.allocator, udp_socket_struct);
+        const udp_socket_type: types.Type = .{ .struct_ = udp_socket_struct };
+        try self.current_scope.define(.{
+            .name = "UdpSocket",
+            .type_ = udp_socket_type,
+            .kind = .type_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // UdpMessage struct type: { data: string, addr: string, port: i32 }
+        const udp_message_fields = try self.allocator.dupe(types.StructField, &[_]types.StructField{
+            .{ .name = "data", .type_ = self.type_builder.stringType(), .is_pub = true },
+            .{ .name = "addr", .type_ = self.type_builder.stringType(), .is_pub = true },
+            .{ .name = "port", .type_ = self.type_builder.i32Type(), .is_pub = true },
+        });
+        const udp_message_struct = try self.allocator.create(types.StructType);
+        udp_message_struct.* = .{
+            .name = "UdpMessage",
+            .type_params = &.{},
+            .fields = udp_message_fields,
+            .traits = &.{},
+            .is_copy = true,
+        };
+        try self.generic_struct_types.append(self.allocator, udp_message_struct);
+        const udp_message_type: types.Type = .{ .struct_ = udp_message_struct };
+        try self.current_scope.define(.{
+            .name = "UdpMessage",
+            .type_ = udp_message_type,
+            .kind = .type_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // udp_bind(addr: string, port: i32) -> Result#[UdpSocket, IoError]
+        const udp_bind_ret = try self.type_builder.resultType(udp_socket_type, self.type_builder.ioErrorType());
+        const udp_bind_fn_type = try self.type_builder.functionType(&.{ self.type_builder.stringType(), self.type_builder.i32Type() }, udp_bind_ret);
+        try self.current_scope.define(.{
+            .name = "udp_bind",
+            .type_ = udp_bind_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // udp_send_to(socket: UdpSocket, data: string, addr: string, port: i32) -> Result#[i32, IoError]
+        const udp_send_to_ret = try self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType());
+        const udp_send_to_fn_type = try self.type_builder.functionType(&.{ udp_socket_type, self.type_builder.stringType(), self.type_builder.stringType(), self.type_builder.i32Type() }, udp_send_to_ret);
+        try self.current_scope.define(.{
+            .name = "udp_send_to",
+            .type_ = udp_send_to_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // udp_recv_from(socket: UdpSocket, max_bytes: i32) -> Result#[UdpMessage, IoError]
+        const udp_recv_from_ret = try self.type_builder.resultType(udp_message_type, self.type_builder.ioErrorType());
+        const udp_recv_from_fn_type = try self.type_builder.functionType(&.{ udp_socket_type, self.type_builder.i32Type() }, udp_recv_from_ret);
+        try self.current_scope.define(.{
+            .name = "udp_recv_from",
+            .type_ = udp_recv_from_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // udp_close(socket: UdpSocket) -> void
+        const udp_close_fn_type = try self.type_builder.functionType(&.{udp_socket_type}, self.type_builder.voidType());
+        try self.current_scope.define(.{
+            .name = "udp_close",
+            .type_ = udp_close_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // dns_lookup(hostname: string) -> Result#[string, IoError]
+        const dns_lookup_ret = try self.type_builder.resultType(self.type_builder.stringType(), self.type_builder.ioErrorType());
+        const dns_lookup_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, dns_lookup_ret);
+        try self.current_scope.define(.{
+            .name = "dns_lookup",
+            .type_ = dns_lookup_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // ====================================================================
+        // Phase 9.4: Channel builtins
+        // ====================================================================
+
+        // channel_create#[T](capacity: i32) -> (Sender#[T], Receiver#[T])
+        // This is special-cased in checkCall for generic type resolution.
+        // We register it as a function taking i32 and returning a tuple (the
+        // type parameter resolution happens in the checkCall special case).
+        // For now, register a simple version; the actual return type is
+        // resolved during type checking of the call expression.
+        {
+            const channel_elem = self.type_builder.i32Type();
+            const sender_t = try self.type_builder.senderType(channel_elem);
+            const receiver_t = try self.type_builder.receiverType(channel_elem);
+            const channel_ret = try self.type_builder.tupleType(&[_]types.Type{ sender_t, receiver_t });
+            const channel_fn_type = try self.type_builder.functionType(&.{self.type_builder.i32Type()}, channel_ret);
+            try self.current_scope.define(.{
+                .name = "channel_create",
+                .type_ = channel_fn_type,
+                .kind = .function,
+                .mutable = false,
+                .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+            });
+        }
+
+        // ThreadPool type - thread pool for concurrent task execution
+        try self.current_scope.define(.{
+            .name = "ThreadPool",
+            .type_ = self.type_builder.threadPoolType(),
+            .kind = .type_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // ====================================================================
         // Register builtin trait implementations for I/O types
         // ====================================================================
 
@@ -2400,6 +2544,100 @@ pub const TypeChecker = struct {
         self.errors.clearRetainingCapacity();
         self.error_count = 0;
         self.warning_count = 0;
+    }
+
+    /// Compute Levenshtein edit distance between two strings.
+    /// Returns null if the distance would exceed `max_dist` (early exit optimization).
+    fn editDistance(a: []const u8, b: []const u8, max_dist: usize) ?usize {
+        if (a.len == 0) return if (b.len <= max_dist) b.len else null;
+        if (b.len == 0) return if (a.len <= max_dist) a.len else null;
+
+        // Quick length check: if lengths differ by more than max_dist, impossible
+        const len_diff = if (a.len > b.len) a.len - b.len else b.len - a.len;
+        if (len_diff > max_dist) return null;
+
+        // Use a single row of the DP matrix (space optimization)
+        var prev_row: [128]usize = undefined;
+        var curr_row: [128]usize = undefined;
+        if (b.len + 1 > 128) return null; // name too long
+
+        for (0..b.len + 1) |j| {
+            prev_row[j] = j;
+        }
+
+        for (a, 0..) |ca, i| {
+            curr_row[0] = i + 1;
+            var row_min: usize = curr_row[0];
+            for (b, 0..) |cb, j| {
+                const cost: usize = if (ca == cb) 0 else 1;
+                const del = prev_row[j + 1] + 1;
+                const ins = curr_row[j] + 1;
+                const sub = prev_row[j] + cost;
+                curr_row[j + 1] = @min(del, @min(ins, sub));
+                if (curr_row[j + 1] < row_min) row_min = curr_row[j + 1];
+            }
+            // Early exit if minimum in this row exceeds max_dist
+            if (row_min > max_dist) return null;
+            // Swap rows
+            const tmp = prev_row;
+            prev_row = curr_row;
+            curr_row = tmp;
+        }
+
+        const result = prev_row[b.len];
+        return if (result <= max_dist) result else null;
+    }
+
+    /// Find the most similar name in scope to `name` (edit distance ≤ 2).
+    /// Returns null if no good match is found.
+    pub fn findSimilarName(self: *const TypeChecker, name: []const u8) ?[]const u8 {
+        var best_name: ?[]const u8 = null;
+        var best_dist: usize = 3; // threshold: must be ≤ 2
+
+        // Walk the scope chain
+        var scope: ?*const Scope = self.current_scope;
+        while (scope) |s| {
+            var it = s.symbols.iterator();
+            while (it.next()) |entry| {
+                const candidate = entry.key_ptr.*;
+                if (std.mem.eql(u8, candidate, name)) continue; // skip exact match
+                if (editDistance(name, candidate, best_dist -| 1)) |dist| {
+                    if (dist < best_dist) {
+                        best_dist = dist;
+                        best_name = candidate;
+                    }
+                }
+            }
+            scope = s.parent;
+        }
+
+        return best_name;
+    }
+
+    /// Find the most similar type name in scope (edit distance ≤ 2).
+    pub fn findSimilarTypeName(self: *const TypeChecker, name: []const u8) ?[]const u8 {
+        var best_name: ?[]const u8 = null;
+        var best_dist: usize = 3;
+
+        var scope: ?*const Scope = self.current_scope;
+        while (scope) |s| {
+            var it = s.symbols.iterator();
+            while (it.next()) |entry| {
+                const sym = entry.value_ptr.*;
+                if (sym.kind != .type_ and sym.kind != .trait_) continue;
+                const candidate = entry.key_ptr.*;
+                if (std.mem.eql(u8, candidate, name)) continue;
+                if (editDistance(name, candidate, best_dist -| 1)) |dist| {
+                    if (dist < best_dist) {
+                        best_dist = dist;
+                        best_name = candidate;
+                    }
+                }
+            }
+            scope = s.parent;
+        }
+
+        return best_name;
     }
 
     /// Resolve a type expression to a Type, returning void on error
@@ -3618,6 +3856,31 @@ pub const TypeChecker = struct {
                 return self.checkSomeNoneCall(call, std.mem.eql(u8, func_name, "Some"));
             }
 
+            // Special handling for channel_create#[T](capacity) -> (Sender#[T], Receiver#[T])
+            if (std.mem.eql(u8, func_name, "channel_create")) {
+                if (call.args.len != 1) {
+                    self.addError(.invalid_call, call.span, "channel_create requires exactly 1 argument (capacity), got {d}", .{call.args.len});
+                    return self.type_builder.unknownType();
+                }
+                const cap_type = self.checkExpr(call.args[0]);
+                if (!cap_type.isInteger()) {
+                    self.addError(.type_mismatch, call.args[0].span(), "channel_create capacity must be an integer", .{});
+                }
+                // Resolve element type from type args
+                var elem_type: types.Type = self.type_builder.i32Type(); // default
+                if (call.type_args) |ta| {
+                    if (ta.len == 1) {
+                        elem_type = type_resolution.resolveTypeExpr(self, ta[0]) catch self.type_builder.unknownType();
+                    } else if (ta.len > 1) {
+                        self.addError(.type_mismatch, call.span, "channel_create expects exactly 1 type argument", .{});
+                    }
+                }
+                const sender_t = self.type_builder.senderType(elem_type) catch return self.type_builder.unknownType();
+                const receiver_t = self.type_builder.receiverType(elem_type) catch return self.type_builder.unknownType();
+                const tuple_elems = self.allocator.dupe(types.Type, &[_]types.Type{ sender_t, receiver_t }) catch return self.type_builder.unknownType();
+                return self.type_builder.tupleType(tuple_elems) catch self.type_builder.unknownType();
+            }
+
             // Special handling for print/println - accept both string and String
             if (std.mem.eql(u8, func_name, "print") or std.mem.eql(u8, func_name, "println")) {
                 if (call.args.len != 1) {
@@ -4746,6 +5009,19 @@ pub const TypeChecker = struct {
                             try symbols.symbols.put(self.allocator, t.name, sym);
                         }
                     },
+                    .extern_block => |b| {
+                        // Extern functions are implicitly public (FFI bindings)
+                        for (b.functions) |func| {
+                            const func_info = self.current_scope.lookup(func.name) orelse continue;
+                            const sym = ModuleSymbol{
+                                .name = func.name,
+                                .kind = .function,
+                                .type_ = func_info.type_,
+                                .is_pub = true,
+                            };
+                            try symbols.symbols.put(self.allocator, func.name, sym);
+                        }
+                    },
                     else => {},
                 }
             }
@@ -5220,6 +5496,8 @@ pub const TypeChecker = struct {
                         if (meta_validation.hasPureAnnotation(f.meta)) |pure_span| {
                             self.in_pure_function = true;
                             self.pure_function_span = pure_span;
+                            // Check for inout parameters which allow mutating external state
+                            meta_validation.checkPureInoutParams(self, f.params, pure_span);
                         }
                         defer self.in_pure_function = was_pure;
                         defer self.pure_function_span = was_pure_span;
@@ -5227,6 +5505,10 @@ pub const TypeChecker = struct {
                         const was_async_context = self.current_async_context;
                         self.current_async_context = f.is_async;
                         defer self.current_async_context = was_async_context;
+
+                        // Type-check meta require/ensure contract expressions
+                        meta_validation.checkRequireContracts(self, f.meta);
+                        meta_validation.checkEnsureContracts(self, f.meta, self.current_return_type orelse self.type_builder.voidType());
 
                         _ = self.checkBlock(body);
                     }
@@ -5484,6 +5766,8 @@ pub const TypeChecker = struct {
                         if (meta_validation.hasPureAnnotation(f.meta)) |pure_span| {
                             self.in_pure_function = true;
                             self.pure_function_span = pure_span;
+                            // Check for inout parameters which allow mutating external state
+                            meta_validation.checkPureInoutParams(self, f.params, pure_span);
                         }
                         defer self.in_pure_function = was_pure;
                         defer self.pure_function_span = was_pure_span;
@@ -5491,6 +5775,10 @@ pub const TypeChecker = struct {
                         const was_async_context = self.current_async_context;
                         self.current_async_context = f.is_async;
                         defer self.current_async_context = was_async_context;
+
+                        // Type-check meta require/ensure contract expressions
+                        meta_validation.checkRequireContracts(self, f.meta);
+                        meta_validation.checkEnsureContracts(self, f.meta, self.current_return_type orelse self.type_builder.voidType());
 
                         _ = self.checkBlock(body);
                     }

@@ -1,0 +1,7 @@
+// Expected: check-error meta ensure expression must be of type bool
+// meta ensure with a non-bool expression should be rejected
+
+meta ensure(result + 1)
+fn bad_ensure(x: i32) -> i32 {
+    return x
+}

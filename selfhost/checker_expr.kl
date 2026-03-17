@@ -12,7 +12,7 @@ import types.{
     type_eq_simple, type_to_string_simple, type_kind_name,
     type_is_numeric, type_is_integer, type_is_float, type_is_signed,
     type_is_primitive, get_primitive_kind,
-    ArrayData, SliceData, TupleData,
+    ArrayData, SliceData, TupleData, ReferenceData,
     FunctionData, StructData, StructFieldData, EnumData,
     TraitData, TraitMethodData, TypeVarData,
     ErrorKind
@@ -52,7 +52,8 @@ import checker.{
     mangle_generic_name, substitute_type, unify_types,
     resolve_type_expr_with_type_vars,
     find_trait_method, has_trait_impl,
-    bind_pattern
+    bind_pattern,
+    store_expr_type
 }
 
 import checker_builtins.{check_builtin_method}
@@ -60,6 +61,16 @@ import checker_builtins.{check_builtin_method}
 // ─── Main Expression Dispatch ───────────────────────────────────────
 
 pub fn check_expr(tc: TypeChecker, eid: ExprId) -> (TypeChecker, KlarType) {
+    let result: (TypeChecker, KlarType) = check_expr_dispatch(tc, eid)
+    // Store the resolved type for typed AST emission
+    if eid.id >= 0 and eid.id < result.0.expr_types.len() {
+        let c: TypeChecker = store_expr_type(result.0, eid.id, result.1)
+        return (c, result.1)
+    }
+    return result
+}
+
+fn check_expr_dispatch(tc: TypeChecker, eid: ExprId) -> (TypeChecker, KlarType) {
     if eid.id < 0 {
         return (tc, type_void())
     }
@@ -174,6 +185,12 @@ fn check_interpolated_string(tc: TypeChecker, data: InterpolatedStringData) -> (
 // ─── Identifier ─────────────────────────────────────────────────────
 
 fn check_identifier(tc: TypeChecker, data: IdentifierData) -> (TypeChecker, KlarType) {
+    // Handle None enum variant (bare identifier, not a function call)
+    if data.ident_name == "None" {
+        let r: (TypeChecker, KlarType) = make_optional_type(tc, type_unknown())
+        return r
+    }
+
     let found: ?SymbolInfo = lookup(tc, data.ident_name)
     match found {
         Some(info) => {
@@ -379,8 +396,22 @@ fn check_unary(tc: TypeChecker, data: UnaryData) -> (TypeChecker, KlarType) {
             }
             return (c, op_type)
         }
+        UnaryOp::MakeRef => {
+            let pr: (TypeChecker, i32) = push_type_ref(c, op_type)
+            c = pr.0
+            let ref_idx: i32 = c.type_references.len()
+            c.type_references.push(ReferenceData { inner: TypeId { id: pr.1 }, is_mut: false })
+            return (c, KlarType { kind: TypeKind::Reference, payload: ref_idx })
+        }
+        UnaryOp::MakeRefMut => {
+            let pr: (TypeChecker, i32) = push_type_ref(c, op_type)
+            c = pr.0
+            let ref_idx: i32 = c.type_references.len()
+            c.type_references.push(ReferenceData { inner: TypeId { id: pr.1 }, is_mut: true })
+            return (c, KlarType { kind: TypeKind::Reference, payload: ref_idx })
+        }
         _ => {
-            // Deref, MakeRef, MakeRefMut — deferred
+            // Deref — deferred
             return (c, type_unknown())
         }
     }
@@ -670,16 +701,18 @@ fn check_method_call(tc: TypeChecker, data: MethodCallData) -> (TypeChecker, Kla
             // NOTE: Keep in sync with register_builtin_opaque_types in checker.kl
             if id_data.ident_name == "Rc" or id_data.ident_name == "Arc"
                 or id_data.ident_name == "Cell" {
-                var c2: TypeChecker = check_method_args(tc, data)
-                return (c2, type_unknown())
+                var c: TypeChecker = tc
+                c = check_method_args(c, data)
+                return (c, type_unknown())
             }
             // IO type static methods: File.open(path), etc.
             // NOTE: Keep in sync with register_builtin_opaque_types in checker.kl
             if id_data.ident_name == "File" or id_data.ident_name == "Stdout"
                 or id_data.ident_name == "Stdin" or id_data.ident_name == "BufReader"
                 or id_data.ident_name == "BufWriter" {
-                var c2: TypeChecker = check_method_args(tc, data)
-                return (c2, type_unknown())
+                var c: TypeChecker = tc
+                c = check_method_args(c, data)
+                return (c, type_unknown())
             }
             // Primitive type static methods: i32.default(), i64.default(), etc.
             if id_data.ident_name == "i32" or id_data.ident_name == "i64" or id_data.ident_name == "f64"
@@ -1046,10 +1079,22 @@ fn check_index(tc: TypeChecker, data: IndexData) -> (TypeChecker, KlarType) {
         return (c, type_error())
     }
 
-    // Index must be integer
-    if not type_is_integer(idx_type) and not is_error_type(idx_type) {
-        c = add_typed_error(c, ErrorKind::InvalidIndex, data.span,
-            "index must be integer, got " + type_display(idx_type))
+    // Index must be integer (skip check for unknown types from cyclic imports)
+    if not type_is_integer(idx_type) and not is_error_type(idx_type)
+        and not type_eq_simple(idx_type, type_unknown()) {
+        // Also tolerate ?unknown (optional of unknown from cyclic imports)
+        var suppress: bool = false
+        if type_kind_name(idx_type.kind) == "Optional" {
+            let wd: WrapperData = c.type_wrappers[idx_type.payload]
+            let inner: KlarType = get_resolved_type(c, wd.inner.id)
+            if type_eq_simple(inner, type_unknown()) {
+                suppress = true
+            }
+        }
+        if not suppress {
+            c = add_typed_error(c, ErrorKind::InvalidIndex, data.span,
+                "index must be integer, got " + type_display(idx_type))
+        }
     }
 
     match obj_type.kind {
@@ -1425,7 +1470,7 @@ fn check_generic_fn_call_impl(tc: TypeChecker, data: CallData, fn_name: string, 
         params_start: mono_params_start,
         params_count: fn_decl.params_count,
         return_type: TypeId { id: pr_ret.1 },
-        is_async: false,
+        is_async: fn_decl.is_async,
         is_unsafe: fn_decl.is_unsafe,
     })
     let mono_fn_type: KlarType = KlarType { kind: TypeKind::Function, payload: fn_idx }

@@ -1,0 +1,1072 @@
+// test/module/yaml/main.kl - Comprehensive tests for stdlib/yaml.kl
+// Tests: scalars, sequences, mappings, nested structures, flow collections,
+//        block scalars, comments, accessors, error handling, stringify round-trip
+// Returns 0 on success, non-zero test number on failure
+
+import stdlib.yaml.*
+
+// ============================================================================
+// Test Helpers
+// ============================================================================
+
+fn fail(test_num: i32, msg: string) -> i32 {
+    print("FAIL test ")
+    print(test_num.to_string().as_str())
+    print(": ")
+    println(msg)
+    return test_num
+}
+
+fn expect_str(actual: string, expected: string, test_num: i32) -> i32 {
+    if actual != expected {
+        print("FAIL test ")
+        print(test_num.to_string().as_str())
+        print(": expected '")
+        print(expected)
+        print("' got '")
+        print(actual)
+        println("'")
+        return test_num
+    }
+    return 0
+}
+
+fn expect_ok(r: Result#[YamlValue, YamlError], test_num: i32) -> i32 {
+    match r {
+        Ok(_) => { return 0 }
+        Err(e) => {
+            print("FAIL test ")
+            print(test_num.to_string().as_str())
+            print(": expected Ok, got Err: ")
+            print(e.message)
+            print(" at line ")
+            println(e.line.to_string().as_str())
+            return test_num
+        }
+    }
+}
+
+fn expect_err(r: Result#[YamlValue, YamlError], test_num: i32) -> i32 {
+    match r {
+        Ok(_) => { return fail(test_num, "expected Err, got Ok") }
+        Err(_) => { return 0 }
+    }
+}
+
+// ============================================================================
+// Test: Scalar Types
+// ============================================================================
+
+fn test_string_value() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("name: Tom")
+    match r {
+        Ok(v) => {
+            let s: ?string = yaml_get_string(v, "name")
+            match s {
+                Some(val) => {
+                    if val == "Tom" { return 0 }
+                    return fail(1, "expected 'Tom'")
+                }
+                None => { return fail(1, "key not found") }
+            }
+        }
+        Err(e) => {
+            print("parse error: ")
+            println(e.message)
+            return fail(1, "parse failed")
+        }
+    }
+}
+
+fn test_integer_value() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("port: 8080")
+    match r {
+        Ok(v) => {
+            let n: ?i64 = yaml_get_int(v, "port")
+            match n {
+                Some(val) => {
+                    if val == 8080.as#[i64] { return 0 }
+                    return fail(2, "expected 8080")
+                }
+                None => { return fail(2, "key not found") }
+            }
+        }
+        Err(_) => { return fail(2, "parse failed") }
+    }
+}
+
+fn test_negative_integer() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("offset: -42")
+    match r {
+        Ok(v) => {
+            let n: ?i64 = yaml_get_int(v, "offset")
+            match n {
+                Some(val) => {
+                    if val == -42.as#[i64] { return 0 }
+                    return fail(3, "expected -42")
+                }
+                None => { return fail(3, "key not found") }
+            }
+        }
+        Err(_) => { return fail(3, "parse failed") }
+    }
+}
+
+fn test_float_value() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("pi: 3.14")
+    match r {
+        Ok(v) => {
+            let n: ?f64 = yaml_get_float(v, "pi")
+            match n {
+                Some(val) => {
+                    if val > 3.13 and val < 3.15 { return 0 }
+                    return fail(4, "expected ~3.14")
+                }
+                None => { return fail(4, "key not found") }
+            }
+        }
+        Err(_) => { return fail(4, "parse failed") }
+    }
+}
+
+fn test_bool_true() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("enabled: true")
+    match r {
+        Ok(v) => {
+            let b: ?bool = yaml_get_bool(v, "enabled")
+            match b {
+                Some(val) => {
+                    if val { return 0 }
+                    return fail(5, "expected true")
+                }
+                None => { return fail(5, "key not found") }
+            }
+        }
+        Err(_) => { return fail(5, "parse failed") }
+    }
+}
+
+fn test_bool_false() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("debug: false")
+    match r {
+        Ok(v) => {
+            let b: ?bool = yaml_get_bool(v, "debug")
+            match b {
+                Some(val) => {
+                    if not val { return 0 }
+                    return fail(6, "expected false")
+                }
+                None => { return fail(6, "key not found") }
+            }
+        }
+        Err(_) => { return fail(6, "parse failed") }
+    }
+}
+
+fn test_null_value() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("empty: null")
+    match r {
+        Ok(v) => {
+            let val: ?YamlValue = yaml_get(v, "empty")
+            match val {
+                Some(inner) => {
+                    match inner {
+                        YamlValue.Null => { return 0 }
+                        _ => { return fail(7, "expected Null") }
+                    }
+                }
+                None => { return fail(7, "key not found") }
+            }
+        }
+        Err(_) => { return fail(7, "parse failed") }
+    }
+}
+
+fn test_tilde_null() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("empty: ~")
+    match r {
+        Ok(v) => {
+            let val: ?YamlValue = yaml_get(v, "empty")
+            match val {
+                Some(inner) => {
+                    match inner {
+                        YamlValue.Null => { return 0 }
+                        _ => { return fail(8, "expected Null for ~") }
+                    }
+                }
+                None => { return fail(8, "key not found") }
+            }
+        }
+        Err(_) => { return fail(8, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Quoted Strings
+// ============================================================================
+
+fn test_double_quoted_string() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("msg: \"hello world\"")
+    match r {
+        Ok(v) => {
+            let s: ?string = yaml_get_string(v, "msg")
+            match s {
+                Some(val) => {
+                    if val == "hello world" { return 0 }
+                    return fail(9, "expected 'hello world'")
+                }
+                None => { return fail(9, "key not found") }
+            }
+        }
+        Err(_) => { return fail(9, "parse failed") }
+    }
+}
+
+fn test_single_quoted_string() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("msg: 'hello world'")
+    match r {
+        Ok(v) => {
+            let s: ?string = yaml_get_string(v, "msg")
+            match s {
+                Some(val) => {
+                    if val == "hello world" { return 0 }
+                    return fail(10, "expected 'hello world'")
+                }
+                None => { return fail(10, "key not found") }
+            }
+        }
+        Err(_) => { return fail(10, "parse failed") }
+    }
+}
+
+fn test_escape_sequences() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("msg: \"line1\\nline2\"")
+    match r {
+        Ok(v) => {
+            let s: ?string = yaml_get_string(v, "msg")
+            match s {
+                Some(val) => {
+                    if val == "line1\nline2" { return 0 }
+                    return fail(11, "expected newline escape")
+                }
+                None => { return fail(11, "key not found") }
+            }
+        }
+        Err(_) => { return fail(11, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Block Sequences
+// ============================================================================
+
+fn test_simple_sequence() -> i32 {
+    let input: string = "fruits:\n  - apple\n  - banana\n  - cherry"
+    let r: Result#[YamlValue, YamlError] = yaml_parse(input)
+    match r {
+        Ok(v) => {
+            let seq: ?List#[YamlValue] = yaml_get_sequence(v, "fruits")
+            match seq {
+                Some(items) => {
+                    if items.len() != 3 {
+                        return fail(12, "expected 3 items")
+                    }
+                    let first: YamlValue = items.get(0)!
+                    match first {
+                        YamlValue.Str(s) => {
+                            if s != "apple" { return fail(12, "expected 'apple'") }
+                        }
+                        _ => { return fail(12, "expected string") }
+                    }
+                    return 0
+                }
+                None => { return fail(12, "key not found") }
+            }
+        }
+        Err(e) => {
+            print("parse error: ")
+            println(e.message)
+            return fail(12, "parse failed")
+        }
+    }
+}
+
+fn test_sequence_of_integers() -> i32 {
+    let input: string = "numbers:\n  - 1\n  - 2\n  - 3"
+    let r: Result#[YamlValue, YamlError] = yaml_parse(input)
+    match r {
+        Ok(v) => {
+            let seq: ?List#[YamlValue] = yaml_get_sequence(v, "numbers")
+            match seq {
+                Some(items) => {
+                    if items.len() != 3 {
+                        return fail(13, "expected 3 items")
+                    }
+                    let second: YamlValue = items.get(1)!
+                    match second {
+                        YamlValue.Int(n) => {
+                            if n != 2.as#[i64] { return fail(13, "expected 2") }
+                        }
+                        _ => { return fail(13, "expected Int") }
+                    }
+                    return 0
+                }
+                None => { return fail(13, "key not found") }
+            }
+        }
+        Err(_) => { return fail(13, "parse failed") }
+    }
+}
+
+fn test_top_level_sequence() -> i32 {
+    let input: string = "- one\n- two\n- three"
+    let r: Result#[YamlValue, YamlError] = yaml_parse(input)
+    match r {
+        Ok(v) => {
+            match v {
+                YamlValue.Sequence(items) => {
+                    if items.len() != 3 {
+                        return fail(14, "expected 3 items")
+                    }
+                    return 0
+                }
+                _ => { return fail(14, "expected Sequence") }
+            }
+        }
+        Err(_) => { return fail(14, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Block Mappings
+// ============================================================================
+
+fn test_simple_mapping() -> i32 {
+    let input: string = "name: Alice\nage: 30\ncity: Berlin"
+    let r: Result#[YamlValue, YamlError] = yaml_parse(input)
+    match r {
+        Ok(v) => {
+            let name: ?string = yaml_get_string(v, "name")
+            match name {
+                Some(val) => {
+                    if val != "Alice" { return fail(15, "expected 'Alice'") }
+                }
+                None => { return fail(15, "name not found") }
+            }
+            let age: ?i64 = yaml_get_int(v, "age")
+            match age {
+                Some(val) => {
+                    if val != 30.as#[i64] { return fail(15, "expected 30") }
+                }
+                None => { return fail(15, "age not found") }
+            }
+            return 0
+        }
+        Err(_) => { return fail(15, "parse failed") }
+    }
+}
+
+fn test_nested_mapping() -> i32 {
+    let input: string = "server:\n  host: localhost\n  port: 8080"
+    let r: Result#[YamlValue, YamlError] = yaml_parse(input)
+    match r {
+        Ok(v) => {
+            let server: ?YamlValue = yaml_get(v, "server")
+            match server {
+                Some(srv) => {
+                    let host: ?string = yaml_get_string(srv, "host")
+                    match host {
+                        Some(val) => {
+                            if val != "localhost" { return fail(16, "expected 'localhost'") }
+                        }
+                        None => { return fail(16, "host not found") }
+                    }
+                    let port: ?i64 = yaml_get_int(srv, "port")
+                    match port {
+                        Some(val) => {
+                            if val != 8080.as#[i64] { return fail(16, "expected 8080") }
+                        }
+                        None => { return fail(16, "port not found") }
+                    }
+                    return 0
+                }
+                None => { return fail(16, "server not found") }
+            }
+        }
+        Err(_) => { return fail(16, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Nested Structures
+// ============================================================================
+
+fn test_sequence_of_mappings() -> i32 {
+    let input: string = "users:\n  - name: Alice\n    age: 30\n  - name: Bob\n    age: 25"
+    let r: Result#[YamlValue, YamlError] = yaml_parse(input)
+    match r {
+        Ok(v) => {
+            let users: ?List#[YamlValue] = yaml_get_sequence(v, "users")
+            match users {
+                Some(items) => {
+                    if items.len() != 2 {
+                        return fail(17, "expected 2 users")
+                    }
+                    let first: YamlValue = items.get(0)!
+                    let name: ?string = yaml_get_string(first, "name")
+                    match name {
+                        Some(val) => {
+                            if val != "Alice" { return fail(17, "expected 'Alice'") }
+                        }
+                        None => { return fail(17, "name not found") }
+                    }
+                    let second: YamlValue = items.get(1)!
+                    let bob_age: ?i64 = yaml_get_int(second, "age")
+                    match bob_age {
+                        Some(val) => {
+                            if val != 25.as#[i64] { return fail(17, "expected 25") }
+                        }
+                        None => { return fail(17, "bob age not found") }
+                    }
+                    return 0
+                }
+                None => { return fail(17, "users not found") }
+            }
+        }
+        Err(e) => {
+            print("parse error: ")
+            println(e.message)
+            return fail(17, "parse failed")
+        }
+    }
+}
+
+fn test_mapping_of_sequences() -> i32 {
+    let input: string = "colors:\n  - red\n  - green\nsizes:\n  - small\n  - large"
+    let r: Result#[YamlValue, YamlError] = yaml_parse(input)
+    match r {
+        Ok(v) => {
+            let colors: ?List#[YamlValue] = yaml_get_sequence(v, "colors")
+            match colors {
+                Some(items) => {
+                    if items.len() != 2 { return fail(18, "expected 2 colors") }
+                }
+                None => { return fail(18, "colors not found") }
+            }
+            let sizes: ?List#[YamlValue] = yaml_get_sequence(v, "sizes")
+            match sizes {
+                Some(items) => {
+                    if items.len() != 2 { return fail(18, "expected 2 sizes") }
+                }
+                None => { return fail(18, "sizes not found") }
+            }
+            return 0
+        }
+        Err(_) => { return fail(18, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Flow Collections
+// ============================================================================
+
+fn test_flow_sequence() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("items: [1, 2, 3]")
+    match r {
+        Ok(v) => {
+            let seq: ?List#[YamlValue] = yaml_get_sequence(v, "items")
+            match seq {
+                Some(items) => {
+                    if items.len() != 3 { return fail(19, "expected 3 items") }
+                    let first: YamlValue = items.get(0)!
+                    match first {
+                        YamlValue.Int(n) => {
+                            if n != 1.as#[i64] { return fail(19, "expected 1") }
+                        }
+                        _ => { return fail(19, "expected Int") }
+                    }
+                    return 0
+                }
+                None => { return fail(19, "key not found") }
+            }
+        }
+        Err(_) => { return fail(19, "parse failed") }
+    }
+}
+
+fn test_flow_mapping() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("point: {x: 1, y: 2}")
+    match r {
+        Ok(v) => {
+            let point: ?YamlValue = yaml_get(v, "point")
+            match point {
+                Some(p) => {
+                    let x: ?i64 = yaml_get_int(p, "x")
+                    match x {
+                        Some(val) => {
+                            if val != 1.as#[i64] { return fail(20, "expected x=1") }
+                        }
+                        None => { return fail(20, "x not found") }
+                    }
+                    let y: ?i64 = yaml_get_int(p, "y")
+                    match y {
+                        Some(val) => {
+                            if val != 2.as#[i64] { return fail(20, "expected y=2") }
+                        }
+                        None => { return fail(20, "y not found") }
+                    }
+                    return 0
+                }
+                None => { return fail(20, "point not found") }
+            }
+        }
+        Err(_) => { return fail(20, "parse failed") }
+    }
+}
+
+fn test_empty_flow_sequence() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("items: []")
+    match r {
+        Ok(v) => {
+            let seq: ?List#[YamlValue] = yaml_get_sequence(v, "items")
+            match seq {
+                Some(items) => {
+                    if items.len() != 0 { return fail(21, "expected empty") }
+                    return 0
+                }
+                None => { return fail(21, "key not found") }
+            }
+        }
+        Err(_) => { return fail(21, "parse failed") }
+    }
+}
+
+fn test_empty_flow_mapping() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("data: {}")
+    match r {
+        Ok(v) => {
+            let data: ?YamlValue = yaml_get(v, "data")
+            match data {
+                Some(d) => {
+                    match d {
+                        YamlValue.Mapping(_) => { return 0 }
+                        _ => { return fail(22, "expected Mapping") }
+                    }
+                }
+                None => { return fail(22, "key not found") }
+            }
+        }
+        Err(_) => { return fail(22, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Comments
+// ============================================================================
+
+fn test_comments() -> i32 {
+    let input: string = "# This is a comment\nname: Alice  # inline comment\n# Another comment\nage: 30"
+    let r: Result#[YamlValue, YamlError] = yaml_parse(input)
+    match r {
+        Ok(v) => {
+            let name: ?string = yaml_get_string(v, "name")
+            match name {
+                Some(val) => {
+                    if val != "Alice" { return fail(23, "expected 'Alice'") }
+                }
+                None => { return fail(23, "name not found") }
+            }
+            let age: ?i64 = yaml_get_int(v, "age")
+            match age {
+                Some(val) => {
+                    if val != 30.as#[i64] { return fail(23, "expected 30") }
+                }
+                None => { return fail(23, "age not found") }
+            }
+            return 0
+        }
+        Err(_) => { return fail(23, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Document Start Marker
+// ============================================================================
+
+fn test_document_start() -> i32 {
+    let input: string = "---\nname: Alice\nage: 30"
+    let r: Result#[YamlValue, YamlError] = yaml_parse(input)
+    match r {
+        Ok(v) => {
+            let name: ?string = yaml_get_string(v, "name")
+            match name {
+                Some(val) => {
+                    if val == "Alice" { return 0 }
+                    return fail(24, "expected 'Alice'")
+                }
+                None => { return fail(24, "name not found") }
+            }
+        }
+        Err(_) => { return fail(24, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Empty/Null Input
+// ============================================================================
+
+fn test_empty_input() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("")
+    match r {
+        Ok(v) => {
+            match v {
+                YamlValue.Null => { return 0 }
+                _ => { return fail(25, "expected Null for empty input") }
+            }
+        }
+        Err(_) => { return fail(25, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Accessor Edge Cases
+// ============================================================================
+
+fn test_get_missing_key() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("name: Alice")
+    match r {
+        Ok(v) => {
+            let missing: ?string = yaml_get_string(v, "missing")
+            match missing {
+                Some(_) => { return fail(26, "expected None for missing key") }
+                None => { return 0 }
+            }
+        }
+        Err(_) => { return fail(26, "parse failed") }
+    }
+}
+
+fn test_get_wrong_type() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("count: 42")
+    match r {
+        Ok(v) => {
+            let s: ?string = yaml_get_string(v, "count")
+            match s {
+                Some(_) => { return fail(27, "expected None for wrong type") }
+                None => { return 0 }
+            }
+        }
+        Err(_) => { return fail(27, "parse failed") }
+    }
+}
+
+fn test_get_on_non_mapping() -> i32 {
+    let val: YamlValue = YamlValue::Str("hello")
+    let result: ?YamlValue = yaml_get(val, "key")
+    match result {
+        Some(_) => { return fail(28, "expected None for non-mapping") }
+        None => { return 0 }
+    }
+}
+
+// ============================================================================
+// Test: Boolean Variants
+// ============================================================================
+
+fn test_yes_no_booleans() -> i32 {
+    let input: string = "active: yes\ndisabled: no"
+    let r: Result#[YamlValue, YamlError] = yaml_parse(input)
+    match r {
+        Ok(v) => {
+            let active: ?bool = yaml_get_bool(v, "active")
+            match active {
+                Some(val) => {
+                    if not val { return fail(29, "expected yes=true") }
+                }
+                None => { return fail(29, "active not found") }
+            }
+            let disabled: ?bool = yaml_get_bool(v, "disabled")
+            match disabled {
+                Some(val) => {
+                    if val { return fail(29, "expected no=false") }
+                }
+                None => { return fail(29, "disabled not found") }
+            }
+            return 0
+        }
+        Err(_) => { return fail(29, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Stringify
+// ============================================================================
+
+fn test_stringify_scalars() -> i32 {
+    let s: string = yaml_stringify(YamlValue::Str("hello"))
+    if s != "hello\n" { return fail(30, "expected 'hello\\n'") }
+
+    let n: string = yaml_stringify(YamlValue::Int(42.as#[i64]))
+    if n != "42\n" { return fail(30, "expected '42\\n'") }
+
+    let b: string = yaml_stringify(YamlValue::Bool(true))
+    if b != "true\n" { return fail(30, "expected 'true\\n'") }
+
+    let null_s: string = yaml_stringify(YamlValue::Null)
+    if null_s != "null\n" { return fail(30, "expected 'null\\n'") }
+
+    return 0
+}
+
+fn test_stringify_mapping() -> i32 {
+    let input: string = "name: Alice\nage: 30"
+    let r: Result#[YamlValue, YamlError] = yaml_parse(input)
+    match r {
+        Ok(v) => {
+            let output: string = yaml_stringify(v)
+            // Verify output parses back correctly
+            let r2: Result#[YamlValue, YamlError] = yaml_parse(output)
+            match r2 {
+                Ok(v2) => {
+                    let name: ?string = yaml_get_string(v2, "name")
+                    match name {
+                        Some(val) => {
+                            if val != "Alice" { return fail(31, "round-trip name failed") }
+                        }
+                        None => { return fail(31, "name lost in round-trip") }
+                    }
+                    let age: ?i64 = yaml_get_int(v2, "age")
+                    match age {
+                        Some(val) => {
+                            if val != 30.as#[i64] { return fail(31, "round-trip age failed") }
+                        }
+                        None => { return fail(31, "age lost in round-trip") }
+                    }
+                    return 0
+                }
+                Err(_) => { return fail(31, "round-trip parse failed") }
+            }
+        }
+        Err(_) => { return fail(31, "parse failed") }
+    }
+}
+
+fn test_stringify_sequence() -> i32 {
+    let input: string = "items:\n  - 1\n  - 2\n  - 3"
+    let r: Result#[YamlValue, YamlError] = yaml_parse(input)
+    match r {
+        Ok(v) => {
+            let output: string = yaml_stringify(v)
+            let r2: Result#[YamlValue, YamlError] = yaml_parse(output)
+            match r2 {
+                Ok(v2) => {
+                    let seq: ?List#[YamlValue] = yaml_get_sequence(v2, "items")
+                    match seq {
+                        Some(items) => {
+                            if items.len() != 3 { return fail(32, "round-trip lost items") }
+                            return 0
+                        }
+                        None => { return fail(32, "items lost in round-trip") }
+                    }
+                }
+                Err(_) => { return fail(32, "round-trip parse failed") }
+            }
+        }
+        Err(_) => { return fail(32, "parse failed") }
+    }
+}
+
+fn test_stringify_empty_collections() -> i32 {
+    let empty_seq: string = yaml_stringify(YamlValue::Sequence(List.new#[YamlValue]()))
+    if empty_seq != "[]\n" { return fail(33, "expected '[]\\n'") }
+
+    return 0
+}
+
+// ============================================================================
+// Test: Error Cases
+// ============================================================================
+
+fn test_error_unterminated_double_quote() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("msg: \"unterminated")
+    return expect_err(r, 34)
+}
+
+fn test_error_unterminated_single_quote() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("msg: 'unterminated")
+    return expect_err(r, 35)
+}
+
+// ============================================================================
+// Test: Complex Real-World Config
+// ============================================================================
+
+fn test_server_config() -> i32 {
+    let input: string = "server:\n  host: 0.0.0.0\n  port: 3000\n  debug: false\ndatabase:\n  host: localhost\n  port: 5432\n  name: myapp"
+    let r: Result#[YamlValue, YamlError] = yaml_parse(input)
+    match r {
+        Ok(v) => {
+            let server: ?YamlValue = yaml_get(v, "server")
+            match server {
+                Some(srv) => {
+                    let port: ?i64 = yaml_get_int(srv, "port")
+                    match port {
+                        Some(val) => {
+                            if val != 3000.as#[i64] { return fail(36, "expected server port 3000") }
+                        }
+                        None => { return fail(36, "server port not found") }
+                    }
+                }
+                None => { return fail(36, "server not found") }
+            }
+            let db: ?YamlValue = yaml_get(v, "database")
+            match db {
+                Some(d) => {
+                    let name: ?string = yaml_get_string(d, "name")
+                    match name {
+                        Some(val) => {
+                            if val != "myapp" { return fail(36, "expected db name 'myapp'") }
+                        }
+                        None => { return fail(36, "db name not found") }
+                    }
+                }
+                None => { return fail(36, "database not found") }
+            }
+            return 0
+        }
+        Err(_) => { return fail(36, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Mixed Inline and Block
+// ============================================================================
+
+fn test_mixed_inline_and_block() -> i32 {
+    let input: string = "name: Alice\ntags: [admin, user]\nsettings:\n  theme: dark"
+    let r: Result#[YamlValue, YamlError] = yaml_parse(input)
+    match r {
+        Ok(v) => {
+            let name: ?string = yaml_get_string(v, "name")
+            match name {
+                Some(val) => {
+                    if val != "Alice" { return fail(37, "expected 'Alice'") }
+                }
+                None => { return fail(37, "name not found") }
+            }
+            let tags: ?List#[YamlValue] = yaml_get_sequence(v, "tags")
+            match tags {
+                Some(items) => {
+                    if items.len() != 2 { return fail(37, "expected 2 tags") }
+                }
+                None => { return fail(37, "tags not found") }
+            }
+            let settings: ?YamlValue = yaml_get(v, "settings")
+            match settings {
+                Some(s) => {
+                    let theme: ?string = yaml_get_string(s, "theme")
+                    match theme {
+                        Some(val) => {
+                            if val != "dark" { return fail(37, "expected 'dark'") }
+                        }
+                        None => { return fail(37, "theme not found") }
+                    }
+                }
+                None => { return fail(37, "settings not found") }
+            }
+            return 0
+        }
+        Err(_) => { return fail(37, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Flow Sequence with Strings
+// ============================================================================
+
+fn test_flow_sequence_strings() -> i32 {
+    let r: Result#[YamlValue, YamlError] = yaml_parse("tags: [\"foo\", 'bar', baz]")
+    match r {
+        Ok(v) => {
+            let tags: ?List#[YamlValue] = yaml_get_sequence(v, "tags")
+            match tags {
+                Some(items) => {
+                    if items.len() != 3 { return fail(38, "expected 3 items") }
+                    let first: YamlValue = items.get(0)!
+                    match first {
+                        YamlValue.Str(s) => {
+                            if s != "foo" { return fail(38, "expected 'foo'") }
+                        }
+                        _ => { return fail(38, "expected string") }
+                    }
+                    return 0
+                }
+                None => { return fail(38, "tags not found") }
+            }
+        }
+        Err(_) => { return fail(38, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Deeply Nested
+// ============================================================================
+
+fn test_deeply_nested() -> i32 {
+    let input: string = "a:\n  b:\n    c:\n      d: deep"
+    let r: Result#[YamlValue, YamlError] = yaml_parse(input)
+    match r {
+        Ok(v) => {
+            let a: ?YamlValue = yaml_get(v, "a")
+            match a {
+                Some(av) => {
+                    let b: ?YamlValue = yaml_get(av, "b")
+                    match b {
+                        Some(bv) => {
+                            let c: ?YamlValue = yaml_get(bv, "c")
+                            match c {
+                                Some(cv) => {
+                                    let d: ?string = yaml_get_string(cv, "d")
+                                    match d {
+                                        Some(val) => {
+                                            if val == "deep" { return 0 }
+                                            return fail(39, "expected 'deep'")
+                                        }
+                                        None => { return fail(39, "d not found") }
+                                    }
+                                }
+                                None => { return fail(39, "c not found") }
+                            }
+                        }
+                        None => { return fail(39, "b not found") }
+                    }
+                }
+                None => { return fail(39, "a not found") }
+            }
+        }
+        Err(_) => { return fail(39, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Main Test Runner
+// ============================================================================
+
+fn main() -> i32 {
+    var e: i32 = 0
+
+    // Scalars
+    e = test_string_value()
+    if e != 0 { return e }
+    e = test_integer_value()
+    if e != 0 { return e }
+    e = test_negative_integer()
+    if e != 0 { return e }
+    e = test_float_value()
+    if e != 0 { return e }
+    e = test_bool_true()
+    if e != 0 { return e }
+    e = test_bool_false()
+    if e != 0 { return e }
+    e = test_null_value()
+    if e != 0 { return e }
+    e = test_tilde_null()
+    if e != 0 { return e }
+
+    // Quoted strings
+    e = test_double_quoted_string()
+    if e != 0 { return e }
+    e = test_single_quoted_string()
+    if e != 0 { return e }
+    e = test_escape_sequences()
+    if e != 0 { return e }
+
+    // Block sequences
+    e = test_simple_sequence()
+    if e != 0 { return e }
+    e = test_sequence_of_integers()
+    if e != 0 { return e }
+    e = test_top_level_sequence()
+    if e != 0 { return e }
+
+    // Block mappings
+    e = test_simple_mapping()
+    if e != 0 { return e }
+    e = test_nested_mapping()
+    if e != 0 { return e }
+
+    // Nested structures
+    e = test_sequence_of_mappings()
+    if e != 0 { return e }
+    e = test_mapping_of_sequences()
+    if e != 0 { return e }
+
+    // Flow collections
+    e = test_flow_sequence()
+    if e != 0 { return e }
+    e = test_flow_mapping()
+    if e != 0 { return e }
+    e = test_empty_flow_sequence()
+    if e != 0 { return e }
+    e = test_empty_flow_mapping()
+    if e != 0 { return e }
+
+    // Comments
+    e = test_comments()
+    if e != 0 { return e }
+
+    // Document marker
+    e = test_document_start()
+    if e != 0 { return e }
+
+    // Empty input
+    e = test_empty_input()
+    if e != 0 { return e }
+
+    // Accessor edge cases
+    e = test_get_missing_key()
+    if e != 0 { return e }
+    e = test_get_wrong_type()
+    if e != 0 { return e }
+    e = test_get_on_non_mapping()
+    if e != 0 { return e }
+
+    // Boolean variants
+    e = test_yes_no_booleans()
+    if e != 0 { return e }
+
+    // Stringify
+    e = test_stringify_scalars()
+    if e != 0 { return e }
+    e = test_stringify_mapping()
+    if e != 0 { return e }
+    e = test_stringify_sequence()
+    if e != 0 { return e }
+    e = test_stringify_empty_collections()
+    if e != 0 { return e }
+
+    // Error cases
+    e = test_error_unterminated_double_quote()
+    if e != 0 { return e }
+    e = test_error_unterminated_single_quote()
+    if e != 0 { return e }
+
+    // Complex configs
+    e = test_server_config()
+    if e != 0 { return e }
+
+    // Mixed
+    e = test_mixed_inline_and_block()
+    if e != 0 { return e }
+
+    // Flow with strings
+    e = test_flow_sequence_strings()
+    if e != 0 { return e }
+
+    // Deeply nested
+    e = test_deeply_nested()
+    if e != 0 { return e }
+
+    println("All YAML tests passed")
+    return 0
+}

@@ -40,17 +40,23 @@ pub const LockfileError = error{
 pub const DependencySource = enum {
     path,
     git,
+    registry,
+    kira,
 
     pub fn toString(self: DependencySource) []const u8 {
         return switch (self) {
             .path => "path",
             .git => "git",
+            .registry => "registry",
+            .kira => "kira",
         };
     }
 
     pub fn fromString(str: []const u8) ?DependencySource {
         if (std.mem.eql(u8, str, "path")) return .path;
         if (std.mem.eql(u8, str, "git")) return .git;
+        if (std.mem.eql(u8, str, "registry")) return .registry;
+        if (std.mem.eql(u8, str, "kira")) return .kira;
         return null;
     }
 };
@@ -275,10 +281,12 @@ fn parseResolvedDependency(allocator: Allocator, value: std.json.Value) !Resolve
     };
     const source = DependencySource.fromString(source_str) orelse return LockfileError.InvalidDependency;
 
-    // Original path/URL is required (stored as "path" or "git" depending on source)
+    // Original path/URL is required (stored as "path", "git", "registry", or "kira" depending on source)
     const original_key = switch (source) {
         .path => "path",
         .git => "git",
+        .registry => "registry",
+        .kira => "kira",
     };
     const original = switch (obj.get(original_key) orelse return LockfileError.InvalidDependency) {
         .string => |s| try allocator.dupe(u8, s),
@@ -359,6 +367,8 @@ pub fn generateLockfile(allocator: Allocator, lf: *const Lockfile) ![]const u8 {
         const key = switch (dep.source) {
             .path => "path",
             .git => "git",
+            .registry => "registry",
+            .kira => "kira",
         };
         try writer.print("      \"{s}\": \"", .{key});
         try writeJsonEscaped(writer, dep.original);
@@ -601,4 +611,54 @@ test "generateLockfile produces deterministic output" {
 
     try std.testing.expect(alpha_pos < middle_pos);
     try std.testing.expect(middle_pos < zebra_pos);
+}
+
+test "parseLockfile with kira source" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "dependencies": {
+        \\    "mathlib": {
+        \\      "source": "kira",
+        \\      "kira": "../kira-mathlib",
+        \\      "resolved": "/home/user/projects/kira-mathlib",
+        \\      "version": "1.0.0"
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    var lockfile = try parseLockfile(std.testing.allocator, json);
+    defer lockfile.deinit();
+
+    const dep = lockfile.dependencies.get("mathlib").?;
+    try std.testing.expectEqual(DependencySource.kira, dep.source);
+    try std.testing.expectEqualStrings("../kira-mathlib", dep.original);
+    try std.testing.expectEqualStrings("/home/user/projects/kira-mathlib", dep.resolved);
+    try std.testing.expectEqualStrings("1.0.0", dep.version.?);
+}
+
+test "generateLockfile roundtrip with kira source" {
+    var lf = Lockfile.init(std.testing.allocator);
+    defer lf.deinit();
+
+    try lf.addDependency("mathlib", .{
+        .source = .kira,
+        .original = "../kira-mathlib",
+        .resolved = "/home/user/projects/kira-mathlib",
+        .version = "1.0.0",
+    });
+
+    const content = try generateLockfile(std.testing.allocator, &lf);
+    defer std.testing.allocator.free(content);
+
+    // Parse it back
+    var parsed = try parseLockfile(std.testing.allocator, content);
+    defer parsed.deinit();
+
+    const dep = parsed.dependencies.get("mathlib").?;
+    try std.testing.expectEqual(DependencySource.kira, dep.source);
+    try std.testing.expectEqualStrings("../kira-mathlib", dep.original);
+    try std.testing.expectEqualStrings("/home/user/projects/kira-mathlib", dep.resolved);
+    try std.testing.expectEqualStrings("1.0.0", dep.version.?);
 }

@@ -18,7 +18,7 @@ pub const JsonAstError = error{
     OutOfMemory,
 };
 
-const dummy_span = ast.Span{ .start = 0, .end = 0, .line = 0, .column = 0 };
+pub const dummy_span = ast.Span{ .start = 0, .end = 0, .line = 0, .column = 0 };
 
 // ============================================================================
 // Entry point
@@ -549,8 +549,16 @@ fn buildExpr(arena: Allocator, val: Value) anyerror!ast.Expr {
                 const sv = getString(po, "value") orelse return JsonAstError.MissingField;
                 parts[i] = .{ .string = try dupeStr(arena, sv) };
             } else if (std.mem.eql(u8, part_kind, "expr")) {
-                const ev = try buildExpr(arena, po.get("value") orelse return JsonAstError.MissingField);
-                parts[i] = .{ .expr = ev };
+                const val_node = po.get("value") orelse return JsonAstError.MissingField;
+                if (val_node == .null) {
+                    // Selfhost emitter may emit null for unresolved expressions;
+                    // substitute an empty string literal as placeholder.
+                    // TODO: remove once selfhost emitter handles all expression types
+                    parts[i] = .{ .string = try dupeStr(arena, "") };
+                } else {
+                    const ev = try buildExpr(arena, val_node);
+                    parts[i] = .{ .expr = ev };
+                }
             } else {
                 return JsonAstError.UnknownKind;
             }
@@ -615,7 +623,7 @@ fn buildExpr(arena: Allocator, val: Value) anyerror!ast.Expr {
 // Block builder
 // ============================================================================
 
-fn buildBlock(arena: Allocator, val: Value) anyerror!*ast.Block {
+pub fn buildBlock(arena: Allocator, val: Value) anyerror!*ast.Block {
     if (val != .object) return JsonAstError.InvalidValue;
     const obj = val.object;
     const stmts_arr = getArray(obj, "statements") orelse return JsonAstError.MissingField;
@@ -1434,7 +1442,7 @@ fn buildMetaPath(arena: Allocator, val: Value) anyerror!ast.MetaPath {
 // Module builder
 // ============================================================================
 
-fn buildModule(arena: Allocator, root: ObjectMap) anyerror!ast.Module {
+pub fn buildModule(arena: Allocator, root: ObjectMap) anyerror!ast.Module {
     // Module declaration
     const module_decl: ?ast.ModuleDecl = if (!isNull(root, "module_decl")) blk: {
         const md_val = root.get("module_decl").?;

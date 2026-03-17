@@ -14,6 +14,9 @@
 //!   },
 //!   "dependencies": {
 //!     "utils": { "path": "../utils" }
+//!   },
+//!   "kira-dependencies": {
+//!     "mathlib": { "path": "../kira-mathlib" }
 //!   }
 //! }
 //! ```
@@ -30,6 +33,7 @@ pub const ManifestError = error{
     MissingPackageName,
     InvalidVersion,
     InvalidDependency,
+    InvalidKiraDependency,
     IoError,
 };
 
@@ -105,6 +109,31 @@ pub const Dependency = struct {
     pub fn isGit(self: Dependency) bool {
         return self.git != null;
     }
+
+    pub fn isRegistry(self: Dependency) bool {
+        return self.version != null and self.path == null and self.git == null;
+    }
+};
+
+/// A Kira language dependency specification.
+/// Kira dependencies point to Kira project roots that will be built with `kira build --lib`.
+pub const KiraDependency = struct {
+    /// Local path to Kira project root (relative to manifest directory).
+    path: ?[]const u8 = null,
+
+    /// Git repository URL for a remote Kira project.
+    git: ?[]const u8 = null,
+
+    /// Git ref (tag, branch, or commit hash).
+    ref: ?[]const u8 = null,
+
+    pub fn isPath(self: KiraDependency) bool {
+        return self.path != null;
+    }
+
+    pub fn isGit(self: KiraDependency) bool {
+        return self.git != null;
+    }
 };
 
 /// Package metadata section.
@@ -141,6 +170,9 @@ pub const Manifest = struct {
     /// Development-only dependencies.
     dev_dependencies: std.StringHashMapUnmanaged(Dependency),
 
+    /// Kira language dependencies (built with `kira build --lib`).
+    kira_dependencies: std.StringHashMapUnmanaged(KiraDependency),
+
     /// Directory containing the manifest (for resolving relative paths).
     root_dir: []const u8,
 
@@ -171,6 +203,14 @@ pub const Manifest = struct {
         }
         self.dev_dependencies.deinit(self.allocator);
 
+        // Free kira-dependencies
+        var kira_dep_it = self.kira_dependencies.iterator();
+        while (kira_dep_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            freeKiraDependency(self.allocator, entry.value_ptr.*);
+        }
+        self.kira_dependencies.deinit(self.allocator);
+
         // Free root_dir
         self.allocator.free(self.root_dir);
     }
@@ -180,6 +220,12 @@ pub const Manifest = struct {
         if (dep.git) |g| allocator.free(g);
         if (dep.ref) |r| allocator.free(r);
         if (dep.version) |v| allocator.free(v);
+    }
+
+    fn freeKiraDependency(allocator: Allocator, dep: KiraDependency) void {
+        if (dep.path) |p| allocator.free(p);
+        if (dep.git) |g| allocator.free(g);
+        if (dep.ref) |r| allocator.free(r);
     }
 
     /// Get the entry point path, with default fallback.
@@ -248,6 +294,7 @@ pub fn parseManifest(allocator: Allocator, content: []const u8, root_dir: []cons
         .string => |s| try allocator.dupe(u8, s),
         else => return ManifestError.MissingPackageName,
     };
+    errdefer allocator.free(name);
 
     // Package version (required)
     const version_value = pkg.get("version") orelse {
@@ -314,6 +361,19 @@ pub fn parseManifest(allocator: Allocator, content: []const u8, root_dir: []cons
         }
     }
 
+    // Parse kira-dependencies
+    var kira_deps = std.StringHashMapUnmanaged(KiraDependency){};
+    if (root.object.get("kira-dependencies")) |deps_value| {
+        if (deps_value == .object) {
+            var it = deps_value.object.iterator();
+            while (it.next()) |kv| {
+                const dep = try parseKiraDependency(allocator, kv.value_ptr.*);
+                const dep_name = try allocator.dupe(u8, kv.key_ptr.*);
+                try kira_deps.put(allocator, dep_name, dep);
+            }
+        }
+    }
+
     return .{
         .allocator = allocator,
         .package = .{
@@ -326,6 +386,7 @@ pub fn parseManifest(allocator: Allocator, content: []const u8, root_dir: []cons
         },
         .dependencies = deps,
         .dev_dependencies = dev_deps,
+        .kira_dependencies = kira_deps,
         .root_dir = try allocator.dupe(u8, root_dir),
     };
 }
@@ -353,6 +414,42 @@ fn parseDependency(allocator: Allocator, value: std.json.Value) !Dependency {
             .string => |s| try allocator.dupe(u8, s),
             else => null,
         } else null,
+    };
+}
+
+fn parseKiraDependency(allocator: Allocator, value: std.json.Value) !KiraDependency {
+    if (value != .object) {
+        return ManifestError.InvalidKiraDependency;
+    }
+    const obj = value.object;
+
+    const path_val: ?[]const u8 = if (obj.get("path")) |p| switch (p) {
+        .string => |s| try allocator.dupe(u8, s),
+        else => null,
+    } else null;
+    errdefer if (path_val) |p| allocator.free(p);
+
+    const git_val: ?[]const u8 = if (obj.get("git")) |g| switch (g) {
+        .string => |s| try allocator.dupe(u8, s),
+        else => null,
+    } else null;
+    errdefer if (git_val) |g| allocator.free(g);
+
+    const ref_val: ?[]const u8 = if (obj.get("ref")) |r| switch (r) {
+        .string => |s| try allocator.dupe(u8, s),
+        else => null,
+    } else null;
+    errdefer if (ref_val) |r| allocator.free(r);
+
+    // Must have either path or git
+    if (path_val == null and git_val == null) {
+        return ManifestError.InvalidKiraDependency;
+    }
+
+    return .{
+        .path = path_val,
+        .git = git_val,
+        .ref = ref_val,
     };
 }
 
@@ -467,4 +564,150 @@ test "generateDefault" {
 
     try std.testing.expectEqualStrings("my-project", manifest.package.name);
     try std.testing.expectEqualStrings("src/main.kl", manifest.getEntryPoint());
+}
+
+test "parseManifest with kira-dependencies path" {
+    const json =
+        \\{
+        \\  "package": {
+        \\    "name": "test-pkg",
+        \\    "version": "1.0.0"
+        \\  },
+        \\  "kira-dependencies": {
+        \\    "mathlib": { "path": "../kira-mathlib" }
+        \\  }
+        \\}
+    ;
+
+    var m = try parseManifest(std.testing.allocator, json, "/project");
+    defer m.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), m.kira_dependencies.count());
+
+    const dep = m.kira_dependencies.get("mathlib").?;
+    try std.testing.expect(dep.isPath());
+    try std.testing.expectEqualStrings("../kira-mathlib", dep.path.?);
+    try std.testing.expect(!dep.isGit());
+}
+
+test "parseManifest with kira-dependencies git" {
+    const json =
+        \\{
+        \\  "package": {
+        \\    "name": "test-pkg",
+        \\    "version": "1.0.0"
+        \\  },
+        \\  "kira-dependencies": {
+        \\    "shapes": { "git": "https://github.com/user/kira-shapes.git", "ref": "v2.0.0" }
+        \\  }
+        \\}
+    ;
+
+    var m = try parseManifest(std.testing.allocator, json, ".");
+    defer m.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), m.kira_dependencies.count());
+
+    const dep = m.kira_dependencies.get("shapes").?;
+    try std.testing.expect(dep.isGit());
+    try std.testing.expectEqualStrings("https://github.com/user/kira-shapes.git", dep.git.?);
+    try std.testing.expectEqualStrings("v2.0.0", dep.ref.?);
+    try std.testing.expect(!dep.isPath());
+}
+
+test "parseManifest with multiple kira-dependencies" {
+    const json =
+        \\{
+        \\  "package": {
+        \\    "name": "test-pkg",
+        \\    "version": "1.0.0"
+        \\  },
+        \\  "kira-dependencies": {
+        \\    "mathlib": { "path": "../kira-mathlib" },
+        \\    "shapes": { "git": "https://github.com/user/kira-shapes.git" }
+        \\  }
+        \\}
+    ;
+
+    var m = try parseManifest(std.testing.allocator, json, ".");
+    defer m.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), m.kira_dependencies.count());
+    try std.testing.expect(m.kira_dependencies.get("mathlib").?.isPath());
+    try std.testing.expect(m.kira_dependencies.get("shapes").?.isGit());
+}
+
+test "parseManifest kira-dependency rejects missing path and git" {
+    const json =
+        \\{
+        \\  "package": {
+        \\    "name": "test-pkg",
+        \\    "version": "1.0.0"
+        \\  },
+        \\  "kira-dependencies": {
+        \\    "bad": { "ref": "v1.0.0" }
+        \\  }
+        \\}
+    ;
+
+    const result = parseManifest(std.testing.allocator, json, ".");
+    try std.testing.expectError(ManifestError.InvalidKiraDependency, result);
+}
+
+test "parseManifest kira-dependency rejects non-object value" {
+    const json =
+        \\{
+        \\  "package": {
+        \\    "name": "test-pkg",
+        \\    "version": "1.0.0"
+        \\  },
+        \\  "kira-dependencies": {
+        \\    "bad": "not-an-object"
+        \\  }
+        \\}
+    ;
+
+    const result = parseManifest(std.testing.allocator, json, ".");
+    try std.testing.expectError(ManifestError.InvalidKiraDependency, result);
+}
+
+test "parseManifest no kira-dependencies section is valid" {
+    const json =
+        \\{
+        \\  "package": {
+        \\    "name": "test-pkg",
+        \\    "version": "1.0.0"
+        \\  }
+        \\}
+    ;
+
+    var m = try parseManifest(std.testing.allocator, json, ".");
+    defer m.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), m.kira_dependencies.count());
+}
+
+test "parseManifest with both dependencies and kira-dependencies" {
+    const json =
+        \\{
+        \\  "package": {
+        \\    "name": "test-pkg",
+        \\    "version": "1.0.0"
+        \\  },
+        \\  "dependencies": {
+        \\    "utils": { "path": "../utils" }
+        \\  },
+        \\  "kira-dependencies": {
+        \\    "mathlib": { "path": "../kira-mathlib" }
+        \\  }
+        \\}
+    ;
+
+    var m = try parseManifest(std.testing.allocator, json, ".");
+    defer m.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), m.dependencies.count());
+    try std.testing.expectEqual(@as(usize, 1), m.kira_dependencies.count());
+    try std.testing.expect(m.dependencies.get("utils").?.isPath());
+    try std.testing.expect(m.kira_dependencies.get("mathlib").?.isPath());
 }

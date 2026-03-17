@@ -8,7 +8,8 @@
 import json.{
     skip_whitespace, skip_value, extract_string, extract_int, extract_bool,
     json_is_null, find_field, field_string, field_int, field_bool,
-    field_is_null, field_pos, array_start, array_next, array_count
+    field_is_null, field_pos, field_number_as_string, field_raw,
+    array_start, array_next, array_count
 }
 
 import ast.{
@@ -93,6 +94,7 @@ fn map_unary_op(op_str: string) -> UnaryOp {
     if op_str == "deref" { return UnaryOp::Deref }
     if op_str == "ref" { return UnaryOp::MakeRef }
     if op_str == "ref_mut" { return UnaryOp::MakeRefMut }
+    if op_str == "await_" { return UnaryOp::Await }
     return UnaryOp::Negate
 }
 
@@ -404,7 +406,7 @@ fn build_literal(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, ExprI
         return (c, ExprId { id: idx })
     }
     if lt == "float" {
-        let vr: (string, bool) = field_string(json, pos, "value")
+        let vr: (string, bool) = field_number_as_string(json, pos, "value")
         c.exprs.push(Expr::FloatLiteral(FloatLiteralData { text: vr.0, span: s() }))
         return (c, ExprId { id: idx })
     }
@@ -420,7 +422,7 @@ fn build_literal(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, ExprI
             c.exprs.push(Expr::CharLiteral(CharLiteralData { value: vr.0, span: s() }))
         } else {
             let ir: (i32, bool) = field_int(json, pos, "value")
-            c.exprs.push(Expr::CharLiteral(CharLiteralData { value: ir.0.to_string().as_str(), span: s() }))
+            c.exprs.push(Expr::CharLiteral(CharLiteralData { value: from_byte(ir.0.as#[u8]), span: s() }))
         }
         return (c, ExprId { id: idx })
     }
@@ -475,7 +477,7 @@ fn build_postfix(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, ExprI
     var c: TypeChecker = r.0
     let opr: (string, bool) = field_string(json, pos, "op")
     var pf_op: PostfixOp = PostfixOp::Unwrap
-    if opr.0 == "unwrap" { pf_op = PostfixOp::Unwrap }
+    if opr.0 == "unwrap" { pf_op = PostfixOp::Try }
     if opr.0 == "force_unwrap" { pf_op = PostfixOp::Unwrap }
     if opr.0 == "try" { pf_op = PostfixOp::Try }
     let idx: i32 = c.exprs.len()
@@ -684,14 +686,12 @@ fn build_block_from_body(tc: TypeChecker, json: string, pos: i32) -> (TypeChecke
             ap = array_next(json, ap)
         }
     }
-    // final_expr — if present, add as ExprStmt
+    // final_expr — if present, add as statement (handles assign ops correctly)
     let fep: i32 = field_pos(json, pos, "final_expr")
     if fep >= 0 and not json_is_null(json, fep) {
-        let fer: (TypeChecker, ExprId) = build_expr(c, json, fep)
+        let fer: (TypeChecker, StmtId) = build_expr_as_stmt(c, json, fep)
         c = fer.0
-        let stmt_idx: i32 = c.stmts.len()
-        c.stmts.push(Stmt::ExprStmt(ExprStmtData { expr: fer.1, span: s() }))
-        collected.push(StmtId { id: stmt_idx })
+        collected.push(fer.1)
         stmts_count = stmts_count + 1
     }
     // Push collected stmts as contiguous block
@@ -815,6 +815,11 @@ fn build_struct_literal(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker
     // type_name can be a type expression object or just string
     let tnp: i32 = field_pos(json, pos, "type_name")
     var struct_name: string = ""
+    var c: TypeChecker = tc
+    // Build full type expression (preserves generic_apply for Pair#[i32] etc.)
+    let ter: (TypeChecker, TypeExprId) = build_type_expr(c, json, tnp)
+    c = ter.0
+    let struct_type_expr: TypeExprId = ter.1
     if tnp >= 0 {
         // Check if it's a named type
         let knr: (string, bool) = field_string(json, tnp, "kind")
@@ -830,8 +835,6 @@ fn build_struct_literal(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker
             }
         }
     }
-
-    var c: TypeChecker = tc
     let fp: i32 = field_pos(json, pos, "fields")
     // Collect field inits first, then push contiguously
     // (build_expr for field values may recursively build nested struct literals,
@@ -859,6 +862,7 @@ fn build_struct_literal(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker
     c.exprs.push(Expr::StructLiteral(StructLiteralData {
         struct_name: struct_name,
         fields_start: fields_start, fields_count: fields_count,
+        type_expr: struct_type_expr,
         span: s(),
     }))
     return (c, ExprId { id: idx })
@@ -868,6 +872,11 @@ fn build_enum_variant(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, 
     // Extract type name from enum_type field
     let etp: i32 = field_pos(json, pos, "enum_type")
     var type_name: string = ""
+    var c: TypeChecker = tc
+    // Build the full type expression (preserves generic args like MyOption#[i32])
+    let ter: (TypeChecker, TypeExprId) = build_type_expr(c, json, etp)
+    c = ter.0
+    let enum_type_expr: TypeExprId = ter.1
     if etp >= 0 and not json_is_null(json, etp) {
         let knr: (string, bool) = field_string(json, etp, "kind")
         if knr.0 == "named" {
@@ -883,7 +892,6 @@ fn build_enum_variant(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, 
     }
 
     let vnr: (string, bool) = field_string(json, pos, "variant_name")
-    var c: TypeChecker = tc
     // Build payload args — collect then push to avoid interleaving
     let pp: i32 = field_pos(json, pos, "payload")
     var arg_ids: List#[ExprId] = List.new#[ExprId]()
@@ -906,6 +914,7 @@ fn build_enum_variant(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, 
     c.exprs.push(Expr::EnumVariant(EnumVariantData {
         type_name: type_name, variant_name: vnr.0,
         args_start: args_start, args_count: arg_ids.len(),
+        type_expr: enum_type_expr,
         span: s(),
     }))
     return (c, ExprId { id: idx })
@@ -971,6 +980,16 @@ fn build_comptime_block(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker
                 ap = array_next(json, ap)
             }
         }
+        // Handle final_expr — if present, add as ExprStmt
+        let fep: i32 = field_pos(json, bp, "final_expr")
+        if fep >= 0 and not json_is_null(json, fep) {
+            let fer: (TypeChecker, ExprId) = build_expr(c, json, fep)
+            c = fer.0
+            let stmt_idx: i32 = c.stmts.len()
+            c.stmts.push(Stmt::ExprStmt(ExprStmtData { expr: fer.1, span: s() }))
+            body_collected.push(StmtId { id: stmt_idx })
+            body_count = body_count + 1
+        }
     }
     let body_start: i32 = c.extra_stmt_ids.len()
     var bj: i32 = 0
@@ -1020,9 +1039,25 @@ fn build_builtin_call(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, 
     if ap >= 0 {
         var ep: i32 = array_start(json, ap)
         while ep >= 0 {
-            // Builtin call args may have {"kind":"expr","value":{...}} wrapper
+            // Builtin call args may have {"kind":"expr","value":{...}} or
+            // {"kind":"type","value":{...}} wrapper
+            let kr: (string, bool) = field_string(json, ep, "kind")
             let vp: i32 = field_pos(json, ep, "value")
-            if vp >= 0 {
+            if kr.0 == "type" and vp >= 0 {
+                // Type argument (e.g., @typeName(i32)) — extract type name
+                // and create an identifier expression with that name
+                let tnr: (string, bool) = field_string(json, vp, "name")
+                let type_name: string = tnr.0
+                if type_name != "" {
+                    let eidx: i32 = c.exprs.len()
+                    c.exprs.push(Expr::Identifier(IdentifierData { ident_name: type_name, span: s() }))
+                    arg_ids.push(ExprId { id: eidx })
+                } else {
+                    let r: (TypeChecker, ExprId) = build_expr(c, json, vp)
+                    c = r.0
+                    arg_ids.push(r.1)
+                }
+            } else if vp >= 0 {
                 let r: (TypeChecker, ExprId) = build_expr(c, json, vp)
                 c = r.0
                 arg_ids.push(r.1)
@@ -1401,6 +1436,22 @@ fn build_expr_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Stm
     return (c, StmtId { id: idx })
 }
 
+// Build a raw expression as a statement — handles assign ops correctly
+fn build_expr_as_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, StmtId) {
+    let kr: (string, bool) = field_string(json, pos, "kind")
+    if kr.0 == "binary" {
+        let opr: (string, bool) = field_string(json, pos, "op")
+        if is_assign_op(opr.0) {
+            return build_assignment_from_binary(tc, json, pos, opr.0)
+        }
+    }
+    let er: (TypeChecker, ExprId) = build_expr(tc, json, pos)
+    var c: TypeChecker = er.0
+    let idx: i32 = c.stmts.len()
+    c.stmts.push(Stmt::ExprStmt(ExprStmtData { expr: er.1, span: s() }))
+    return (c, StmtId { id: idx })
+}
+
 fn build_assignment_from_binary(tc: TypeChecker, json: string, pos: i32, op_str: string) -> (TypeChecker, StmtId) {
     let lp: i32 = field_pos(json, pos, "left")
     let lr: (TypeChecker, ExprId) = build_expr(tc, json, lp)
@@ -1436,6 +1487,14 @@ fn build_if_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, StmtI
                 ap = array_next(json, ap)
             }
         }
+        // Handle final_expr if present
+        let fe_then: i32 = field_pos(json, tbp, "final_expr")
+        if fe_then >= 0 and not json_is_null(json, fe_then) {
+            let fer: (TypeChecker, StmtId) = build_expr_as_stmt(c, json, fe_then)
+            c = fer.0
+            then_collected.push(fer.1)
+            then_count = then_count + 1
+        }
     }
     let then_start: i32 = c.extra_stmt_ids.len()
     var ti: i32 = 0
@@ -1458,8 +1517,17 @@ fn build_if_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, StmtI
             else_collected.push(eir.1)
             else_count = 1
         } else {
-            // Regular else body
-            let stmts_p: i32 = field_pos(json, ebp, "statements")
+            // Regular else body — may be raw {statements,...} or wrapped {kind:block,body:{statements,...}}
+            var body_obj_p: i32 = ebp
+            var stmts_p: i32 = field_pos(json, ebp, "statements")
+            if stmts_p < 0 {
+                // Wrapped block format: look inside body.statements
+                let body_p: i32 = field_pos(json, ebp, "body")
+                if body_p >= 0 {
+                    body_obj_p = body_p
+                    stmts_p = field_pos(json, body_p, "statements")
+                }
+            }
             if stmts_p >= 0 {
                 var ap: i32 = array_start(json, stmts_p)
                 while ap >= 0 {
@@ -1469,6 +1537,14 @@ fn build_if_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, StmtI
                     else_count = else_count + 1
                     ap = array_next(json, ap)
                 }
+            }
+            // Handle final_expr if present
+            let fe_else: i32 = field_pos(json, body_obj_p, "final_expr")
+            if fe_else >= 0 and not json_is_null(json, fe_else) {
+                let fer: (TypeChecker, StmtId) = build_expr_as_stmt(c, json, fe_else)
+                c = fer.0
+                else_collected.push(fer.1)
+                else_count = else_count + 1
             }
         }
     }
@@ -1507,6 +1583,14 @@ fn build_while_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, St
                 body_count = body_count + 1
                 ap = array_next(json, ap)
             }
+        }
+        // Handle final_expr if present
+        let fep: i32 = field_pos(json, bp, "final_expr")
+        if fep >= 0 and not json_is_null(json, fep) {
+            let fer: (TypeChecker, StmtId) = build_expr_as_stmt(c, json, fep)
+            c = fer.0
+            body_collected.push(fer.1)
+            body_count = body_count + 1
         }
     }
     let body_start: i32 = c.extra_stmt_ids.len()
@@ -1577,6 +1661,14 @@ fn build_for_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Stmt
                 ap = array_next(json, ap)
             }
         }
+        // Handle final_expr if present (parser puts last expr_stmt here)
+        let fep: i32 = field_pos(json, bp, "final_expr")
+        if fep >= 0 and not json_is_null(json, fep) {
+            let fer: (TypeChecker, StmtId) = build_expr_as_stmt(c, json, fep)
+            c = fer.0
+            body_collected.push(fer.1)
+            body_count = body_count + 1
+        }
     }
     let body_start: i32 = c.extra_stmt_ids.len()
     var bj: i32 = 0
@@ -1611,6 +1703,14 @@ fn build_loop_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Stm
                 body_count = body_count + 1
                 ap = array_next(json, ap)
             }
+        }
+        // Handle final_expr if present
+        let fep: i32 = field_pos(json, bp, "final_expr")
+        if fep >= 0 and not json_is_null(json, fep) {
+            let fer: (TypeChecker, StmtId) = build_expr_as_stmt(c, json, fep)
+            c = fer.0
+            body_collected.push(fer.1)
+            body_count = body_count + 1
         }
     }
     let body_start: i32 = c.extra_stmt_ids.len()
@@ -1683,7 +1783,7 @@ pub fn build_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Decl
         params_start: 0, params_count: 0,
         return_type: no_type_expr(),
         body_start: 0, body_count: 0,
-        is_pub: false, is_extern: false, is_unsafe: false,
+        is_pub: false, is_async: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
         span: s(),
     }))
@@ -1736,6 +1836,14 @@ fn build_body_stmts(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, i3
             ap = array_next(json, ap)
         }
     }
+    // Handle final_expr if present
+    let fep: i32 = field_pos(json, pos, "final_expr")
+    if fep >= 0 and not json_is_null(json, fep) {
+        let fer: (TypeChecker, StmtId) = build_expr_as_stmt(c, json, fep)
+        c = fer.0
+        collected.push(fer.1)
+        count = count + 1
+    }
     // Push all collected stmts as a contiguous block
     let start: i32 = c.extra_stmt_ids.len()
     var j: i32 = 0
@@ -1749,6 +1857,7 @@ fn build_body_stmts(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, i3
 fn build_function_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, DeclId) {
     let nr: (string, bool) = field_string(json, pos, "name")
     let pub_r: (bool, bool) = field_bool(json, pos, "is_pub")
+    let asy_r: (bool, bool) = field_bool(json, pos, "is_async")
     let ext_r: (bool, bool) = field_bool(json, pos, "is_extern")
     let uns_r: (bool, bool) = field_bool(json, pos, "is_unsafe")
     let cmp_r: (bool, bool) = field_bool(json, pos, "is_comptime")
@@ -1793,7 +1902,7 @@ fn build_function_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker,
         params_start: params_start, params_count: params_count,
         return_type: rr.1,
         body_start: br.1, body_count: br.2,
-        is_pub: pub_r.0, is_extern: ext_r.0, is_unsafe: uns_r.0,
+        is_pub: pub_r.0, is_async: asy_r.0, is_extern: ext_r.0, is_unsafe: uns_r.0,
         is_comptime: cmp_r.0, is_variadic: var_r.0,
         span: s(),
     }))
@@ -1921,9 +2030,13 @@ fn build_enum_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Dec
 }
 
 fn build_impl_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, DeclId) {
-    // Target type — extract name from type expression
+    // Target type — extract name and build full type expression
     let ttp: i32 = field_pos(json, pos, "target_type")
     var target_name: string = ""
+    var c: TypeChecker = tc
+    let tter: (TypeChecker, TypeExprId) = build_type_expr(c, json, ttp)
+    c = tter.0
+    let target_type_expr: TypeExprId = tter.1
     if ttp >= 0 {
         let kr: (string, bool) = field_string(json, ttp, "kind")
         if kr.0 == "named" {
@@ -1938,9 +2051,12 @@ fn build_impl_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Dec
         }
     }
 
-    // Trait type
+    // Trait type — build full type expression
     let trp: i32 = field_pos(json, pos, "trait_type")
     var trait_name: string = ""
+    let trer: (TypeChecker, TypeExprId) = build_type_expr(c, json, trp)
+    c = trer.0
+    let trait_type_expr: TypeExprId = trer.1
     if trp >= 0 and not json_is_null(json, trp) {
         let kr: (string, bool) = field_string(json, trp, "kind")
         if kr.0 == "named" {
@@ -1954,8 +2070,6 @@ fn build_impl_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Dec
             }
         }
     }
-
-    var c: TypeChecker = tc
 
     // Generic params
     let tpp: i32 = field_pos(json, pos, "type_params")
@@ -1982,6 +2096,7 @@ fn build_impl_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Dec
         generics_start: gpr.1, generics_count: gpr.2,
         methods_start: methods_start, methods_count: methods_count,
         assoc_types_start: 0, assoc_types_count: 0,
+        target_type_expr: target_type_expr, trait_type_expr: trait_type_expr,
         span: s(),
     }))
     return (c, DeclId { id: idx })
@@ -2148,17 +2263,22 @@ pub fn build_module(tc: TypeChecker, json: string) -> (TypeChecker, AstModule) {
         }
     }
 
+    // Extract file_meta raw JSON
+    let file_meta_json: string = field_raw(json, 0, "file_meta")
+
     // Process declarations
-    // Collect top-level DeclIds first, since nested decls (impl methods)
-    // are also pushed into the flat decls array during building.
+    // Collect top-level DeclIds and their raw meta JSON strings
     let dp: i32 = field_pos(json, 0, "declarations")
     var top_level_ids: List#[i32] = List.new#[i32]()
+    var top_level_meta: List#[string] = List.new#[string]()
     if dp >= 0 {
         var ap: i32 = array_start(json, dp)
         while ap >= 0 {
+            let meta_raw: string = field_raw(json, ap, "meta")
             let r: (TypeChecker, DeclId) = build_decl(c, json, ap)
             c = r.0
             top_level_ids.push(r.1.id)
+            top_level_meta.push(meta_raw)
             ap = array_next(json, ap)
         }
     }
@@ -2174,6 +2294,7 @@ pub fn build_module(tc: TypeChecker, json: string) -> (TypeChecker, AstModule) {
     while tli < top_level_ids.len() {
         let decl_copy: Decl = c.decls[top_level_ids[tli]]
         c.decls.push(decl_copy)
+        c.decl_meta_json.push(top_level_meta[tli])
         tli = tli + 1
     }
     let decls_count: i32 = top_level_ids.len()
@@ -2183,6 +2304,7 @@ pub fn build_module(tc: TypeChecker, json: string) -> (TypeChecker, AstModule) {
         imports_count: imports_count,
         decls_start: decls_start,
         decls_count: decls_count,
+        file_meta_json: file_meta_json,
     }
     return (c, m)
 }

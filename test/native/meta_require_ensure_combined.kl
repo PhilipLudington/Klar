@@ -1,0 +1,15 @@
+// Test: meta require and meta ensure combined on the same function
+
+meta require(n >= 0)
+meta ensure(result >= 1)
+fn factorial(n: i32) -> i32 {
+    if n == 0 { return 1 }
+    return n * factorial(n - 1)
+}
+
+fn main() -> i32 {
+    assert_eq(factorial(0), 1)
+    assert_eq(factorial(1), 1)
+    assert_eq(factorial(5), 120)
+    return 0
+}

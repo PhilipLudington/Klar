@@ -1,0 +1,445 @@
+// tools/registry/main.kl — Minimal Klar package registry server
+// Usage: klar run tools/registry/main.kl [port]
+//
+// Endpoints:
+//   POST /publish                   — publish a package archive
+//   GET  /packages/{name}           — get package metadata (versions)
+//   GET  /packages/{name}/{version} — download package archive
+//
+// Storage layout:
+//   storage/{name}/meta.json        — {"name":"...","versions":["..."],"latest":"..."}
+//   storage/{name}/{version}.json   — package archive JSON
+
+import stdlib.http_server.*
+
+// ============================================================================
+// String Search Helpers
+// ============================================================================
+
+fn find_byte(s: string, b: u8, start: i32) -> i32 {
+    let len: i32 = s.len()
+    for i: i32 in start..len {
+        if s.byte_at(i) == b {
+            return i
+        }
+    }
+    return -1
+}
+
+fn find_str(s: string, needle: string, start: i32) -> i32 {
+    let slen: i32 = s.len()
+    let nlen: i32 = needle.len()
+    if nlen == 0 {
+        return start
+    }
+    let limit: i32 = slen - nlen + 1
+    for i: i32 in start..limit {
+        if s.slice(i, i + nlen) == needle {
+            return i
+        }
+    }
+    return -1
+}
+
+// ============================================================================
+// JSON Helpers (minimal — avoids importing full JSON parser)
+// ============================================================================
+
+fn json_escape(s: string) -> string {
+    var result: string = ""
+    let len: i32 = s.len()
+    for i: i32 in 0..len {
+        let b: u8 = s.byte_at(i)
+        if b == 92.as#[u8] {
+            result = result + "\\\\"
+        } else if b == 34.as#[u8] {
+            result = result + "\\\""
+        } else if b == 10.as#[u8] {
+            result = result + "\\n"
+        } else if b == 13.as#[u8] {
+            result = result + "\\r"
+        } else if b == 9.as#[u8] {
+            result = result + "\\t"
+        } else {
+            result = result + from_byte(b)
+        }
+    }
+    return result
+}
+
+/// Extract a string value from a JSON object by key.
+/// Expects: ..."key":"value"... — returns the value string.
+fn json_get_string(json: string, key: string) -> ?string {
+    let search: string = "\"" + key + "\":"
+    let pos: i32 = find_str(json, search, 0)
+    if pos < 0 {
+        // Try with space after colon
+        let search2: string = "\"" + key + "\": "
+        let pos2: i32 = find_str(json, search2, 0)
+        if pos2 < 0 {
+            return None
+        }
+        let val_start: i32 = pos2 + search2.len()
+        if val_start >= json.len() {
+            return None
+        }
+        if json.byte_at(val_start) != 34.as#[u8] {
+            return None
+        }
+        return extract_json_string(json, val_start)
+    }
+    let val_start: i32 = pos + search.len()
+    // Skip whitespace
+    var vs: i32 = val_start
+    let jlen: i32 = json.len()
+    for _i: i32 in 0..10 {
+        if vs >= jlen { return None }
+        if json.byte_at(vs) != 32.as#[u8] {
+            break
+        }
+        vs = vs + 1
+    }
+    if vs >= jlen { return None }
+    if json.byte_at(vs) != 34.as#[u8] {
+        return None
+    }
+    return extract_json_string(json, vs)
+}
+
+/// Extract a JSON string starting at the opening quote position.
+fn extract_json_string(json: string, start: i32) -> ?string {
+    let jlen: i32 = json.len()
+    if start >= jlen or json.byte_at(start) != 34.as#[u8] {
+        return None
+    }
+    var result: string = ""
+    var i: i32 = start + 1
+    for _iter: i32 in 0..1000000 {
+        if i >= jlen {
+            return None
+        }
+        let b: u8 = json.byte_at(i)
+        if b == 34.as#[u8] {
+            return Some(result)
+        }
+        if b == 92.as#[u8] {
+            i = i + 1
+            if i >= jlen { return None }
+            let escaped: u8 = json.byte_at(i)
+            if escaped == 34.as#[u8] {
+                result = result + "\""
+            } else if escaped == 92.as#[u8] {
+                result = result + "\\"
+            } else if escaped == 110.as#[u8] {
+                result = result + "\n"
+            } else if escaped == 114.as#[u8] {
+                result = result + "\r"
+            } else if escaped == 116.as#[u8] {
+                result = result + "\t"
+            } else {
+                result = result + from_byte(92.as#[u8])
+                result = result + from_byte(escaped)
+            }
+        } else {
+            result = result + from_byte(b)
+        }
+        i = i + 1
+    }
+    return None
+}
+
+// ============================================================================
+// Path Helpers
+// ============================================================================
+
+fn path_segment(path: string, index: i32) -> ?string {
+    // Split path by '/' and return the segment at index (0-based, skipping leading /)
+    var seg_idx: i32 = 0
+    var pos: i32 = 0
+    let plen: i32 = path.len()
+
+    // Skip leading /
+    if plen > 0 and path.byte_at(0) == 47.as#[u8] {
+        pos = 1
+    }
+
+    for _iter: i32 in 0..100 {
+        if pos >= plen { return None }
+
+        let next_slash: i32 = find_byte(path, 47.as#[u8], pos)
+        var seg_end: i32 = plen
+        if next_slash >= 0 {
+            seg_end = next_slash
+        }
+
+        if seg_idx == index {
+            return Some(path.slice(pos, seg_end))
+        }
+
+        seg_idx = seg_idx + 1
+        if next_slash < 0 { return None }
+        pos = next_slash + 1
+    }
+    return None
+}
+
+// ============================================================================
+// Storage Operations
+// ============================================================================
+
+fn ensure_storage_dir() -> void {
+    // Create storage/ directory if it doesn't exist
+    let _r: Result#[void, IoError] = fs_create_dir("storage")
+}
+
+fn ensure_package_dir(name: string) -> void {
+    ensure_storage_dir()
+    let dir: string = "storage/" + name
+    let _r: Result#[void, IoError] = fs_create_dir(dir)
+}
+
+fn load_meta(name: string) -> ?string {
+    let path: string = "storage/" + name + "/meta.json"
+    let result: Result#[String, IoError] = fs_read_string(path)
+    if result.is_ok() {
+        let s: String = result!
+        return Some(s.as_str())
+    }
+    return None
+}
+
+fn save_meta(name: string, content: string) -> void {
+    let path: string = "storage/" + name + "/meta.json"
+    let _r: Result#[void, IoError] = fs_write_string(path, content)
+}
+
+fn load_archive(name: string, ver: string) -> ?string {
+    let path: string = "storage/" + name + "/" + ver + ".json"
+    let result: Result#[String, IoError] = fs_read_string(path)
+    if result.is_ok() {
+        let s: String = result!
+        return Some(s.as_str())
+    }
+    return None
+}
+
+fn save_archive(name: string, ver: string, content: string) -> void {
+    let path: string = "storage/" + name + "/" + ver + ".json"
+    let _r: Result#[void, IoError] = fs_write_string(path, content)
+}
+
+// ============================================================================
+// Meta JSON Helpers
+// ============================================================================
+
+fn build_pkg_info_json(name: string, versions: List#[string], latest: string) -> string {
+    var result: string = ""
+    result = result + from_byte(123.as#[u8])  // {
+    result = result + "\"name\":\""
+    result = result + json_escape(name)
+    result = result + "\",\"versions\":["
+    let nv: i32 = versions.len()
+    for i: i32 in 0..nv {
+        if i > 0 {
+            result = result + ","
+        }
+        result = result + "\""
+        result = result + json_escape(versions.get(i)!)
+        result = result + "\""
+    }
+    result = result + "],\"latest\":\""
+    result = result + json_escape(latest)
+    result = result + "\""
+    result = result + from_byte(125.as#[u8])  // }
+    return result
+}
+
+fn parse_meta_versions(pkg_info_json: string) -> List#[string] {
+    var versions: List#[string] = List.new#[string]()
+    // Find "versions":[ ... ]
+    let marker: string = "\"versions\":["
+    let pos: i32 = find_str(pkg_info_json, marker, 0)
+    if pos < 0 {
+        return versions
+    }
+    var i: i32 = pos + marker.len()
+    let jlen: i32 = pkg_info_json.len()
+    for _iter: i32 in 0..1000 {
+        if i >= jlen { return versions }
+        let b: u8 = pkg_info_json.byte_at(i)
+        if b == 93.as#[u8] {  // ]
+            return versions
+        }
+        if b == 34.as#[u8] {  // "
+            let str_result: ?string = extract_json_string(pkg_info_json, i)
+            match str_result {
+                Some(s) => {
+                    versions.push(s)
+                    // Skip past the closing quote
+                    i = i + s.len() + 2
+                }
+                None => {
+                    i = i + 1
+                }
+            }
+        } else {
+            i = i + 1
+        }
+    }
+    return versions
+}
+
+// ============================================================================
+// Request Handlers
+// ============================================================================
+
+fn handle_publish(body: string) -> HttpResponse {
+    // Parse name and version from the archive JSON
+    let name_opt: ?string = json_get_string(body, "name")
+    let ver_opt: ?string = json_get_string(body, "version")
+
+    match name_opt {
+        None => { return http_error(400, "missing 'name' field") }
+        Some(name) => {
+            match ver_opt {
+                None => { return http_error(400, "missing 'version' field") }
+                Some(ver) => {
+                    // Check for version conflict
+                    let existing: ?string = load_archive(name, ver)
+                    match existing {
+                        Some(_) => {
+                            return http_error(409, "version already exists")
+                        }
+                        None => {}
+                    }
+
+                    // Save the archive
+                    ensure_package_dir(name)
+                    save_archive(name, ver, body)
+
+                    // Update metadata
+                    let existing_info: ?string = load_meta(name)
+                    var versions: List#[string] = List.new#[string]()
+                    match existing_info {
+                        Some(info_json) => {
+                            versions = parse_meta_versions(info_json)
+                        }
+                        None => {}
+                    }
+                    versions.push(ver)
+                    let info_str: string = build_pkg_info_json(name, versions, ver)
+                    save_meta(name, info_str)
+
+                    println("Published " + name + " v" + ver)
+                    var headers: Map#[string, string] = Map.new#[string, string]()
+                    headers.insert("Content-Type", "application/json")
+                    return HttpResponse {
+                        status: 201,
+                        headers: headers,
+                        body: "{\"status\":\"ok\"}"
+                    }
+                }
+            }
+        }
+    }
+    return http_error(400, "invalid request")
+}
+
+fn handle_get_info(name: string) -> HttpResponse {
+    let info_opt: ?string = load_meta(name)
+    match info_opt {
+        Some(info_json) => {
+            return http_json_response(info_json)
+        }
+        None => {
+            return http_not_found()
+        }
+    }
+    return http_not_found()
+}
+
+fn handle_get_archive(name: string, ver: string) -> HttpResponse {
+    let archive_opt: ?string = load_archive(name, ver)
+    match archive_opt {
+        Some(archive_json) => {
+            return http_json_response(archive_json)
+        }
+        None => {
+            return http_not_found()
+        }
+    }
+    return http_not_found()
+}
+
+// ============================================================================
+// Main Server Loop
+// ============================================================================
+
+fn main(args: [String]) -> i32 {
+    var port: i32 = 8080
+    if args.len() > 1 {
+        let arg1: String = args[1]
+        let arg1_str: string = arg1.as_str()
+        let port_opt: ?i64 = parse_int(arg1_str)
+        match port_opt {
+            Some(p) => { port = p.as#[i32] }
+            None => {}
+        }
+    }
+
+    println("Klar package registry starting on port " + port.to_string().as_str())
+
+    let lr: Result#[TcpListener, string] = http_server_listen("127.0.0.1", port)
+    if not lr.is_ok() {
+        println("Error: could not start server")
+        return 1
+    }
+    let listener: TcpListener = lr!
+
+    // Accept connections in a loop
+    for _iter: i32 in 0..1000000 {
+        let conn_result: Result#[HttpConnection, string] = http_server_accept_on(listener)
+        if not conn_result.is_ok() {
+            continue
+        }
+        let conn: HttpConnection = conn_result!
+        let req: HttpRequest = conn.request
+
+        // Route the request
+        var resp: HttpResponse = http_not_found()
+
+        if req.method == "POST" and req.path == "/publish" {
+            resp = handle_publish(req.body)
+        } else if req.method == "GET" {
+            // Match /packages/{name} or /packages/{name}/{version}
+            let seg0: ?string = path_segment(req.path, 0)
+            match seg0 {
+                Some(s0) => {
+                    if s0 == "packages" {
+                        let seg1: ?string = path_segment(req.path, 1)
+                        match seg1 {
+                            Some(name) => {
+                                let seg2: ?string = path_segment(req.path, 2)
+                                match seg2 {
+                                    Some(ver) => {
+                                        resp = handle_get_archive(name, ver)
+                                    }
+                                    None => {
+                                        resp = handle_get_info(name)
+                                    }
+                                }
+                            }
+                            None => {}
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
+
+        http_server_respond(conn, resp)
+    }
+
+    tcp_listener_close(listener)
+    return 0
+}

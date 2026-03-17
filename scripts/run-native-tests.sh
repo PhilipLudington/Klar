@@ -70,6 +70,8 @@ should_skip() {
     head -5 "$1" | grep -q "// Skip: native-tests" && return 0
     if [[ "$OS" == "Windows_NT" ]]; then
         head -5 "$1" | grep -q "// Skip: windows" && return 0
+    else
+        head -5 "$1" | grep -q "// Requires: windows" && return 0
     fi
     return 1
 }
@@ -121,6 +123,9 @@ get_expected() {
         process_run) echo 42 ;;
         timestamp_now) echo 42 ;;
         result_tuple_string_helper) echo 42 ;;
+        int_literal_bases) echo 0 ;;
+        string_escape_hex_unicode) echo 0 ;;
+        process_spawn_windows) echo 0 ;;
         *) echo -1 ;;  # -1 means accept any result
     esac
 }
@@ -207,16 +212,17 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
         rm -f "$temp_bin" "$temp_bin.exe"
     else
         # Show build error for diagnosis (first 3 lines)
-        build_err_line=$(echo "$build_stderr" | head -3 | tr '\n' ' ')
+        # Strip leading/trailing whitespace to avoid false positives from empty stderr
+        build_err_line=$(echo "$build_stderr" | head -3 | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         if [ -n "$build_err_line" ]; then
             echo "✗ $name (build failed: $build_err_line)"
         else
-            # Check stdout for linker messages (MSVC link.exe outputs some errors to stdout)
-            build_out_err=$(echo "$build_stdout" | head -3 | tr '\n' ' ')
+            # Check stdout for linker/error messages (MSVC link.exe outputs some errors to stdout)
+            build_out_err=$(echo "$build_stdout" | head -3 | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             if [ -n "$build_out_err" ]; then
                 echo "✗ $name (build failed: $build_out_err)"
             else
-                echo "✗ $name (build failed)"
+                echo "✗ $name (build failed, no output)"
             fi
         fi
         FAILED=$((FAILED + 1))

@@ -340,7 +340,11 @@ fn checkIdentifier(tc: anytype, id: ast.Identifier) Type {
         }
         return sym.type_;
     }
-    tc.addError(.undefined_variable, id.span, "undefined variable '{s}'", .{id.name});
+    if (tc.findSimilarName(id.name)) |suggestion| {
+        tc.addError(.undefined_variable, id.span, "undefined variable '{s}'; did you mean '{s}'?", .{ id.name, suggestion });
+    } else {
+        tc.addError(.undefined_variable, id.span, "undefined variable '{s}'", .{id.name});
+    }
     return tc.type_builder.unknownType();
 }
 
@@ -389,7 +393,11 @@ fn checkBinary(tc: anytype, bin: *ast.Binary) Type {
             }
             if (bin.op == .assign) {
                 if (!tc.checkAssignmentCompatible(left_type, right_type)) {
-                    tc.addError(.type_mismatch, bin.span, "cannot assign different types", .{});
+                    const expected_str = types.typeToString(tc.allocator, left_type) catch "unknown";
+                    defer tc.allocator.free(expected_str);
+                    const got_str = types.typeToString(tc.allocator, right_type) catch "unknown";
+                    defer tc.allocator.free(got_str);
+                    tc.addError(.type_mismatch, bin.span, "cannot assign different types: expected {s}, got {s}", .{ expected_str, got_str });
                 }
                 return tc.type_builder.voidType();
             } else {
@@ -905,7 +913,11 @@ fn checkOutArg(tc: anytype, out_arg: *ast.OutArg) Type {
             return sym.type_;
         }
     }
-    tc.addError(.undefined_variable, out_arg.span, "undefined variable '{s}'", .{out_arg.name});
+    if (tc.findSimilarName(out_arg.name)) |suggestion| {
+        tc.addError(.undefined_variable, out_arg.span, "undefined variable '{s}'; did you mean '{s}'?", .{ out_arg.name, suggestion });
+    } else {
+        tc.addError(.undefined_variable, out_arg.span, "undefined variable '{s}'", .{out_arg.name});
+    }
     return tc.type_builder.unknownType();
 }
 

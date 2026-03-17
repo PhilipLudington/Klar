@@ -238,8 +238,22 @@ pub fn substituteTypeParams(tc: anytype, typ: Type, substitutions: std.AutoHashM
             return tc.type_builder.setType(new_element);
         },
 
-        // String - no type parameters to substitute
-        .string_data => typ,
+        // Sender - substitute element type
+        .sender => |s| {
+            const new_elem = try substituteTypeParams(tc, s.element, substitutions);
+            if (s.element.eql(new_elem)) return typ;
+            return tc.type_builder.senderType(new_elem);
+        },
+
+        // Receiver - substitute element type
+        .receiver => |r| {
+            const new_elem = try substituteTypeParams(tc, r.element, substitutions);
+            if (r.element.eql(new_elem)) return typ;
+            return tc.type_builder.receiverType(new_elem);
+        },
+
+        // String/ThreadPool - no type parameters to substitute
+        .string_data, .thread_pool => typ,
 
         // BufReader - substitute inner type
         .buf_reader => |br| {
@@ -338,8 +352,10 @@ pub fn containsTypeVar(tc: anytype, typ: Type) bool {
         .list => |l| containsTypeVar(tc, l.element),
         .map => |m| containsTypeVar(tc, m.key) or containsTypeVar(tc, m.value),
         .set => |s| containsTypeVar(tc, s.element),
-        // String has no type parameters
-        .string_data => false,
+        .sender => |s| containsTypeVar(tc, s.element),
+        .receiver => |r| containsTypeVar(tc, r.element),
+        // String/ThreadPool have no type parameters
+        .string_data, .thread_pool => false,
         // Buffered I/O types have inner type that may contain type variables
         .buf_reader => |br| containsTypeVar(tc, br.inner),
         .buf_writer => |bw| containsTypeVar(tc, bw.inner),
@@ -532,8 +548,18 @@ pub fn unifyTypes(
             return unifyTypes(tc, s.element, concrete.set.element, substitutions);
         },
 
-        // String has no type parameters - simple equality check
-        .string_data => {
+        .sender => |s| {
+            if (concrete != .sender) return false;
+            return unifyTypes(tc, s.element, concrete.sender.element, substitutions);
+        },
+
+        .receiver => |r| {
+            if (concrete != .receiver) return false;
+            return unifyTypes(tc, r.element, concrete.receiver.element, substitutions);
+        },
+
+        // String/ThreadPool have no type parameters - simple equality check
+        .string_data, .thread_pool => {
             return pattern.eql(concrete);
         },
 
@@ -633,7 +659,11 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
                     return sym.type_;
                 }
             }
-            tc.addError(.undefined_type, n.span, "undefined type '{s}'", .{n.name});
+            if (tc.findSimilarTypeName(n.name)) |suggestion| {
+                tc.addError(.undefined_type, n.span, "undefined type '{s}'; did you mean '{s}'?", .{ n.name, suggestion });
+            } else {
+                tc.addError(.undefined_type, n.span, "undefined type '{s}'", .{n.name});
+            }
             return tc.type_builder.unknownType();
         },
         .array => |a| {
@@ -846,6 +876,26 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
                         // Error already reported by typeImplementsHashAndEq
                     }
                     return try tc.type_builder.setType(element_type);
+                }
+
+                // Sender#[T] - channel send-end type
+                if (std.mem.eql(u8, base_name, "Sender")) {
+                    if (g.args.len != 1) {
+                        tc.addError(.type_mismatch, g.span, "Sender expects exactly 1 type argument", .{});
+                        return tc.type_builder.unknownType();
+                    }
+                    const inner = try resolveTypeExpr(tc, g.args[0]);
+                    return try tc.type_builder.senderType(inner);
+                }
+
+                // Receiver#[T] - channel receive-end type
+                if (std.mem.eql(u8, base_name, "Receiver")) {
+                    if (g.args.len != 1) {
+                        tc.addError(.type_mismatch, g.span, "Receiver expects exactly 1 type argument", .{});
+                        return tc.type_builder.unknownType();
+                    }
+                    const inner = try resolveTypeExpr(tc, g.args[0]);
+                    return try tc.type_builder.receiverType(inner);
                 }
 
                 // BufReader#[R] - buffered reader wrapper (R must implement Read)

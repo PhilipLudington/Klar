@@ -80,10 +80,15 @@ klar run hello.kl
 - [Comptime](advanced/comptime.md) - Compile-time programming
 - [Builtin Traits](advanced/builtin-traits.md) - Eq, Ordered, Clone, Drop, etc.
 - [FFI](advanced/ffi.md) - Foreign Function Interface for C interop
+- [Kira Interop](advanced/kira-interop.md) - Using Kira libraries from Klar
 
 ### Design
 
 - [Meta Layer](design/meta-layer.md) - Self-describing code with `meta` annotations
+- [Effect System](design/effect-system.md) - Evaluation of algebraic effects (no-go)
+- [Constrained Decoding](design/constrained-decoding.md) - Grammar specs for LLM code generation (no-go)
+- [Contracts](design/contracts.md) - `meta require` / `meta ensure` runtime-checked contracts
+- [Incremental Compilation](design/incremental-compilation.md) - Object file caching design (deferred)
 - [DSPy Opportunities](design/dspy-opportunities.md) - DSPy-inspired language features
 - [MoonBit Semantic Sampler](design/moonbit-semantic-sampler.md) - MoonBit-inspired design
 - [Nanolang Inspiration](design/nanolang-inspiration.md) - Nanolang-inspired features

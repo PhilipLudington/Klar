@@ -1,0 +1,8 @@
+// Expected: check-pass
+// Basic meta ensure — postcondition that type-checks correctly
+
+meta ensure(result >= 0)
+fn abs_val(x: i32) -> i32 {
+    if x < 0 { return 0 - x }
+    return x
+}

@@ -218,6 +218,9 @@ pub const Emitter = struct {
     /// Set when the function uses sret calling convention for returning aggregates.
     current_sret_ptr: ?llvm.ValueRef,
 
+    /// Current function's `meta ensure` contract expressions (checked before each return).
+    current_ensure_contracts: []const ast.MetaAnnotation = &.{},
+
     /// Cached sret attribute kind ID (lazily initialized).
     sret_attr_kind: ?c_uint,
 
@@ -287,6 +290,9 @@ pub const Emitter = struct {
         llvm_type: llvm.TypeRef,
         field_indices: []const u32,
         field_names: []const []const u8,
+        /// Klar-level type names for each field (e.g., "Token" for a Token-typed field).
+        /// null entries mean the field type is not a named struct/enum.
+        field_type_names: []const ?[]const u8 = &.{},
     };
 
     const LocalValue = struct {
@@ -350,6 +356,14 @@ pub const Emitter = struct {
         is_buf_writer: bool = false,
         /// For BufWriter#[W], the inner writer type.
         buf_writer_inner_type: ?types.Type = null,
+        /// True if this is a Sender#[T] channel endpoint.
+        is_sender: bool = false,
+        /// True if this is a Receiver#[T] channel endpoint.
+        is_receiver: bool = false,
+        /// For Sender/Receiver, the element type for type-safe send/recv.
+        channel_element_type: ?types.Type = null,
+        /// True if this is a ThreadPool type.
+        is_thread_pool: bool = false,
         /// Full semantic type for pattern matching (Result, Optional, etc.)
         semantic_type: ?types.Type = null,
         /// True if this is an extern fn (C function pointer) type.
@@ -530,6 +544,103 @@ pub const Emitter = struct {
         }
     }
 
+    /// Set debug location for the current instruction from an AST span.
+    fn setDebugLoc(self: *Emitter, span: ast.Span) void {
+        if (self.di_scope) |scope| {
+            const loc = llvm.createDebugLocation(
+                self.ctx,
+                @intCast(span.line),
+                @intCast(span.column),
+                scope,
+                null,
+            );
+            llvm.setCurrentDebugLocation(self.builder, loc);
+        }
+    }
+
+    /// Get a DI type metadata node for a Klar type.
+    /// Uses DWARF encoding constants (DW_ATE_signed=5, DW_ATE_unsigned=7, DW_ATE_float=4, DW_ATE_boolean=2, DW_ATE_UTF=16).
+    fn getDIType(self: *Emitter, t: types.Type) ?llvm.MetadataRef {
+        const di_builder = self.di_builder orelse return null;
+        const DW_ATE_boolean: c_uint = 0x02;
+        const DW_ATE_float: c_uint = 0x04;
+        const DW_ATE_signed: c_uint = 0x05;
+        const DW_ATE_unsigned: c_uint = 0x07;
+        const DW_ATE_UTF: c_uint = 0x10;
+        const flags = llvm.c.LLVMDIFlagZero;
+        return switch (t) {
+            .primitive => |p| switch (p) {
+                .i8_ => di_builder.createBasicType("i8", 8, DW_ATE_signed, flags),
+                .i16_ => di_builder.createBasicType("i16", 16, DW_ATE_signed, flags),
+                .i32_ => di_builder.createBasicType("i32", 32, DW_ATE_signed, flags),
+                .i64_ => di_builder.createBasicType("i64", 64, DW_ATE_signed, flags),
+                .u8_ => di_builder.createBasicType("u8", 8, DW_ATE_unsigned, flags),
+                .u16_ => di_builder.createBasicType("u16", 16, DW_ATE_unsigned, flags),
+                .u32_ => di_builder.createBasicType("u32", 32, DW_ATE_unsigned, flags),
+                .u64_ => di_builder.createBasicType("u64", 64, DW_ATE_unsigned, flags),
+                .f32_ => di_builder.createBasicType("f32", 32, DW_ATE_float, flags),
+                .f64_ => di_builder.createBasicType("f64", 64, DW_ATE_float, flags),
+                .bool_ => di_builder.createBasicType("bool", 1, DW_ATE_boolean, flags),
+                .char_ => di_builder.createBasicType("char", 32, DW_ATE_UTF, flags),
+                .string_ => di_builder.createBasicType("string", 64, DW_ATE_unsigned, flags),
+                else => null,
+            },
+            .void_ => di_builder.createBasicType("void", 0, 0, flags),
+            .string_data => di_builder.createBasicType("string", 64, DW_ATE_unsigned, flags),
+            else => null,
+        };
+    }
+
+    /// Emit debug info for a local variable (dbg.declare).
+    fn emitVarDebugInfo(self: *Emitter, name: []const u8, alloca: llvm.ValueRef, t: types.Type, span: ast.Span) void {
+        const di_builder = self.di_builder orelse return;
+        const di_scope = self.di_scope orelse return;
+        const di_file = self.di_file orelse return;
+        const di_type = self.getDIType(t) orelse return;
+        const line: c_uint = @intCast(span.line);
+
+        const di_var = di_builder.createAutoVariable(
+            di_scope,
+            name,
+            di_file,
+            line,
+            di_type,
+            true, // always preserve
+            llvm.c.LLVMDIFlagZero,
+            0,
+        );
+
+        const expr = di_builder.createExpression();
+        const loc = llvm.createDebugLocation(self.ctx, line, @intCast(span.column), di_scope, null);
+        const current_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        di_builder.insertDeclareAtEnd(alloca, di_var, expr, loc, current_bb);
+    }
+
+    /// Emit debug info for a function parameter (dbg.declare).
+    fn emitParamDebugInfo(self: *Emitter, name: []const u8, alloca: llvm.ValueRef, t: types.Type, arg_no: c_uint, span: ast.Span) void {
+        const di_builder = self.di_builder orelse return;
+        const di_scope = self.di_scope orelse return;
+        const di_file = self.di_file orelse return;
+        const di_type = self.getDIType(t) orelse return;
+        const line: c_uint = @intCast(span.line);
+
+        const di_var = di_builder.createParameterVariable(
+            di_scope,
+            name,
+            arg_no,
+            di_file,
+            line,
+            di_type,
+            true, // always preserve
+            llvm.c.LLVMDIFlagZero,
+        );
+
+        const expr = di_builder.createExpression();
+        const loc = llvm.createDebugLocation(self.ctx, line, @intCast(span.column), di_scope, null);
+        const current_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        di_builder.insertDeclareAtEnd(alloca, di_var, expr, loc, current_bb);
+    }
+
     /// Set the type checker reference for call resolution.
     /// Must be called before emitModule if you want generic function calls to be resolved.
     pub fn setTypeChecker(self: *Emitter, checker: *const TypeChecker) void {
@@ -557,6 +668,9 @@ pub const Emitter = struct {
         while (it.next()) |info| {
             self.allocator.free(info.field_indices);
             self.allocator.free(info.field_names);
+            if (info.field_type_names.len > 0) {
+                self.allocator.free(info.field_type_names);
+            }
         }
         self.struct_types.deinit();
         // Free closure type info allocations
@@ -1215,7 +1329,8 @@ pub const Emitter = struct {
             }) catch return EmitError.OutOfMemory;
         }
 
-        // ProcessHandle: { pid: i32, stdout_fd: i32, stderr_fd: i32 }
+        // ProcessHandle: POSIX { pid: i32, stdout_fd: i32, stderr_fd: i32 }
+        //                Windows { pid: i64, stdout_fd: i64, stderr_fd: i64 }
         if (!self.struct_types.contains("ProcessHandle")) {
             const ph_type = self.getProcessHandleStructType();
             const ph_field_indices = self.allocator.dupe(u32, &[_]u32{ 0, 1, 2 }) catch return EmitError.OutOfMemory;
@@ -1260,6 +1375,72 @@ pub const Emitter = struct {
                 .llvm_type = ts_type,
                 .field_indices = ts_field_indices,
                 .field_names = ts_field_names,
+            }) catch return EmitError.OutOfMemory;
+        }
+
+        // UdpSocket: { fd: i32 }
+        if (!self.struct_types.contains("UdpSocket")) {
+            const us_type = self.getTcpFdStructType(); // Same layout: { i32 }
+            const us_field_indices = self.allocator.dupe(u32, &[_]u32{0}) catch return EmitError.OutOfMemory;
+            const us_field_names = self.allocator.dupe([]const u8, &[_][]const u8{"fd"}) catch return EmitError.OutOfMemory;
+            self.struct_types.put("UdpSocket", .{
+                .llvm_type = us_type,
+                .field_indices = us_field_indices,
+                .field_names = us_field_names,
+            }) catch return EmitError.OutOfMemory;
+        }
+
+        // Sender: { ptr } (channel endpoint)
+        if (!self.struct_types.contains("Sender")) {
+            const sender_type = self.getChannelEndpointType();
+            const s_field_indices = self.allocator.dupe(u32, &[_]u32{0}) catch return EmitError.OutOfMemory;
+            const s_field_names = self.allocator.dupe([]const u8, &[_][]const u8{"_chan_ptr"}) catch return EmitError.OutOfMemory;
+            self.struct_types.put("Sender", .{
+                .llvm_type = sender_type,
+                .field_indices = s_field_indices,
+                .field_names = s_field_names,
+            }) catch return EmitError.OutOfMemory;
+        }
+
+        // Receiver: { ptr } (channel endpoint)
+        if (!self.struct_types.contains("Receiver")) {
+            const receiver_type = self.getChannelEndpointType();
+            const r_field_indices = self.allocator.dupe(u32, &[_]u32{0}) catch return EmitError.OutOfMemory;
+            const r_field_names = self.allocator.dupe([]const u8, &[_][]const u8{"_chan_ptr"}) catch return EmitError.OutOfMemory;
+            self.struct_types.put("Receiver", .{
+                .llvm_type = receiver_type,
+                .field_indices = r_field_indices,
+                .field_names = r_field_names,
+            }) catch return EmitError.OutOfMemory;
+        }
+
+        // ThreadPool: { ptr } (pointer to ThreadPoolInner)
+        if (!self.struct_types.contains("ThreadPool")) {
+            var tp_fields = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+            const tp_type = llvm.Types.struct_(self.ctx, &tp_fields, false);
+            const tp_field_indices = self.allocator.dupe(u32, &[_]u32{0}) catch return EmitError.OutOfMemory;
+            const tp_field_names = self.allocator.dupe([]const u8, &[_][]const u8{"_pool_ptr"}) catch return EmitError.OutOfMemory;
+            self.struct_types.put("ThreadPool", .{
+                .llvm_type = tp_type,
+                .field_indices = tp_field_indices,
+                .field_names = tp_field_names,
+            }) catch return EmitError.OutOfMemory;
+        }
+
+        // UdpMessage: { data: string (ptr), addr: string (ptr), port: i32 }
+        if (!self.struct_types.contains("UdpMessage")) {
+            var um_fields = [_]llvm.TypeRef{
+                llvm.Types.pointer(self.ctx), // data (string)
+                llvm.Types.pointer(self.ctx), // addr (string)
+                llvm.Types.int32(self.ctx), // port
+            };
+            const um_type = llvm.Types.struct_(self.ctx, &um_fields, false);
+            const um_field_indices = self.allocator.dupe(u32, &[_]u32{ 0, 1, 2 }) catch return EmitError.OutOfMemory;
+            const um_field_names = self.allocator.dupe([]const u8, &[_][]const u8{ "data", "addr", "port" }) catch return EmitError.OutOfMemory;
+            self.struct_types.put("UdpMessage", .{
+                .llvm_type = um_type,
+                .field_indices = um_field_indices,
+                .field_names = um_field_names,
             }) catch return EmitError.OutOfMemory;
         }
     }
@@ -1778,6 +1959,14 @@ pub const Emitter = struct {
             // Emit function body
             try self.pushScope(false);
 
+            // Emit meta require checks at method entry
+            try self.emitRequireContracts(method.meta);
+
+            // Store meta ensure contracts for checking at return sites
+            const prev_ensure = self.current_ensure_contracts;
+            self.current_ensure_contracts = method.meta;
+            defer self.current_ensure_contracts = prev_ensure;
+
             const result = try self.emitBlock(method.body.?);
 
             // Handle return
@@ -2076,12 +2265,25 @@ pub const Emitter = struct {
                 .is_extern_fn = is_extern_fn,
                 .extern_fn_type = extern_fn_llvm_type,
             }) catch return EmitError.OutOfMemory;
+
+            // Emit debug info for parameter
+            if (semantic_type) |st| {
+                self.emitParamDebugInfo(param.name, alloca, st, @intCast(i + 1), param.span);
+            }
         }
 
         // Emit function body
         if (func.body) |body| {
             // Push function scope for drop tracking
             try self.pushScope(false);
+
+            // Emit meta require checks at function entry
+            try self.emitRequireContracts(func.meta);
+
+            // Store meta ensure contracts for checking at return sites
+            const prev_ensure = self.current_ensure_contracts;
+            self.current_ensure_contracts = func.meta;
+            defer self.current_ensure_contracts = prev_ensure;
 
             const result = try self.emitBlock(body);
 
@@ -2221,6 +2423,11 @@ pub const Emitter = struct {
     }
 
     fn emitStmt(self: *Emitter, stmt: ast.Stmt) EmitError!void {
+        // Set debug location for this statement
+        if (self.di_builder != null) {
+            self.setDebugLoc(stmt.span());
+        }
+
         switch (stmt) {
             .let_decl => |decl| {
                 // Set expected type context from annotation for constructors like Ok/Err
@@ -2283,9 +2490,10 @@ pub const Emitter = struct {
                     _ = self.builder.buildStore(value, alloca);
                 }
                 const is_signed = self.isTypeSigned(decl.type_);
-                // Extract struct type name - try expression first, then type annotation
-                const struct_type_name = self.getStructTypeName(decl.value) orelse
-                    self.getStructTypeNameFromAnnotation(decl.type_);
+                // Extract struct type name - try annotation first (has full generic info),
+                // then fall back to expression-based name
+                const struct_type_name = self.getStructTypeNameFromAnnotation(decl.type_) orelse
+                    self.getStructTypeName(decl.value);
                 // For Rc/Arc types, track the inner type for dereferencing
                 const inner_type = self.tryGetRcInnerType(decl.value);
                 const is_arc = self.isArcType(decl.value);
@@ -2315,6 +2523,10 @@ pub const Emitter = struct {
                 const is_buf_writer_let = self.isTypeBufWriter(decl.type_);
                 // Check if this is a CStrOwned type (needs free on drop)
                 const is_cstr_owned_let = self.isTypeCstrOwned(decl.type_);
+                // Check if this is a channel endpoint type
+                const channel_info = self.getChannelTypeInfo(decl.type_);
+                // Check if this is a ThreadPool type
+                const is_thread_pool_let = self.isTypeThreadPool(decl.type_);
                 // Resolve semantic type for pattern matching (Result, Optional, etc.)
                 const semantic_type = self.resolveTypeExprDirect(decl.type_);
                 // Check if this is an extern fn type (C function pointer)
@@ -2351,10 +2563,19 @@ pub const Emitter = struct {
                     .is_path = is_path_let,
                     .is_buf_reader = is_buf_reader_let,
                     .is_buf_writer = is_buf_writer_let,
+                    .is_sender = if (channel_info) |ci| ci.is_sender else false,
+                    .is_receiver = if (channel_info) |ci| !ci.is_sender else false,
+                    .channel_element_type = if (channel_info) |ci| ci.element_type else null,
+                    .is_thread_pool = is_thread_pool_let,
                     .semantic_type = semantic_type,
                     .is_extern_fn = is_extern_fn_let,
                     .extern_fn_type = extern_fn_llvm_type_let,
                 }) catch return EmitError.OutOfMemory;
+
+                // Emit debug info for this variable
+                if (semantic_type) |st| {
+                    self.emitVarDebugInfo(decl.name, alloca, st, decl.span);
+                }
 
                 // Register Rc/Arc variables for automatic dropping
                 if (inner_type) |it| {
@@ -2435,9 +2656,10 @@ pub const Emitter = struct {
                     _ = self.builder.buildStore(value, alloca);
                 }
                 const is_signed = self.isTypeSigned(decl.type_);
-                // Extract struct type name - try expression first, then type annotation
-                const struct_type_name = self.getStructTypeName(decl.value) orelse
-                    self.getStructTypeNameFromAnnotation(decl.type_);
+                // Extract struct type name - try annotation first (has full generic info),
+                // then fall back to expression-based name
+                const struct_type_name = self.getStructTypeNameFromAnnotation(decl.type_) orelse
+                    self.getStructTypeName(decl.value);
                 // For Rc/Arc types, track the inner type for dereferencing
                 const inner_type = self.tryGetRcInnerType(decl.value);
                 const is_arc = self.isArcType(decl.value);
@@ -2508,6 +2730,11 @@ pub const Emitter = struct {
                     .extern_fn_type = extern_fn_llvm_type_var,
                 }) catch return EmitError.OutOfMemory;
 
+                // Emit debug info for this variable
+                if (semantic_type) |st| {
+                    self.emitVarDebugInfo(decl.name, alloca, st, decl.span);
+                }
+
                 // Register Rc/Arc variables for automatic dropping
                 if (inner_type) |it| {
                     try self.registerDroppable(decl.name, alloca, it, true, is_arc);
@@ -2535,7 +2762,11 @@ pub const Emitter = struct {
                         if (std.mem.eql(u8, val.identifier.name, "None")) {
                             if (self.current_return_type) |rt_info| {
                                 if (rt_info.is_optional) {
-                                    const none_val = self.emitNone(rt_info.llvm_type);
+                                    var none_val = self.emitNone(rt_info.llvm_type);
+                                    // Emit ensure checks for None returns
+                                    if (self.hasEnsureContracts()) {
+                                        none_val = try self.emitEnsureChecks(none_val);
+                                    }
                                     if (self.current_sret_ptr) |sret_ptr| {
                                         _ = self.builder.buildStore(none_val, sret_ptr);
                                         _ = self.builder.buildRetVoid();
@@ -2573,6 +2804,10 @@ pub const Emitter = struct {
                         if (self.current_return_type) |rt_info| {
                             result = try self.wrapCompletedFuture(rt_info.llvm_type, result);
                         }
+                    }
+                    // Emit ensure checks before the actual return
+                    if (self.hasEnsureContracts()) {
+                        result = try self.emitEnsureChecks(result);
                     }
                     // If using sret, store to sret pointer and return void
                     if (self.current_sret_ptr) |sret_ptr| {
@@ -5092,8 +5327,11 @@ pub const Emitter = struct {
             const dest_bits = llvm.getIntTypeWidth(dest_type);
 
             if (dest_bits > src_bits) {
-                // Widening
-                const is_signed = cast.source_is_signed;
+                // Widening — use source_is_signed from checker, fallback to expr analysis
+                const is_signed = if (!cast.source_is_signed)
+                    false
+                else
+                    self.isSignedIntType(cast.expr);
                 if (is_signed) {
                     return self.builder.buildSExt(value, dest_type, "sext");
                 } else {
@@ -5464,6 +5702,22 @@ pub const Emitter = struct {
             } else if (std.mem.eql(u8, name, "tcp_listener_close")) {
                 return self.emitTcpListenerClose(call);
             }
+            // Phase 9.2: UDP socket builtins
+            else if (std.mem.eql(u8, name, "udp_bind")) {
+                return self.emitUdpBind(call);
+            } else if (std.mem.eql(u8, name, "udp_send_to")) {
+                return self.emitUdpSendTo(call);
+            } else if (std.mem.eql(u8, name, "udp_recv_from")) {
+                return self.emitUdpRecvFrom(call);
+            } else if (std.mem.eql(u8, name, "udp_close")) {
+                return self.emitUdpClose(call);
+            } else if (std.mem.eql(u8, name, "dns_lookup")) {
+                return self.emitDnsLookup(call);
+            }
+            // Phase 9.4: Channel builtins
+            else if (std.mem.eql(u8, name, "channel_create")) {
+                return self.emitChannelCreate(call);
+            }
         }
 
         // Check if this is a monomorphized generic function call
@@ -5529,6 +5783,41 @@ pub const Emitter = struct {
                     const return_type = llvm.getReturnType(fn_type);
                     const call_name_str: [:0]const u8 = if (llvm.isVoidType(return_type)) "" else "calltmp";
                     return self.builder.buildCall(fn_type, func, args.items, call_name_str);
+                }
+            }
+        }
+
+        // Fallback: check monomorphized functions by original_name when
+        // call_resolutions is empty (typed-ast-input pipeline)
+        if (func_name) |name| {
+            if (self.type_checker) |checker| {
+                var monos = checker.getMonomorphizedFunctions();
+                while (monos.next()) |mono| {
+                    if (std.mem.eql(u8, mono.original_name, name)) {
+                        const mangled_z = self.allocator.dupeZ(u8, mono.mangled_name) catch break;
+                        defer self.allocator.free(mangled_z);
+                        if (self.module.getNamedFunction(mangled_z)) |func| {
+                            const fn_type = llvm.getGlobalValueType(func);
+                            const param_count = llvm.c.LLVMCountParamTypes(fn_type);
+                            var param_types: [32]llvm.TypeRef = undefined;
+                            if (param_count <= 32) {
+                                llvm.c.LLVMGetParamTypes(fn_type, &param_types);
+                            }
+                            var args = std.ArrayListUnmanaged(llvm.ValueRef){};
+                            defer args.deinit(self.allocator);
+                            for (call.args, 0..) |arg, i| {
+                                const arg_value = try self.emitExpr(arg);
+                                const converted = if (param_count <= 32 and i < param_count)
+                                    self.convertArgIfNeeded(arg_value, param_types[i])
+                                else
+                                    arg_value;
+                                args.append(self.allocator, converted) catch return EmitError.OutOfMemory;
+                            }
+                            const return_type = llvm.getReturnType(fn_type);
+                            const call_name_str: [:0]const u8 = if (llvm.isVoidType(return_type)) "" else "calltmp";
+                            return self.builder.buildCall(fn_type, func, args.items, call_name_str);
+                        }
+                    }
                 }
             }
         }
@@ -7169,6 +7458,33 @@ pub const Emitter = struct {
         }
     }
 
+    /// Check if a type expression is a Sender#[T] or Receiver#[T] channel type.
+    const ChannelTypeInfo = struct {
+        is_sender: bool,
+        element_type: types.Type,
+    };
+
+    fn getChannelTypeInfo(self: *Emitter, type_expr: ast.TypeExpr) ?ChannelTypeInfo {
+        switch (type_expr) {
+            .generic_apply => |g| {
+                if (g.base == .named and g.args.len == 1) {
+                    const base_name = g.base.named.name;
+                    const is_sender = std.mem.eql(u8, base_name, "Sender");
+                    const is_receiver = std.mem.eql(u8, base_name, "Receiver");
+                    if (is_sender or is_receiver) {
+                        if (self.type_checker) |tc| {
+                            const tc_mut = @constCast(tc);
+                            const elem_type = tc_mut.resolveTypeExpr(g.args[0]) catch return null;
+                            return .{ .is_sender = is_sender, .element_type = elem_type };
+                        }
+                    }
+                }
+                return null;
+            },
+            else => return null,
+        }
+    }
+
     /// Resolve a type expression to a types.Type for use as expected_type context.
     /// Used to propagate type annotations to constructors like Ok/Err.
     fn resolveExpectedType(self: *Emitter, type_expr: ast.TypeExpr) ?types.Type {
@@ -8493,9 +8809,32 @@ pub const Emitter = struct {
     /// Used as fallback when the expression doesn't provide a struct name
     /// (e.g., for method calls that return structs).
     fn getStructTypeNameFromAnnotation(self: *Emitter, type_expr: ast.TypeExpr) ?[]const u8 {
-        _ = self;
         return switch (type_expr) {
             .named => |n| n.name,
+            .generic_apply => |g| {
+                // Build mangled name for user-defined generic structs
+                if (g.base == .named) {
+                    const base_name = g.base.named.name;
+                    // Skip builtin generics
+                    if (std.mem.eql(u8, base_name, "Result") or
+                        std.mem.eql(u8, base_name, "Option") or
+                        std.mem.eql(u8, base_name, "List") or
+                        std.mem.eql(u8, base_name, "Map") or
+                        std.mem.eql(u8, base_name, "Set") or
+                        std.mem.eql(u8, base_name, "Future") or
+                        std.mem.eql(u8, base_name, "Sender") or
+                        std.mem.eql(u8, base_name, "Receiver"))
+                        return null;
+                    var mangled = std.ArrayListUnmanaged(u8){};
+                    mangled.appendSlice(self.allocator, base_name) catch return null;
+                    for (g.args) |arg| {
+                        mangled.append(self.allocator, '$') catch return null;
+                        self.appendTypeNameForMangling(&mangled, arg) catch return null;
+                    }
+                    return mangled.items;
+                }
+                return null;
+            },
             else => null,
         };
     }
@@ -8614,32 +8953,44 @@ pub const Emitter = struct {
 
     /// Look up the struct type name of a field, if the field is a struct type.
     fn lookupFieldStructTypeName(self: *Emitter, struct_type_name: []const u8, field_name: []const u8) ?[]const u8 {
-        const tc = self.type_checker orelse return null;
-
-        // Search across all module scopes for cross-module struct type resolution
-        if (tc.lookupSymbolAcrossModules(struct_type_name)) |sym| {
-            if (sym.type_ == .struct_) {
-                for (sym.type_.struct_.fields) |field| {
-                    if (std.mem.eql(u8, field.name, field_name)) {
-                        if (field.type_ == .struct_) {
-                            return field.type_.struct_.name;
-                        }
-                        return null;
+        // First check the emitter's own struct type registry (works for typed AST input)
+        if (self.struct_types.get(struct_type_name)) |info| {
+            for (info.field_names, 0..) |name, i| {
+                if (std.mem.eql(u8, name, field_name)) {
+                    if (i < info.field_type_names.len) {
+                        return info.field_type_names[i];
                     }
+                    break;
                 }
             }
         }
 
-        // Try monomorphized structs for generic types
-        var mono_structs = tc.getMonomorphizedStructs();
-        while (mono_structs.next()) |mono| {
-            if (std.mem.eql(u8, mono.mangled_name, struct_type_name)) {
-                for (mono.concrete_type.fields) |field| {
-                    if (std.mem.eql(u8, field.name, field_name)) {
-                        if (field.type_ == .struct_) {
-                            return field.type_.struct_.name;
+        // Fall back to type checker symbol tables
+        if (self.type_checker) |tc| {
+            if (tc.lookupSymbolAcrossModules(struct_type_name)) |sym| {
+                if (sym.type_ == .struct_) {
+                    for (sym.type_.struct_.fields) |field| {
+                        if (std.mem.eql(u8, field.name, field_name)) {
+                            if (field.type_ == .struct_) {
+                                return field.type_.struct_.name;
+                            }
+                            return null;
                         }
-                        return null;
+                    }
+                }
+            }
+
+            // Try monomorphized structs for generic types
+            var mono_structs = tc.getMonomorphizedStructs();
+            while (mono_structs.next()) |mono| {
+                if (std.mem.eql(u8, mono.mangled_name, struct_type_name)) {
+                    for (mono.concrete_type.fields) |field| {
+                        if (std.mem.eql(u8, field.name, field_name)) {
+                            if (field.type_ == .struct_) {
+                                return field.type_.struct_.name;
+                            }
+                            return null;
+                        }
                     }
                 }
             }
@@ -8863,11 +9214,23 @@ pub const Emitter = struct {
         var field_names = try self.allocator.alloc([]const u8, fields.len);
         errdefer self.allocator.free(field_names);
 
+        var field_type_names = try self.allocator.alloc(?[]const u8, fields.len);
+        errdefer self.allocator.free(field_type_names);
+
         for (fields, 0..) |field, i| {
             const field_llvm_type = try self.typeExprToLLVM(field.type_);
             field_types.append(self.allocator, field_llvm_type) catch return EmitError.OutOfMemory;
             field_indices[i] = @intCast(i);
             field_names[i] = field.name;
+            // Extract Klar-level type name for struct/enum field types
+            field_type_names[i] = switch (field.type_) {
+                .named => |n| n.name,
+                .generic_apply => |g| switch (g.base) {
+                    .named => |n| n.name,
+                    else => null,
+                },
+                else => null,
+            };
         }
 
         // Create LLVM struct type
@@ -8880,6 +9243,7 @@ pub const Emitter = struct {
             .llvm_type = struct_type,
             .field_indices = field_indices,
             .field_names = field_names,
+            .field_type_names = field_type_names,
         }) catch return EmitError.OutOfMemory;
 
         return struct_type;
@@ -10554,6 +10918,11 @@ pub const Emitter = struct {
                 return try self.emitExpr(method.args[0]);
             }
 
+            // ThreadPool.new(num_threads: i32) -> ThreadPool
+            if (std.mem.eql(u8, obj_name, "ThreadPool") and std.mem.eql(u8, method.method_name, "new")) {
+                return self.emitThreadPoolNew(method);
+            }
+
             // Path.new(s: string) -> Path
             if (std.mem.eql(u8, obj_name, "Path") and std.mem.eql(u8, method.method_name, "new")) {
                 return self.emitPathNew(method);
@@ -11676,6 +12045,86 @@ pub const Emitter = struct {
                 if (method.args.len != 1) return EmitError.InvalidAST;
                 const buf_val = try self.emitExpr(method.args[0]);
                 return self.emitStdinRead(buf_val, method.args[0]);
+            }
+        }
+
+        // Check for Sender methods: send, close
+        if (self.isSenderExpr(method.object)) {
+            const sender_ptr: llvm.ValueRef = if (method.object == .identifier) blk: {
+                if (self.named_values.get(method.object.identifier.name)) |local| {
+                    break :blk local.value;
+                }
+                const obj_val = try self.emitExpr(method.object);
+                const ep_type = self.getChannelEndpointType();
+                const tmp_alloca = self.builder.buildAlloca(ep_type, "sender.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            } else blk: {
+                const obj_val = try self.emitExpr(method.object);
+                const ep_type = self.getChannelEndpointType();
+                const tmp_alloca = self.builder.buildAlloca(ep_type, "sender.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            };
+            if (std.mem.eql(u8, method.method_name, "send")) {
+                return self.emitChannelSend(sender_ptr, method);
+            }
+            if (std.mem.eql(u8, method.method_name, "close")) {
+                return self.emitChannelClose(sender_ptr);
+            }
+        }
+
+        // Check for Receiver methods: recv, close
+        if (self.isReceiverExpr(method.object)) {
+            const receiver_ptr: llvm.ValueRef = if (method.object == .identifier) blk: {
+                if (self.named_values.get(method.object.identifier.name)) |local| {
+                    break :blk local.value;
+                }
+                const obj_val = try self.emitExpr(method.object);
+                const ep_type = self.getChannelEndpointType();
+                const tmp_alloca = self.builder.buildAlloca(ep_type, "recv.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            } else blk: {
+                const obj_val = try self.emitExpr(method.object);
+                const ep_type = self.getChannelEndpointType();
+                const tmp_alloca = self.builder.buildAlloca(ep_type, "recv.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            };
+            if (std.mem.eql(u8, method.method_name, "recv")) {
+                return self.emitChannelRecv(receiver_ptr, method);
+            }
+            if (std.mem.eql(u8, method.method_name, "close")) {
+                return self.emitChannelClose(receiver_ptr);
+            }
+        }
+
+        // Check for ThreadPool methods: spawn, shutdown
+        if (self.isThreadPoolExpr(method.object)) {
+            const pool_ptr: llvm.ValueRef = if (method.object == .identifier) blk: {
+                if (self.named_values.get(method.object.identifier.name)) |local| {
+                    break :blk local.value;
+                }
+                const obj_val = try self.emitExpr(method.object);
+                var tp_fields = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+                const tp_type = llvm.Types.struct_(self.ctx, &tp_fields, false);
+                const tmp_alloca = self.builder.buildAlloca(tp_type, "pool.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            } else blk: {
+                const obj_val = try self.emitExpr(method.object);
+                var tp_fields = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+                const tp_type = llvm.Types.struct_(self.ctx, &tp_fields, false);
+                const tmp_alloca = self.builder.buildAlloca(tp_type, "pool.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            };
+            if (std.mem.eql(u8, method.method_name, "spawn")) {
+                return self.emitThreadPoolSpawn(pool_ptr, method);
+            }
+            if (std.mem.eql(u8, method.method_name, "shutdown")) {
+                return self.emitThreadPoolShutdown(pool_ptr);
             }
         }
 
@@ -14288,6 +14737,96 @@ pub const Emitter = struct {
         self.builder.positionAtEnd(continue_bb);
 
         return llvm.Const.int32(self.ctx, 0);
+    }
+
+    /// Check if the current function has any `meta ensure` contracts.
+    fn hasEnsureContracts(self: *Emitter) bool {
+        for (self.current_ensure_contracts) |annotation| {
+            switch (annotation) {
+                .ensure => return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    /// Emit a contract check (meta require or meta ensure).
+    /// If condition is false, prints a panic message with the contract kind and line, then aborts.
+    fn emitContractCheck(self: *Emitter, condition: llvm.ValueRef, kind: []const u8, line: u32) EmitError!void {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const fail_bb = llvm.appendBasicBlock(self.ctx, func, "contract.fail");
+        const continue_bb = llvm.appendBasicBlock(self.ctx, func, "contract.pass");
+
+        _ = self.builder.buildCondBr(condition, continue_bb, fail_bb);
+
+        // Emit failure block
+        self.builder.positionAtEnd(fail_bb);
+
+        const fprintf_fn = self.getOrDeclareFprintf();
+        const stderr_fn = self.getOrDeclareStderr();
+        const stderr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stderr_fn), stderr_fn, &[_]llvm.ValueRef{}, "stderr");
+
+        // Format: "panic: meta <kind> violated at line <N>\n"
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "panic: meta {s} violated at line {d}\n", .{ kind, line }) catch "panic: contract violated\n";
+        const msg_z = self.allocator.dupeZ(u8, msg) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(msg_z);
+        const fail_msg = self.builder.buildGlobalStringPtr(msg_z, "contract_msg");
+        var fail_args = [_]llvm.ValueRef{ stderr, fail_msg };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, &fail_args, "");
+
+        const abort_fn = self.getOrDeclareAbort();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(abort_fn), abort_fn, &[_]llvm.ValueRef{}, "");
+        _ = self.builder.buildUnreachable();
+
+        // Continue block - contract satisfied
+        self.builder.positionAtEnd(continue_bb);
+    }
+
+    /// Emit all `meta require` checks at function entry.
+    fn emitRequireContracts(self: *Emitter, meta: []const ast.MetaAnnotation) EmitError!void {
+        for (meta) |annotation| {
+            switch (annotation) {
+                .require => |contract| {
+                    const cond = try self.emitExpr(contract.expr);
+                    try self.emitContractCheck(cond, "require", contract.span.line);
+                },
+                else => {},
+            }
+        }
+    }
+
+    /// Emit all `meta ensure` checks before a return, binding `result` to the return value.
+    /// Returns the (possibly reloaded) return value.
+    fn emitEnsureChecks(self: *Emitter, return_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+        // Store return value to a temporary so ensure expressions can reference it as "result"
+        const val_type = llvm.typeOf(return_val);
+        const result_alloca = self.buildEntryBlockAlloca(val_type, "ensure.result");
+        _ = self.builder.buildStore(return_val, result_alloca);
+
+        // Register "result" as a named value so emitExpr(identifier "result") finds it
+        self.named_values.put("result", .{
+            .value = result_alloca,
+            .is_alloca = true,
+            .ty = val_type,
+            .is_signed = true,
+        }) catch return EmitError.OutOfMemory;
+
+        for (self.current_ensure_contracts) |annotation| {
+            switch (annotation) {
+                .ensure => |contract| {
+                    const cond = try self.emitExpr(contract.expr);
+                    try self.emitContractCheck(cond, "ensure", contract.span.line);
+                },
+                else => {},
+            }
+        }
+
+        // Remove "result" binding and reload the value
+        _ = self.named_values.remove("result");
+        const reloaded = self.builder.buildLoad(val_type, result_alloca, "ensure.retval");
+        return reloaded;
     }
 
     /// Emit assert_eq that compares two values and panics with details on failure
@@ -26713,13 +27252,15 @@ pub const Emitter = struct {
 
     // ==================== Phase 6A: Async Subprocess Builtins ====================
 
-    /// LLVM struct type for ProcessHandle: { pid: i32, stdout_fd: i32, stderr_fd: i32 }
+    /// LLVM struct type for ProcessHandle.
+    /// POSIX: { pid: i32, stdout_fd: i32, stderr_fd: i32 }
+    /// Windows: { pid: i64, stdout_fd: i64, stderr_fd: i64 } (HANDLEs are pointer-sized)
     fn getProcessHandleStructType(self: *Emitter) llvm.TypeRef {
-        var fields = [_]llvm.TypeRef{
-            llvm.Types.int32(self.ctx), // pid
-            llvm.Types.int32(self.ctx), // stdout_fd
-            llvm.Types.int32(self.ctx), // stderr_fd
-        };
+        const field_type = if (comptime builtin.os.tag == .windows)
+            llvm.Types.int64(self.ctx)
+        else
+            llvm.Types.int32(self.ctx);
+        var fields = [_]llvm.TypeRef{ field_type, field_type, field_type };
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
@@ -26807,10 +27348,679 @@ pub const Emitter = struct {
         return llvm.c.LLVMAddFunction(self.module.ref, "poll", fn_type);
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // Windows Process API Declarations
+    // ═══════════════════════════════════════════════════════════════════════
+
+    fn getOrDeclareCreatePipe(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "CreatePipe")) |func| return func;
+        // BOOL CreatePipe(PHANDLE hRead, PHANDLE hWrite, LPSECURITY_ATTRIBUTES, DWORD nSize)
+        var param_types = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx), llvm.Types.int32(self.ctx) };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 4, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "CreatePipe", fn_type);
+    }
+
+    fn getOrDeclareCreateProcessA(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "CreateProcessA")) |func| return func;
+        // BOOL CreateProcessA(LPCSTR app, LPSTR cmdline, LPSECURITY_ATTRIBUTES procSA,
+        //   LPSECURITY_ATTRIBUTES threadSA, BOOL inheritHandles, DWORD flags,
+        //   LPVOID env, LPCSTR dir, LPSTARTUPINFOA si, LPPROCESS_INFORMATION pi)
+        var param_types = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx),
+            llvm.Types.pointer(self.ctx), llvm.Types.int32(self.ctx), llvm.Types.int32(self.ctx),
+            llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx),
+            llvm.Types.pointer(self.ctx),
+        };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 10, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "CreateProcessA", fn_type);
+    }
+
+    fn getOrDeclareCloseHandle(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "CloseHandle")) |func| return func;
+        // BOOL CloseHandle(HANDLE hObject)
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "CloseHandle", fn_type);
+    }
+
+    fn getOrDeclareWaitForSingleObject(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "WaitForSingleObject")) |func| return func;
+        // DWORD WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds)
+        var param_types = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), llvm.Types.int32(self.ctx) };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 2, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "WaitForSingleObject", fn_type);
+    }
+
+    fn getOrDeclareGetExitCodeProcess(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "GetExitCodeProcess")) |func| return func;
+        // BOOL GetExitCodeProcess(HANDLE hProcess, LPDWORD lpExitCode)
+        var param_types = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx) };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 2, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "GetExitCodeProcess", fn_type);
+    }
+
+    fn getOrDeclareReadFile(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "ReadFile")) |func| return func;
+        // BOOL ReadFile(HANDLE hFile, LPVOID buf, DWORD nToRead, LPDWORD nRead, LPOVERLAPPED)
+        var param_types = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx), llvm.Types.int32(self.ctx),
+            llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx),
+        };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 5, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "ReadFile", fn_type);
+    }
+
+    fn getOrDeclareGetStdHandle(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "GetStdHandle")) |func| return func;
+        // HANDLE GetStdHandle(DWORD nStdHandle)
+        var param_types = [_]llvm.TypeRef{llvm.Types.int32(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.pointer(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "GetStdHandle", fn_type);
+    }
+
+    fn getOrDeclareOpenProcess(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "OpenProcess")) |func| return func;
+        // HANDLE OpenProcess(DWORD dwDesiredAccess, BOOL bInheritHandle, DWORD dwProcessId)
+        var param_types = [_]llvm.TypeRef{ llvm.Types.int32(self.ctx), llvm.Types.int32(self.ctx), llvm.Types.int32(self.ctx) };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.pointer(self.ctx), &param_types, 3, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "OpenProcess", fn_type);
+    }
+
+    fn getOrDeclareGetLastError(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "GetLastError")) |func| return func;
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), null, 0, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "GetLastError", fn_type);
+    }
+
+    /// Helper to store i32 value at byte offset in an alloca (for Windows API struct fields).
+    fn storeI32AtByteOffset(self: *Emitter, alloca: llvm.ValueRef, offset: u32, value: llvm.ValueRef, name: [*:0]const u8) void {
+        const i8_type = llvm.Types.int8(self.ctx);
+        var indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, @intCast(offset))};
+        const byte_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, alloca, &indices, 1, name);
+        _ = self.builder.buildStore(value, byte_ptr);
+    }
+
+    /// Helper to store ptr value at byte offset in an alloca.
+    fn storePtrAtByteOffset(self: *Emitter, alloca: llvm.ValueRef, offset: u32, value: llvm.ValueRef, name: [*:0]const u8) void {
+        const i8_type = llvm.Types.int8(self.ctx);
+        var indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, @intCast(offset))};
+        const byte_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, alloca, &indices, 1, name);
+        _ = self.builder.buildStore(value, byte_ptr);
+    }
+
+    /// Helper to load ptr from byte offset.
+    fn loadPtrAtByteOffset(self: *Emitter, alloca: llvm.ValueRef, offset: u32, name: [*:0]const u8) llvm.ValueRef {
+        const i8_type = llvm.Types.int8(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        var indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, @intCast(offset))};
+        const byte_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, alloca, &indices, 1, name);
+        return self.builder.buildLoad(ptr_type, byte_ptr, std.mem.span(name));
+    }
+
+    /// Helper to load i32 from byte offset.
+    fn loadI32AtByteOffset(self: *Emitter, alloca: llvm.ValueRef, offset: u32, name: [*:0]const u8) llvm.ValueRef {
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        var indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, @intCast(offset))};
+        const byte_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, alloca, &indices, 1, name);
+        return self.builder.buildLoad(i32_type, byte_ptr, std.mem.span(name));
+    }
+
+    /// Convert a pointer to i64 (for storing Windows HANDLEs in ProcessHandle fields).
+    fn ptrToHandleField(self: *Emitter, ptr_val: llvm.ValueRef, name: [*:0]const u8) llvm.ValueRef {
+        return llvm.c.LLVMBuildPtrToInt(self.builder.ref, ptr_val, llvm.Types.int64(self.ctx), name);
+    }
+
+    /// Convert i64 back to pointer (for recovering Windows HANDLEs from ProcessHandle fields).
+    fn handleFieldToPtr(self: *Emitter, i64_val: llvm.ValueRef, name: [*:0]const u8) llvm.ValueRef {
+        return llvm.c.LLVMBuildIntToPtr(self.builder.ref, i64_val, llvm.Types.pointer(self.ctx), name);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Windows Process Implementations
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Windows: process_spawn using CreateProcessA + CreatePipe.
+    /// ProcessHandle stores: pid=hProcess (as i64), stdout_fd=pipe_read_handle (as i64),
+    /// stderr_fd=pipe_read_handle (as i64).
+    fn emitProcessSpawnWindows(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 2) return EmitError.InvalidAST;
+
+        const cmd_val = try self.emitExpr(call.args[0]);
+        const args_val = try self.emitExpr(call.args[1]);
+
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const result_type = self.getProcessHandleResultType();
+        const handle_type = self.getProcessHandleStructType();
+        const result_alloca = self.builder.buildAlloca(result_type, "wspawn.result");
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.cont");
+
+        const strlen_fn = self.getOrDeclareStrlen();
+        const malloc_fn = self.getOrDeclareMalloc();
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        const memset_fn = self.getOrDeclareMemset();
+        const create_pipe_fn = self.getOrDeclareCreatePipe();
+        const create_process_fn = self.getOrDeclareCreateProcessA();
+        const close_handle_fn = self.getOrDeclareCloseHandle();
+
+        // Build command line string: "cmd arg1 arg2 ..."
+        // Extract list ptr and len
+        const list_type = self.getListStructType();
+        const header_type = self.getListHeaderType();
+        const list_alloca = self.builder.buildAlloca(list_type, "wspawn.list");
+        _ = self.builder.buildStore(args_val, list_alloca);
+        const header = self.derefListHeader(list_alloca);
+        const hdr_ptr_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header, 0, "wspawn.lptr");
+        const list_ptr = self.builder.buildLoad(ptr_type, hdr_ptr_f, "wspawn.lptr_val");
+        const hdr_len_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header, 1, "wspawn.llen");
+        const list_len = self.builder.buildLoad(i32_type, hdr_len_f, "wspawn.llen_val");
+
+        // Compute total command line length
+        const cmd_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &[_]llvm.ValueRef{cmd_val}, "wspawn.cmdlen");
+        const total_alloca = self.builder.buildAlloca(i64_type, "wspawn.total");
+        _ = self.builder.buildStore(cmd_len, total_alloca);
+
+        // Loop: total += 1 + strlen(args[i]) for quoting: total += 3 + strlen(args[i])
+        const loop_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.argloop");
+        const loop_body_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.argbody");
+        const loop_done_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.argdone");
+        const loop_preheader_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        _ = self.builder.buildBr(loop_bb);
+
+        self.builder.positionAtEnd(loop_bb);
+        const idx_phi = llvm.c.LLVMBuildPhi(self.builder.ref, i32_type, "wspawn.idx");
+        const idx_cmp = self.builder.buildICmp(llvm.c.LLVMIntSLT, idx_phi, list_len, "wspawn.idxcmp");
+        _ = self.builder.buildCondBr(idx_cmp, loop_body_bb, loop_done_bb);
+
+        self.builder.positionAtEnd(loop_body_bb);
+        // Load args[i] (each element is a string = ptr)
+        var arg_indices = [_]llvm.ValueRef{idx_phi};
+        const arg_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, ptr_type, list_ptr, &arg_indices, 1, "wspawn.argptr");
+        const arg_val = self.builder.buildLoad(ptr_type, arg_ptr, "wspawn.arg");
+        const arg_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &[_]llvm.ValueRef{arg_val}, "wspawn.arglen");
+        // Only quote args containing spaces (cmd.exe doesn't recognize "/C" as a switch)
+        const memchr_len = self.getOrDeclareMemchr();
+        const space_found = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memchr_len), memchr_len, &[_]llvm.ValueRef{ arg_val, llvm.Const.int32(self.ctx, ' '), arg_len }, "wspawn.spchk");
+        const needs_quote = self.builder.buildICmp(llvm.c.LLVMIntNE, space_found, llvm.c.LLVMConstNull(ptr_type), "wspawn.needsq");
+        // overhead = needs_quote ? 3 : 1 (space + 2 quotes vs just space)
+        const overhead = self.builder.buildSelect(needs_quote, llvm.Const.int64(self.ctx, 3), llvm.Const.int64(self.ctx, 1), "wspawn.overhead");
+        const cur_total = self.builder.buildLoad(i64_type, total_alloca, "wspawn.curtotal");
+        const added = self.builder.buildAdd(arg_len, overhead, "wspawn.added");
+        const new_total = self.builder.buildAdd(cur_total, added, "wspawn.newtotal");
+        _ = self.builder.buildStore(new_total, total_alloca);
+        const next_idx = self.builder.buildAdd(idx_phi, llvm.Const.int32(self.ctx, 1), "wspawn.nextidx");
+        _ = self.builder.buildBr(loop_bb);
+
+        // Wire phi node
+        var phi_vals = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), next_idx };
+        var phi_bbs = [_]llvm.c.LLVMBasicBlockRef{ @ptrCast(loop_preheader_bb), @ptrCast(loop_body_bb) };
+        llvm.c.LLVMAddIncoming(idx_phi, &phi_vals, &phi_bbs, 2);
+
+        self.builder.positionAtEnd(loop_done_bb);
+        // Allocate command line buffer (+1 for null terminator)
+        const final_total = self.builder.buildLoad(i64_type, total_alloca, "wspawn.final");
+        const buf_size = self.builder.buildAdd(final_total, llvm.Const.int64(self.ctx, 1), "wspawn.bufsz");
+        const cmdline_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{buf_size}, "wspawn.cmdline");
+
+        // Copy cmd to buffer
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &[_]llvm.ValueRef{ cmdline_buf, cmd_val, cmd_len }, "wspawn.cpy1");
+        const pos_alloca = self.builder.buildAlloca(i64_type, "wspawn.pos");
+        _ = self.builder.buildStore(cmd_len, pos_alloca);
+
+        // Second loop: copy " \"arg\"" for each arg
+        const copy_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.copyloop");
+        const copy_body_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.copybody");
+        const copy_done_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.copydone");
+        const copy_preheader_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        _ = self.builder.buildBr(copy_bb);
+
+        self.builder.positionAtEnd(copy_bb);
+        const cidx_phi = llvm.c.LLVMBuildPhi(self.builder.ref, i32_type, "wspawn.cidx");
+        const cidx_cmp = self.builder.buildICmp(llvm.c.LLVMIntSLT, cidx_phi, list_len, "wspawn.cidxcmp");
+        _ = self.builder.buildCondBr(cidx_cmp, copy_body_bb, copy_done_bb);
+
+        self.builder.positionAtEnd(copy_body_bb);
+        var cidx_indices = [_]llvm.ValueRef{cidx_phi};
+        const carg_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, ptr_type, list_ptr, &cidx_indices, 1, "wspawn.cargptr");
+        const carg_val = self.builder.buildLoad(ptr_type, carg_ptr, "wspawn.carg");
+        const carg_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &[_]llvm.ValueRef{carg_val}, "wspawn.carglen");
+        const cpos = self.builder.buildLoad(i64_type, pos_alloca, "wspawn.cpos");
+
+        // Check if arg needs quoting (contains spaces)
+        const cmemchr_fn = self.getOrDeclareMemchr();
+        const cspace_found = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(cmemchr_fn), cmemchr_fn, &[_]llvm.ValueRef{ carg_val, llvm.Const.int32(self.ctx, ' '), carg_len }, "wspawn.cspchk");
+        const cneeds_quote = self.builder.buildICmp(llvm.c.LLVMIntNE, cspace_found, llvm.c.LLVMConstNull(ptr_type), "wspawn.cneedsq");
+        const quote_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.quote");
+        const noquote_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.noquote");
+        const merge_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.merge");
+        _ = self.builder.buildCondBr(cneeds_quote, quote_bb, noquote_bb);
+
+        // Quoted path: write ' "arg"'
+        self.builder.positionAtEnd(quote_bb);
+        const space_str = self.builder.buildGlobalStringPtr(" \"", "wspawn.spaceq");
+        var sp_indices = [_]llvm.ValueRef{cpos};
+        const sp_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, cmdline_buf, &sp_indices, 1, "wspawn.spdst");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &[_]llvm.ValueRef{ sp_dst, space_str, llvm.Const.int64(self.ctx, 2) }, "wspawn.cpysp");
+        const after_sp = self.builder.buildAdd(cpos, llvm.Const.int64(self.ctx, 2), "wspawn.aftersp");
+        var qarg_indices = [_]llvm.ValueRef{after_sp};
+        const qarg_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, cmdline_buf, &qarg_indices, 1, "wspawn.qargdst");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &[_]llvm.ValueRef{ qarg_dst, carg_val, carg_len }, "wspawn.cpyqarg");
+        const after_qarg = self.builder.buildAdd(after_sp, carg_len, "wspawn.afterqarg");
+        var q_indices = [_]llvm.ValueRef{after_qarg};
+        const q_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, cmdline_buf, &q_indices, 1, "wspawn.qdst");
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, '"'), q_dst);
+        const after_q = self.builder.buildAdd(after_qarg, llvm.Const.int64(self.ctx, 1), "wspawn.afterq");
+        _ = self.builder.buildBr(merge_bb);
+
+        // Unquoted path: write ' arg'
+        self.builder.positionAtEnd(noquote_bb);
+        var nsp_indices = [_]llvm.ValueRef{cpos};
+        const nsp_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, cmdline_buf, &nsp_indices, 1, "wspawn.nspdst");
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, ' '), nsp_dst);
+        const after_nsp = self.builder.buildAdd(cpos, llvm.Const.int64(self.ctx, 1), "wspawn.afternsp");
+        var narg_indices = [_]llvm.ValueRef{after_nsp};
+        const narg_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, cmdline_buf, &narg_indices, 1, "wspawn.nargdst");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &[_]llvm.ValueRef{ narg_dst, carg_val, carg_len }, "wspawn.cpynarg");
+        const after_narg = self.builder.buildAdd(after_nsp, carg_len, "wspawn.afternarg");
+        _ = self.builder.buildBr(merge_bb);
+
+        // Merge: update position
+        self.builder.positionAtEnd(merge_bb);
+        const final_pos = llvm.c.LLVMBuildPhi(self.builder.ref, i64_type, "wspawn.fpos_phi");
+        var fpos_vals = [_]llvm.ValueRef{ after_q, after_narg };
+        var fpos_bbs = [_]llvm.c.LLVMBasicBlockRef{ @ptrCast(quote_bb), @ptrCast(noquote_bb) };
+        llvm.c.LLVMAddIncoming(final_pos, &fpos_vals, &fpos_bbs, 2);
+        _ = self.builder.buildStore(final_pos, pos_alloca);
+
+        const cnext_idx = self.builder.buildAdd(cidx_phi, llvm.Const.int32(self.ctx, 1), "wspawn.cnext");
+        _ = self.builder.buildBr(copy_bb);
+
+        var cphi_vals = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), cnext_idx };
+        var cphi_bbs = [_]llvm.c.LLVMBasicBlockRef{ @ptrCast(copy_preheader_bb), @ptrCast(merge_bb) };
+        llvm.c.LLVMAddIncoming(cidx_phi, &cphi_vals, &cphi_bbs, 2);
+
+        self.builder.positionAtEnd(copy_done_bb);
+        // Null-terminate command line
+        const fpos = self.builder.buildLoad(i64_type, pos_alloca, "wspawn.fpos");
+        var null_indices = [_]llvm.ValueRef{fpos};
+        const null_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, cmdline_buf, &null_indices, 1, "wspawn.ndst");
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 0), null_dst);
+
+        // Set up SECURITY_ATTRIBUTES (24 bytes on x64): bInheritHandle = TRUE
+        const sa_size: u32 = 24;
+        const sa_alloca = self.builder.buildAlloca(llvm.c.LLVMArrayType2(i8_type, sa_size), "wspawn.sa");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ sa_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, sa_size) }, "wspawn.sa_clr");
+        self.storeI32AtByteOffset(sa_alloca, 0, llvm.Const.int32(self.ctx, @intCast(sa_size)), "wspawn.sa.len"); // nLength
+        self.storeI32AtByteOffset(sa_alloca, 16, llvm.Const.int32(self.ctx, 1), "wspawn.sa.inherit"); // bInheritHandle = TRUE
+
+        // CreatePipe for stdout
+        const out_read_alloca = self.builder.buildAlloca(ptr_type, "wspawn.out_read");
+        const out_write_alloca = self.builder.buildAlloca(ptr_type, "wspawn.out_write");
+        const pipe_out_r = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(create_pipe_fn), create_pipe_fn, &[_]llvm.ValueRef{ out_read_alloca, out_write_alloca, sa_alloca, llvm.Const.int32(self.ctx, 0) }, "wspawn.pipe_out");
+        const pipe_out_fail = self.builder.buildICmp(llvm.c.LLVMIntEQ, pipe_out_r, llvm.Const.int32(self.ctx, 0), "wspawn.pofail");
+        const pipe_out_ok_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.po_ok");
+        const pipe_err_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.perr");
+        _ = self.builder.buildCondBr(pipe_out_fail, pipe_err_bb, pipe_out_ok_bb);
+
+        // Pipe error: return Err(IoError::Other)
+        self.builder.positionAtEnd(pipe_err_bb);
+        const err_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "wspawn.errtag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), err_tag_ptr); // Err
+        const err_val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "wspawn.errval");
+        const err_struct = self.getIoErrorStructType();
+        const err_kind_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, err_struct, err_val_ptr, 0, "wspawn.errkind");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 5), err_kind_ptr); // IoError::Other = 5
+        _ = self.builder.buildBr(cont_bb);
+
+        self.builder.positionAtEnd(pipe_out_ok_bb);
+        // CreatePipe for stderr
+        const err_read_alloca = self.builder.buildAlloca(ptr_type, "wspawn.err_read");
+        const err_write_alloca = self.builder.buildAlloca(ptr_type, "wspawn.err_write");
+        const pipe_err_r = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(create_pipe_fn), create_pipe_fn, &[_]llvm.ValueRef{ err_read_alloca, err_write_alloca, sa_alloca, llvm.Const.int32(self.ctx, 0) }, "wspawn.pipe_err");
+        const pipe_err_fail = self.builder.buildICmp(llvm.c.LLVMIntEQ, pipe_err_r, llvm.Const.int32(self.ctx, 0), "wspawn.pefail");
+        const pipe_err_ok_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.pe_ok");
+        _ = self.builder.buildCondBr(pipe_err_fail, pipe_err_bb, pipe_err_ok_bb);
+
+        self.builder.positionAtEnd(pipe_err_ok_bb);
+        // Set up STARTUPINFOA (104 bytes on x64)
+        const si_size: u32 = 104;
+        const si_alloca = self.builder.buildAlloca(llvm.c.LLVMArrayType2(i8_type, si_size), "wspawn.si");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ si_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, si_size) }, "wspawn.si_clr");
+        self.storeI32AtByteOffset(si_alloca, 0, llvm.Const.int32(self.ctx, @intCast(si_size)), "wspawn.si.cb"); // cb
+        self.storeI32AtByteOffset(si_alloca, 60, llvm.Const.int32(self.ctx, 0x100), "wspawn.si.flags"); // dwFlags = STARTF_USESTDHANDLES
+        // Set hStdInput to parent's stdin (STD_INPUT_HANDLE = -10 = 0xFFFFFFF6)
+        const get_std_handle_fn = self.getOrDeclareGetStdHandle();
+        const parent_stdin = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(get_std_handle_fn), get_std_handle_fn, &[_]llvm.ValueRef{llvm.Const.int32(self.ctx, @as(i32, @bitCast(@as(u32, 0xFFFFFFF6))))}, "wspawn.stdin");
+        self.storePtrAtByteOffset(si_alloca, 80, parent_stdin, "wspawn.si.stdin"); // hStdInput
+        const out_write_h = self.builder.buildLoad(ptr_type, out_write_alloca, "wspawn.ow");
+        const err_write_h = self.builder.buildLoad(ptr_type, err_write_alloca, "wspawn.ew");
+        self.storePtrAtByteOffset(si_alloca, 88, out_write_h, "wspawn.si.stdout"); // hStdOutput
+        self.storePtrAtByteOffset(si_alloca, 96, err_write_h, "wspawn.si.stderr"); // hStdError
+
+        // PROCESS_INFORMATION (24 bytes on x64)
+        const pi_size: u32 = 24;
+        const pi_alloca = self.builder.buildAlloca(llvm.c.LLVMArrayType2(i8_type, pi_size), "wspawn.pi");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ pi_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, pi_size) }, "wspawn.pi_clr");
+
+        // CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        const cp_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(create_process_fn), create_process_fn, &[_]llvm.ValueRef{
+            null_ptr,                              // lpApplicationName
+            cmdline_buf,                           // lpCommandLine
+            null_ptr,                              // lpProcessAttributes
+            null_ptr,                              // lpThreadAttributes
+            llvm.Const.int32(self.ctx, 1),         // bInheritHandles = TRUE
+            llvm.Const.int32(self.ctx, 0x08000000), // dwCreationFlags = CREATE_NO_WINDOW
+            null_ptr,                              // lpEnvironment
+            null_ptr,                              // lpCurrentDirectory
+            si_alloca,                             // lpStartupInfo
+            pi_alloca,                             // lpProcessInformation
+        }, "wspawn.cp");
+
+        const cp_fail = self.builder.buildICmp(llvm.c.LLVMIntEQ, cp_result, llvm.Const.int32(self.ctx, 0), "wspawn.cpfail");
+        const cp_ok_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.cp_ok");
+        const cp_fail_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.cp_fail");
+        _ = self.builder.buildCondBr(cp_fail, cp_fail_bb, cp_ok_bb);
+
+        // CreateProcess failed: cleanup and return error
+        self.builder.positionAtEnd(cp_fail_bb);
+        const or_h = self.builder.buildLoad(ptr_type, out_read_alloca, "wspawn.or_cl");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{or_h}, "wspawn.cl1");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{out_write_h}, "wspawn.cl2");
+        const er_h = self.builder.buildLoad(ptr_type, err_read_alloca, "wspawn.er_cl");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{er_h}, "wspawn.cl3");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{err_write_h}, "wspawn.cl4");
+        _ = self.builder.buildBr(pipe_err_bb);
+
+        // Success: close write handles and hThread, build ProcessHandle
+        self.builder.positionAtEnd(cp_ok_bb);
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{out_write_h}, "wspawn.cl_ow");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{err_write_h}, "wspawn.cl_ew");
+        // Close hThread (offset 8 in PROCESS_INFORMATION)
+        const h_thread = self.loadPtrAtByteOffset(pi_alloca, 8, "wspawn.hthread");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{h_thread}, "wspawn.cl_ht");
+
+        // Extract process info
+        const h_process = self.loadPtrAtByteOffset(pi_alloca, 0, "wspawn.hproc");
+        _ = self.loadI32AtByteOffset(pi_alloca, 16, "wspawn.pid"); // dwProcessId (available but we use hProcess)
+
+        // Store hProcess as i64 handle for poll/wait
+        const hproc_i64 = self.ptrToHandleField(h_process, "wspawn.hproc_i64");
+        const out_read_h = self.builder.buildLoad(ptr_type, out_read_alloca, "wspawn.orh");
+        const err_read_h = self.builder.buildLoad(ptr_type, err_read_alloca, "wspawn.erh");
+        const out_i64 = self.ptrToHandleField(out_read_h, "wspawn.out_i64");
+        const err_i64 = self.ptrToHandleField(err_read_h, "wspawn.err_i64");
+
+        // Build Ok(ProcessHandle { pid: hproc_i64, stdout_fd: out_i64, stderr_fd: err_i64 })
+        const ok_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "wspawn.oktag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), ok_tag_ptr); // Ok
+        const ok_val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "wspawn.okval");
+        const pid_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, ok_val_ptr, 0, "wspawn.ok.pid");
+        _ = self.builder.buildStore(hproc_i64, pid_ptr);
+        const stdout_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, ok_val_ptr, 1, "wspawn.ok.out");
+        _ = self.builder.buildStore(out_i64, stdout_ptr);
+        const stderr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, ok_val_ptr, 2, "wspawn.ok.err");
+        _ = self.builder.buildStore(err_i64, stderr_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Free cmdline buffer
+        const free_fn = self.getOrDeclareFree();
+        self.builder.positionAtEnd(cont_bb);
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &[_]llvm.ValueRef{cmdline_buf}, "");
+        return self.builder.buildLoad(result_type, result_alloca, "wspawn.ret");
+    }
+
+    /// Windows: process_poll using WaitForSingleObject.
+    /// ProcessHandle.pid stores the process HANDLE (truncated to i32).
+    fn emitProcessPollWindows(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) return EmitError.InvalidAST;
+
+        const handle_val = try self.emitExpr(call.args[0]);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const status_type = self.getProcessStatusStructType();
+        const handle_type = self.getProcessHandleStructType();
+        const status_alloca = self.builder.buildAlloca(status_type, "wpoll.result");
+        const handle_alloca = self.builder.buildAlloca(handle_type, "wpoll.handle");
+        _ = self.builder.buildStore(handle_val, handle_alloca);
+
+        const wait_fn = self.getOrDeclareWaitForSingleObject();
+        const get_exit_fn = self.getOrDeclareGetExitCodeProcess();
+
+        // Extract process HANDLE from pid field (i64 on Windows)
+        const pid_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, handle_alloca, 0, "wpoll.pidptr");
+        const pid_i64 = self.builder.buildLoad(llvm.Types.int64(self.ctx), pid_ptr, "wpoll.pid");
+        const h_process = self.handleFieldToPtr(pid_i64, "wpoll.hproc");
+
+        // WaitForSingleObject(hProcess, 0) — non-blocking
+        const wait_r = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(wait_fn), wait_fn, &[_]llvm.ValueRef{ h_process, llvm.Const.int32(self.ctx, 0) }, "wpoll.wait");
+
+        // WAIT_OBJECT_0 (0) = exited, WAIT_TIMEOUT (258) = still running
+        const is_exited = self.builder.buildICmp(llvm.c.LLVMIntEQ, wait_r, llvm.Const.int32(self.ctx, 0), "wpoll.exited");
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const exited_bb = llvm.appendBasicBlock(self.ctx, func, "wpoll.exited");
+        const running_bb = llvm.appendBasicBlock(self.ctx, func, "wpoll.running");
+        const done_bb = llvm.appendBasicBlock(self.ctx, func, "wpoll.done");
+        _ = self.builder.buildCondBr(is_exited, exited_bb, running_bb);
+
+        // Exited: get exit code
+        self.builder.positionAtEnd(exited_bb);
+        const exit_code_alloca = self.builder.buildAlloca(i32_type, "wpoll.exitcode");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(get_exit_fn), get_exit_fn, &[_]llvm.ValueRef{ h_process, exit_code_alloca }, "wpoll.getexit");
+        const exit_code = self.builder.buildLoad(i32_type, exit_code_alloca, "wpoll.ec");
+        const tag_exited = llvm.c.LLVMBuildStructGEP2(self.builder.ref, status_type, status_alloca, 0, "wpoll.tag_e");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 1), tag_exited); // tag=1 Exited
+        const val_exited = llvm.c.LLVMBuildStructGEP2(self.builder.ref, status_type, status_alloca, 1, "wpoll.val_e");
+        _ = self.builder.buildStore(exit_code, val_exited);
+        _ = self.builder.buildBr(done_bb);
+
+        // Running
+        self.builder.positionAtEnd(running_bb);
+        const tag_running = llvm.c.LLVMBuildStructGEP2(self.builder.ref, status_type, status_alloca, 0, "wpoll.tag_r");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), tag_running); // tag=0 Running
+        const val_running = llvm.c.LLVMBuildStructGEP2(self.builder.ref, status_type, status_alloca, 1, "wpoll.val_r");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), val_running);
+        _ = self.builder.buildBr(done_bb);
+
+        self.builder.positionAtEnd(done_bb);
+        return self.builder.buildLoad(status_type, status_alloca, "wpoll.ret");
+    }
+
+    /// Windows: process_wait using WaitForSingleObject(INFINITE) + ReadFile.
+    fn emitProcessWaitWindows(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) return EmitError.InvalidAST;
+
+        const handle_val = try self.emitExpr(call.args[0]);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const handle_type = self.getProcessHandleStructType();
+        const proc_type = self.getProcessOutputStructType();
+        const result_type = self.getProcessOutputResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "wwait.result");
+        const handle_alloca = self.builder.buildAlloca(handle_type, "wwait.handle");
+        _ = self.builder.buildStore(handle_val, handle_alloca);
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const malloc_fn = self.getOrDeclareMalloc();
+        const realloc_fn = self.getOrDeclareRealloc();
+        const read_file_fn = self.getOrDeclareReadFile();
+        const wait_fn = self.getOrDeclareWaitForSingleObject();
+        const get_exit_fn = self.getOrDeclareGetExitCodeProcess();
+        const close_handle_fn = self.getOrDeclareCloseHandle();
+
+        // Extract stdout_fd as HANDLE (i64 on Windows)
+        const stdout_fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, handle_alloca, 1, "wwait.outfdp");
+        const stdout_fd = self.builder.buildLoad(i64_type, stdout_fd_ptr, "wwait.outfd");
+        const h_stdout = self.handleFieldToPtr(stdout_fd, "wwait.hstdout");
+
+        // Read all stdout into buffer using ReadFile loop
+        const buf_cap: u32 = 4096;
+        const stdout_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{llvm.Const.int64(self.ctx, buf_cap)}, "wwait.buf");
+        const len_alloca = self.builder.buildAlloca(i64_type, "wwait.len");
+        _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), len_alloca);
+        const cap_alloca = self.builder.buildAlloca(i64_type, "wwait.cap");
+        _ = self.builder.buildStore(llvm.Const.int64(self.ctx, buf_cap), cap_alloca);
+        const buf_alloca = self.builder.buildAlloca(ptr_type, "wwait.bufptr");
+        _ = self.builder.buildStore(stdout_buf, buf_alloca);
+
+        // Read loop
+        const read_bb = llvm.appendBasicBlock(self.ctx, func, "wwait.read");
+        const read_ok_bb = llvm.appendBasicBlock(self.ctx, func, "wwait.readok");
+        const read_done_bb = llvm.appendBasicBlock(self.ctx, func, "wwait.readdone");
+        _ = self.builder.buildBr(read_bb);
+
+        self.builder.positionAtEnd(read_bb);
+        const cur_len = self.builder.buildLoad(i64_type, len_alloca, "wwait.curlen");
+        const cur_cap = self.builder.buildLoad(i64_type, cap_alloca, "wwait.curcap");
+        const cur_buf = self.builder.buildLoad(ptr_type, buf_alloca, "wwait.curbuf");
+        // Grow buffer if needed
+        const space = self.builder.buildSub(cur_cap, cur_len, "wwait.space");
+        const need_grow = self.builder.buildICmp(llvm.c.LLVMIntSLT, space, llvm.Const.int64(self.ctx, 1024), "wwait.needgrow");
+        const grow_bb = llvm.appendBasicBlock(self.ctx, func, "wwait.grow");
+        const read_call_bb = llvm.appendBasicBlock(self.ctx, func, "wwait.readcall");
+        _ = self.builder.buildCondBr(need_grow, grow_bb, read_call_bb);
+
+        self.builder.positionAtEnd(grow_bb);
+        const new_cap = self.builder.buildMul(cur_cap, llvm.Const.int64(self.ctx, 2), "wwait.newcap");
+        const new_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &[_]llvm.ValueRef{ cur_buf, new_cap }, "wwait.newbuf");
+        _ = self.builder.buildStore(new_cap, cap_alloca);
+        _ = self.builder.buildStore(new_buf, buf_alloca);
+        _ = self.builder.buildBr(read_call_bb);
+
+        self.builder.positionAtEnd(read_call_bb);
+        const rb = self.builder.buildLoad(ptr_type, buf_alloca, "wwait.rb");
+        const rl = self.builder.buildLoad(i64_type, len_alloca, "wwait.rl");
+        const i8_type = llvm.Types.int8(self.ctx);
+        var read_indices = [_]llvm.ValueRef{rl};
+        const read_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, rb, &read_indices, 1, "wwait.rdst");
+        const bytes_read_alloca = self.builder.buildAlloca(i32_type, "wwait.nread");
+        const rc = self.builder.buildLoad(i64_type, cap_alloca, "wwait.rc");
+        const remaining = self.builder.buildSub(rc, rl, "wwait.rem");
+        const to_read = llvm.c.LLVMBuildTrunc(self.builder.ref, remaining, i32_type, "wwait.toread");
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        const rf_ok = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(read_file_fn), read_file_fn, &[_]llvm.ValueRef{ h_stdout, read_dst, to_read, bytes_read_alloca, null_ptr }, "wwait.rf");
+
+        // ReadFile returns 0 on failure or EOF
+        const rf_fail = self.builder.buildICmp(llvm.c.LLVMIntEQ, rf_ok, llvm.Const.int32(self.ctx, 0), "wwait.rffail");
+        _ = self.builder.buildCondBr(rf_fail, read_done_bb, read_ok_bb);
+
+        self.builder.positionAtEnd(read_ok_bb);
+        const n_read = self.builder.buildLoad(i32_type, bytes_read_alloca, "wwait.nr");
+        const n_read_64 = llvm.c.LLVMBuildZExt(self.builder.ref, n_read, i64_type, "wwait.nr64");
+        const is_zero = self.builder.buildICmp(llvm.c.LLVMIntEQ, n_read, llvm.Const.int32(self.ctx, 0), "wwait.iszero");
+        const updated_len = self.builder.buildAdd(rl, n_read_64, "wwait.updlen");
+        _ = self.builder.buildStore(updated_len, len_alloca);
+        _ = self.builder.buildCondBr(is_zero, read_done_bb, read_bb);
+
+        self.builder.positionAtEnd(read_done_bb);
+        // Close stdout and stderr handles
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{h_stdout}, "wwait.cl_out");
+        const stderr_fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, handle_alloca, 2, "wwait.errfdp");
+        const stderr_fd = self.builder.buildLoad(i64_type, stderr_fd_ptr, "wwait.errfd");
+        const h_stderr = self.handleFieldToPtr(stderr_fd, "wwait.hstderr");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{h_stderr}, "wwait.cl_err");
+
+        // Wait for process exit
+        const pid_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, handle_alloca, 0, "wwait.pidp");
+        const pid_i64 = self.builder.buildLoad(i64_type, pid_ptr, "wwait.pid");
+        const h_process = self.handleFieldToPtr(pid_i64, "wwait.hproc");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(wait_fn), wait_fn, &[_]llvm.ValueRef{ h_process, llvm.Const.int32(self.ctx, @bitCast(@as(i32, -1))) }, "wwait.wait"); // INFINITE = 0xFFFFFFFF
+
+        // Get exit code
+        const exit_alloca = self.builder.buildAlloca(i32_type, "wwait.exit");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(get_exit_fn), get_exit_fn, &[_]llvm.ValueRef{ h_process, exit_alloca }, "wwait.getexit");
+        const exit_code = self.builder.buildLoad(i32_type, exit_alloca, "wwait.ec");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{h_process}, "wwait.cl_proc");
+
+        // Null-terminate stdout string
+        const final_len = self.builder.buildLoad(i64_type, len_alloca, "wwait.flen");
+        const final_buf = self.builder.buildLoad(ptr_type, buf_alloca, "wwait.fbuf");
+        var null_indices = [_]llvm.ValueRef{final_len};
+        const null_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, final_buf, &null_indices, 1, "wwait.ndst");
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 0), null_dst);
+
+        // Build Ok(ProcessOutput { stdout: buf, stderr: "", exit_code })
+        const ok_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "wwait.oktag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), ok_tag_ptr);
+        const ok_val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "wwait.okval");
+        const stdout_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, proc_type, ok_val_ptr, 0, "wwait.ok.out");
+        _ = self.builder.buildStore(final_buf, stdout_f);
+        const stderr_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, proc_type, ok_val_ptr, 1, "wwait.ok.err");
+        _ = self.builder.buildStore(self.builder.buildGlobalStringPtr("", "wwait.empty"), stderr_f);
+        const exit_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, proc_type, ok_val_ptr, 2, "wwait.ok.ec");
+        _ = self.builder.buildStore(exit_code, exit_f);
+
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "wwait.cont");
+        _ = self.builder.buildBr(cont_bb);
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "wwait.ret");
+    }
+
+    /// Windows: process_read_stdout using ReadFile.
+    fn emitProcessReadStdoutWindows(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 2) return EmitError.InvalidAST;
+
+        const handle_val = try self.emitExpr(call.args[0]);
+        const max_bytes_val = try self.emitExpr(call.args[1]);
+
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const handle_type = self.getProcessHandleStructType();
+        const result_type = self.getStringResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "wread.result");
+        const handle_alloca = self.builder.buildAlloca(handle_type, "wread.handle");
+        _ = self.builder.buildStore(handle_val, handle_alloca);
+
+        const malloc_fn = self.getOrDeclareMalloc();
+        const read_file_fn = self.getOrDeclareReadFile();
+
+        // Extract stdout HANDLE (i64 on Windows)
+        const stdout_fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, handle_alloca, 1, "wread.fdp");
+        const stdout_fd = self.builder.buildLoad(llvm.Types.int64(self.ctx), stdout_fd_ptr, "wread.fd");
+        const h_stdout = self.handleFieldToPtr(stdout_fd, "wread.h");
+
+        // Allocate buffer
+        const buf_size_64 = llvm.c.LLVMBuildZExt(self.builder.ref, max_bytes_val, llvm.Types.int64(self.ctx), "wread.bsz64");
+        const buf_plus1 = self.builder.buildAdd(buf_size_64, llvm.Const.int64(self.ctx, 1), "wread.bp1");
+        const buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{buf_plus1}, "wread.buf");
+
+        // ReadFile
+        const bytes_read_alloca = self.builder.buildAlloca(i32_type, "wread.nread");
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        const rf_ok = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(read_file_fn), read_file_fn, &[_]llvm.ValueRef{ h_stdout, buf, max_bytes_val, bytes_read_alloca, null_ptr }, "wread.rf");
+
+        _ = rf_ok; // Check not strictly needed — return empty string on failure
+
+        // Null-terminate
+        const n_read = self.builder.buildLoad(i32_type, bytes_read_alloca, "wread.nr");
+        const n_read_64 = llvm.c.LLVMBuildZExt(self.builder.ref, n_read, llvm.Types.int64(self.ctx), "wread.nr64");
+        const i8_type = llvm.Types.int8(self.ctx);
+        var null_indices = [_]llvm.ValueRef{n_read_64};
+        const null_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, buf, &null_indices, 1, "wread.ndst");
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 0), null_dst);
+
+        // Return Ok(string)
+        const ok_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "wread.oktag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), ok_tag_ptr);
+        const ok_val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "wread.okval");
+        _ = self.builder.buildStore(buf, ok_val_ptr);
+
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "wread.cont");
+        _ = self.builder.buildBr(cont_bb);
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "wread.ret");
+    }
+
     /// Emit process_spawn(cmd: string, args: List#[string]) -> Result#[ProcessHandle, IoError]
     /// Uses fork+execvp for safe argument passing (no shell interpretation).
     fn emitProcessSpawn(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: process_spawn is not supported on WebAssembly targets");
+        if (comptime builtin.os.tag == .windows) return self.emitProcessSpawnWindows(call);
         if (call.args.len != 2) return EmitError.InvalidAST;
 
         const cmd_val = try self.emitExpr(call.args[0]);
@@ -27081,6 +28291,7 @@ pub const Emitter = struct {
     /// Uses waitpid(pid, &status, WNOHANG)
     fn emitProcessPoll(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: process_poll is not supported on WebAssembly targets");
+        if (comptime builtin.os.tag == .windows) return self.emitProcessPollWindows(call);
         if (call.args.len != 1) return EmitError.InvalidAST;
 
         const handle_val = try self.emitExpr(call.args[0]);
@@ -27165,6 +28376,7 @@ pub const Emitter = struct {
     /// Uses waitpid(pid, &status, 0) to block, then reads all remaining stdout/stderr.
     fn emitProcessWait(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: process_wait is not supported on WebAssembly targets");
+        if (comptime builtin.os.tag == .windows) return self.emitProcessWaitWindows(call);
         if (call.args.len != 1) return EmitError.InvalidAST;
 
         const handle_val = try self.emitExpr(call.args[0]);
@@ -27527,6 +28739,7 @@ pub const Emitter = struct {
     /// Emit process_read_stdout(handle: ProcessHandle, max_bytes: i32) -> Result#[string, IoError]
     fn emitProcessReadStdout(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: process_read_stdout is not supported on WebAssembly targets");
+        if (comptime builtin.os.tag == .windows) return self.emitProcessReadStdoutWindows(call);
         if (call.args.len != 2) return EmitError.InvalidAST;
 
         const handle_val = try self.emitExpr(call.args[0]);
@@ -28363,6 +29576,1716 @@ pub const Emitter = struct {
 
         self.builder.positionAtEnd(cont_bb);
         return self.builder.buildLoad(result_type, result_alloca, "tcpnb.val");
+    }
+
+    // ==================== Phase 9.2: UDP Socket and DNS Builtins ====================
+
+    const SOCK_DGRAM: u32 = 2; // Same on macOS and Linux
+    const IPPROTO_UDP: u32 = 17; // Same on all platforms
+
+    /// LLVM struct type for UdpMessage: { data: ptr, addr: ptr, port: i32 }
+    fn getUdpMessageStructType(self: *Emitter) llvm.TypeRef {
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // data (string)
+            llvm.Types.pointer(self.ctx), // addr (string)
+            llvm.Types.int32(self.ctx), // port
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Result#[UdpMessage, IoError]
+    fn getUdpMessageResultType(self: *Emitter) llvm.TypeRef {
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag
+            self.getUdpMessageStructType(), // UdpMessage
+            self.getIoErrorStructType(), // IoError
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    fn getOrDeclareSendto(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "sendto")) |func| return func;
+        // ssize_t sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addrlen)
+        var param_types = [_]llvm.TypeRef{
+            llvm.Types.int32(self.ctx), // sockfd
+            llvm.Types.pointer(self.ctx), // buf
+            llvm.Types.int64(self.ctx), // len
+            llvm.Types.int32(self.ctx), // flags
+            llvm.Types.pointer(self.ctx), // dest_addr
+            llvm.Types.int32(self.ctx), // addrlen
+        };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int64(self.ctx), &param_types, 6, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "sendto", fn_type);
+    }
+
+    fn getOrDeclareRecvfrom(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "recvfrom")) |func| return func;
+        // ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *src_addr, socklen_t *addrlen)
+        var param_types = [_]llvm.TypeRef{
+            llvm.Types.int32(self.ctx), // sockfd
+            llvm.Types.pointer(self.ctx), // buf
+            llvm.Types.int64(self.ctx), // len
+            llvm.Types.int32(self.ctx), // flags
+            llvm.Types.pointer(self.ctx), // src_addr
+            llvm.Types.pointer(self.ctx), // addrlen
+        };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int64(self.ctx), &param_types, 6, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "recvfrom", fn_type);
+    }
+
+    fn getOrDeclareInetNtop(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "inet_ntop")) |func| return func;
+        // const char *inet_ntop(int af, const void *src, char *dst, socklen_t size)
+        var param_types = [_]llvm.TypeRef{
+            llvm.Types.int32(self.ctx), // af
+            llvm.Types.pointer(self.ctx), // src
+            llvm.Types.pointer(self.ctx), // dst
+            llvm.Types.int32(self.ctx), // size
+        };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.pointer(self.ctx), &param_types, 4, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "inet_ntop", fn_type);
+    }
+
+    fn getOrDeclareNtohs(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "ntohs")) |func| return func;
+        var param_types = [_]llvm.TypeRef{llvm.Types.int16(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int16(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "ntohs", fn_type);
+    }
+
+    fn getOrDeclareGetaddrinfo(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "getaddrinfo")) |func| return func;
+        // int getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res)
+        var param_types = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // node
+            llvm.Types.pointer(self.ctx), // service
+            llvm.Types.pointer(self.ctx), // hints
+            llvm.Types.pointer(self.ctx), // res
+        };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 4, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "getaddrinfo", fn_type);
+    }
+
+    fn getOrDeclareFreeaddrinfo(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "freeaddrinfo")) |func| return func;
+        // void freeaddrinfo(struct addrinfo *res)
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.void_(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "freeaddrinfo", fn_type);
+    }
+
+    /// Get the addrinfo struct type. Field ordering differs by platform:
+    /// macOS: { flags, family, socktype, protocol, addrlen, canonname, addr, next }
+    /// Linux: { flags, family, socktype, protocol, addrlen, addr, canonname, next }
+    fn getAddrinfoType(self: *Emitter) llvm.TypeRef {
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.int32(self.ctx), // ai_flags
+            llvm.Types.int32(self.ctx), // ai_family
+            llvm.Types.int32(self.ctx), // ai_socktype
+            llvm.Types.int32(self.ctx), // ai_protocol
+            llvm.Types.int32(self.ctx), // ai_addrlen (socklen_t = u32)
+            llvm.Types.pointer(self.ctx), // macOS: ai_canonname, Linux: ai_addr
+            llvm.Types.pointer(self.ctx), // macOS: ai_addr, Linux: ai_canonname
+            llvm.Types.pointer(self.ctx), // ai_next
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Get the GEP index for ai_addr in the platform-specific addrinfo layout.
+    fn getAddrinfoAddrIndex(self: *Emitter) u32 {
+        return if (self.platform.os == .macos) 6 else 5;
+    }
+
+    /// Emit udp_bind(addr: string, port: i32) -> Result#[UdpSocket, IoError]
+    fn emitUdpBind(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: udp_bind is not supported on WebAssembly targets");
+        if (call.args.len != 2) return EmitError.InvalidAST;
+
+        const host_val = try self.emitExpr(call.args[0]);
+        const port_val = try self.emitExpr(call.args[1]);
+
+        const i32_type = llvm.Types.int32(self.ctx);
+        const fd_type = self.getTcpFdStructType(); // Same layout: { i32 }
+        const result_type = self.getTcpFdResultType(); // Result#[{i32}, IoError]
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const result_alloca = self.builder.buildAlloca(result_type, "udpb.result");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "udpb.cont");
+
+        // socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        const socket_fn = self.getOrDeclareSocket();
+        const sock_fd = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(socket_fn), socket_fn, &[_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, AF_INET),
+            llvm.Const.int32(self.ctx, SOCK_DGRAM),
+            llvm.Const.int32(self.ctx, IPPROTO_UDP),
+        }, "udpb.fd");
+
+        const sock_fail = self.builder.buildICmp(llvm.c.LLVMIntSLT, sock_fd, llvm.Const.int32(self.ctx, 0), "udpb.sfail");
+        const sock_ok_bb = llvm.appendBasicBlock(self.ctx, func, "udpb.sok");
+        const sock_err_bb = llvm.appendBasicBlock(self.ctx, func, "udpb.serr");
+        _ = self.builder.buildCondBr(sock_fail, sock_err_bb, sock_ok_bb);
+
+        // Socket error
+        self.builder.positionAtEnd(sock_err_bb);
+        const se_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "udpb.se_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), se_tag);
+        const se_err = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "udpb.se_err");
+        self.emitErrnoToIoError(se_err);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Socket ok: set SO_REUSEADDR
+        self.builder.positionAtEnd(sock_ok_bb);
+        const opt_alloca = self.builder.buildAlloca(i32_type, "udpb.opt");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 1), opt_alloca);
+
+        const SOL_SOCKET: i32 = if (self.platform.os == .macos) @as(i32, @bitCast(@as(u32, 0xFFFF))) else 1;
+        const SO_REUSEADDR: i32 = if (self.platform.os == .macos) 4 else 2;
+
+        const setsockopt_fn = self.getOrDeclareSetsockopt();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(setsockopt_fn), setsockopt_fn, &[_]llvm.ValueRef{
+            sock_fd,
+            llvm.Const.int32(self.ctx, SOL_SOCKET),
+            llvm.Const.int32(self.ctx, SO_REUSEADDR),
+            opt_alloca,
+            llvm.Const.int32(self.ctx, 4),
+        }, "");
+
+        // Build sockaddr_in
+        const addr_type = self.getSockaddrInType();
+        const addr_alloca = self.builder.buildAlloca(addr_type, "udpb.addr");
+        const memset_fn = self.getOrDeclareMemset();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ addr_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, 16) }, "");
+
+        self.emitSockaddrSetFamily(addr_type, addr_alloca);
+
+        // sin_port = htons(port)
+        const htons_fn = self.getOrDeclareHtons();
+        const port_i16 = llvm.c.LLVMBuildTrunc(self.builder.ref, port_val, llvm.Types.int16(self.ctx), "udpb.port16");
+        const port_net = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(htons_fn), htons_fn, &[_]llvm.ValueRef{port_i16}, "udpb.pnet");
+        const port_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addr_type, addr_alloca, self.getSockaddrPortIndex(), "udpb.port");
+        _ = self.builder.buildStore(port_net, port_ptr);
+
+        // sin_addr: inet_pton
+        const sin_addr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addr_type, addr_alloca, self.getSockaddrAddrIndex(), "udpb.sinaddr");
+        const inet_pton_fn = self.getOrDeclareInetPton();
+        const pton_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(inet_pton_fn), inet_pton_fn, &[_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, AF_INET),
+            host_val,
+            sin_addr_ptr,
+        }, "udpb.pton");
+
+        const pton_fail = self.builder.buildICmp(llvm.c.LLVMIntSLE, pton_result, llvm.Const.int32(self.ctx, 0), "udpb.pton_fail");
+        const pton_ok_bb = llvm.appendBasicBlock(self.ctx, func, "udpb.pok");
+        const pton_err_bb = llvm.appendBasicBlock(self.ctx, func, "udpb.perr");
+        _ = self.builder.buildCondBr(pton_fail, pton_err_bb, pton_ok_bb);
+
+        // inet_pton error: close socket
+        self.builder.positionAtEnd(pton_err_bb);
+        {
+            const close_fn_p = self.getOrDeclareClose();
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_fn_p), close_fn_p, &[_]llvm.ValueRef{sock_fd}, "");
+            const pe_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "udpb.pe_tag");
+            _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), pe_tag);
+            const pe_err = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "udpb.pe_err");
+            self.emitErrnoToIoError(pe_err);
+            _ = self.builder.buildBr(cont_bb);
+        }
+
+        // bind
+        self.builder.positionAtEnd(pton_ok_bb);
+        const bind_fn = self.getOrDeclareBind();
+        const bind_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(bind_fn), bind_fn, &[_]llvm.ValueRef{
+            sock_fd,
+            addr_alloca,
+            llvm.Const.int32(self.ctx, 16),
+        }, "udpb.bind");
+
+        const bind_fail = self.builder.buildICmp(llvm.c.LLVMIntSLT, bind_result, llvm.Const.int32(self.ctx, 0), "udpb.bfail");
+        const bind_ok_bb = llvm.appendBasicBlock(self.ctx, func, "udpb.bok");
+        const bind_err_bb = llvm.appendBasicBlock(self.ctx, func, "udpb.berr");
+        _ = self.builder.buildCondBr(bind_fail, bind_err_bb, bind_ok_bb);
+
+        // Bind error: close socket
+        self.builder.positionAtEnd(bind_err_bb);
+        {
+            const close_fn = self.getOrDeclareClose();
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_fn), close_fn, &[_]llvm.ValueRef{sock_fd}, "");
+            const be_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "udpb.be_tag");
+            _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), be_tag);
+            const be_err = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "udpb.be_err");
+            self.emitErrnoToIoError(be_err);
+            _ = self.builder.buildBr(cont_bb);
+        }
+
+        // Success: return Ok(UdpSocket { fd: sock_fd })
+        self.builder.positionAtEnd(bind_ok_bb);
+        const ok_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "udpb.ok_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), ok_tag);
+        const ok_val = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "udpb.ok_val");
+        const fd_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fd_type, ok_val, 0, "udpb.fd_f");
+        _ = self.builder.buildStore(sock_fd, fd_field);
+        _ = self.builder.buildBr(cont_bb);
+
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "udpb.val");
+    }
+
+    /// Emit udp_send_to(socket: UdpSocket, data: string, addr: string, port: i32) -> Result#[i32, IoError]
+    fn emitUdpSendTo(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: udp_send_to is not supported on WebAssembly targets");
+        if (call.args.len != 4) return EmitError.InvalidAST;
+
+        const socket_val = try self.emitExpr(call.args[0]);
+        const data_val = try self.emitExpr(call.args[1]);
+        const addr_val = try self.emitExpr(call.args[2]);
+        const port_val = try self.emitExpr(call.args[3]);
+
+        const i32_type = llvm.Types.int32(self.ctx);
+        const fd_type = self.getTcpFdStructType();
+        const result_type = self.getI32ResultType();
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const result_alloca = self.builder.buildAlloca(result_type, "udps.result");
+        const socket_alloca = self.builder.buildAlloca(fd_type, "udps.socket");
+        _ = self.builder.buildStore(socket_val, socket_alloca);
+
+        const fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fd_type, socket_alloca, 0, "udps.fd_p");
+        const sock_fd = self.builder.buildLoad(i32_type, fd_ptr, "udps.fd");
+
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "udps.cont");
+
+        // Build destination sockaddr_in
+        const addr_type = self.getSockaddrInType();
+        const dest_alloca = self.builder.buildAlloca(addr_type, "udps.dest");
+        const memset_fn = self.getOrDeclareMemset();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ dest_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, 16) }, "");
+
+        self.emitSockaddrSetFamily(addr_type, dest_alloca);
+
+        const htons_fn = self.getOrDeclareHtons();
+        const port_i16 = llvm.c.LLVMBuildTrunc(self.builder.ref, port_val, llvm.Types.int16(self.ctx), "udps.port16");
+        const port_net = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(htons_fn), htons_fn, &[_]llvm.ValueRef{port_i16}, "udps.pnet");
+        const port_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addr_type, dest_alloca, self.getSockaddrPortIndex(), "udps.port");
+        _ = self.builder.buildStore(port_net, port_ptr);
+
+        const sin_addr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addr_type, dest_alloca, self.getSockaddrAddrIndex(), "udps.sinaddr");
+        const inet_pton_fn = self.getOrDeclareInetPton();
+        const pton_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(inet_pton_fn), inet_pton_fn, &[_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, AF_INET),
+            addr_val,
+            sin_addr_ptr,
+        }, "udps.pton");
+
+        const pton_fail = self.builder.buildICmp(llvm.c.LLVMIntSLE, pton_result, llvm.Const.int32(self.ctx, 0), "udps.pton_fail");
+        const pton_ok_bb = llvm.appendBasicBlock(self.ctx, func, "udps.pok");
+        const pton_err_bb = llvm.appendBasicBlock(self.ctx, func, "udps.perr");
+        _ = self.builder.buildCondBr(pton_fail, pton_err_bb, pton_ok_bb);
+
+        // inet_pton error
+        self.builder.positionAtEnd(pton_err_bb);
+        {
+            const pe_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "udps.pe_tag");
+            _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), pe_tag);
+            const pe_err = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "udps.pe_err");
+            self.emitErrnoToIoError(pe_err);
+            _ = self.builder.buildBr(cont_bb);
+        }
+
+        // sendto
+        self.builder.positionAtEnd(pton_ok_bb);
+        const strlen_fn = self.getOrDeclareStrlen();
+        const data_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &[_]llvm.ValueRef{data_val}, "udps.len");
+
+        const sendto_fn = self.getOrDeclareSendto();
+        const bytes_sent = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(sendto_fn), sendto_fn, &[_]llvm.ValueRef{
+            sock_fd,
+            data_val,
+            data_len,
+            llvm.Const.int32(self.ctx, 0), // flags
+            dest_alloca,
+            llvm.Const.int32(self.ctx, 16), // sizeof(sockaddr_in)
+        }, "udps.ns");
+
+        const send_fail = self.builder.buildICmp(llvm.c.LLVMIntSLT, bytes_sent, llvm.Const.int64(self.ctx, 0), "udps.fail");
+        const ok_bb = llvm.appendBasicBlock(self.ctx, func, "udps.ok");
+        const err_bb = llvm.appendBasicBlock(self.ctx, func, "udps.err");
+        _ = self.builder.buildCondBr(send_fail, err_bb, ok_bb);
+
+        // Ok
+        self.builder.positionAtEnd(ok_bb);
+        const sent_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, bytes_sent, i32_type, "udps.sent32");
+        const ok_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "udps.ok_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), ok_tag);
+        const ok_val = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "udps.ok_val");
+        _ = self.builder.buildStore(sent_i32, ok_val);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Err
+        self.builder.positionAtEnd(err_bb);
+        const err_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "udps.err_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), err_tag);
+        const err_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "udps.err_ptr");
+        self.emitErrnoToIoError(err_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "udps.val");
+    }
+
+    /// Emit udp_recv_from(socket: UdpSocket, max_bytes: i32) -> Result#[UdpMessage, IoError]
+    fn emitUdpRecvFrom(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: udp_recv_from is not supported on WebAssembly targets");
+        if (call.args.len != 2) return EmitError.InvalidAST;
+
+        const socket_val = try self.emitExpr(call.args[0]);
+        const max_bytes_val = try self.emitExpr(call.args[1]);
+
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const fd_type = self.getTcpFdStructType();
+        const msg_type = self.getUdpMessageStructType();
+        const result_type = self.getUdpMessageResultType();
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const result_alloca = self.builder.buildAlloca(result_type, "udpr.result");
+        const socket_alloca = self.builder.buildAlloca(fd_type, "udpr.socket");
+        _ = self.builder.buildStore(socket_val, socket_alloca);
+
+        const fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fd_type, socket_alloca, 0, "udpr.fd_p");
+        const sock_fd = self.builder.buildLoad(i32_type, fd_ptr, "udpr.fd");
+
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "udpr.cont");
+
+        // Validate max_bytes > 0
+        const max_le_zero = self.builder.buildICmp(llvm.c.LLVMIntSLE, max_bytes_val, llvm.Const.int32(self.ctx, 0), "udpr.bad_max");
+        const max_ok_bb = llvm.appendBasicBlock(self.ctx, func, "udpr.max_ok");
+        const max_bad_bb = llvm.appendBasicBlock(self.ctx, func, "udpr.max_bad");
+        _ = self.builder.buildCondBr(max_le_zero, max_bad_bb, max_ok_bb);
+
+        self.builder.positionAtEnd(max_bad_bb);
+        const mb_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "udpr.mb_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), mb_tag);
+        const mb_err = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "udpr.mb_err");
+        self.emitErrnoToIoError(mb_err);
+        _ = self.builder.buildBr(cont_bb);
+
+        self.builder.positionAtEnd(max_ok_bb);
+
+        // Allocate receive buffer
+        const max_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, max_bytes_val, i64_type, "udpr.max64");
+        const buf_size = llvm.c.LLVMBuildAdd(self.builder.ref, max_i64, llvm.Const.int64(self.ctx, 1), "udpr.bufsz");
+        const malloc_fn = self.getOrDeclareMalloc();
+        const buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{buf_size}, "udpr.buf");
+
+        const ok_bb = llvm.appendBasicBlock(self.ctx, func, "udpr.ok");
+        const err_bb = llvm.appendBasicBlock(self.ctx, func, "udpr.err");
+
+        // Check malloc
+        const buf_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, buf, llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx)), "udpr.oom");
+        const malloc_ok_bb = llvm.appendBasicBlock(self.ctx, func, "udpr.malloc_ok");
+        _ = self.builder.buildCondBr(buf_null, err_bb, malloc_ok_bb);
+
+        self.builder.positionAtEnd(malloc_ok_bb);
+
+        // Prepare sender address storage
+        const addr_type = self.getSockaddrInType();
+        const sender_alloca = self.builder.buildAlloca(addr_type, "udpr.sender");
+        const memset_fn = self.getOrDeclareMemset();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ sender_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, 16) }, "");
+
+        const addrlen_alloca = self.builder.buildAlloca(i32_type, "udpr.addrlen");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 16), addrlen_alloca);
+
+        // recvfrom(sock_fd, buf, max_bytes, 0, &sender, &addrlen)
+        const recvfrom_fn = self.getOrDeclareRecvfrom();
+        const bytes_read = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(recvfrom_fn), recvfrom_fn, &[_]llvm.ValueRef{
+            sock_fd,
+            buf,
+            max_i64,
+            llvm.Const.int32(self.ctx, 0),
+            sender_alloca,
+            addrlen_alloca,
+        }, "udpr.nr");
+
+        const read_fail = self.builder.buildICmp(llvm.c.LLVMIntSLT, bytes_read, llvm.Const.int64(self.ctx, 0), "udpr.fail");
+        _ = self.builder.buildCondBr(read_fail, err_bb, ok_bb);
+
+        // Ok: build UdpMessage { data, addr, port }
+        self.builder.positionAtEnd(ok_bb);
+
+        // Null-terminate received data
+        var term_gep = [_]llvm.ValueRef{bytes_read};
+        const term_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, llvm.Types.int8(self.ctx), buf, &term_gep, 1, "udpr.term");
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 0), term_ptr);
+
+        // Convert sender address to string using inet_ntop
+        // Allocate 16 bytes for IPv4 address string (max "255.255.255.255\0")
+        const addr_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{llvm.Const.int64(self.ctx, 16)}, "udpr.abuf");
+        const sin_addr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addr_type, sender_alloca, self.getSockaddrAddrIndex(), "udpr.sinaddr");
+        const inet_ntop_fn = self.getOrDeclareInetNtop();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(inet_ntop_fn), inet_ntop_fn, &[_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, AF_INET),
+            sin_addr_ptr,
+            addr_buf,
+            llvm.Const.int32(self.ctx, 16),
+        }, "udpr.ntop");
+
+        // Extract sender port: ntohs(sender.sin_port)
+        const ntohs_fn = self.getOrDeclareNtohs();
+        const sender_port_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addr_type, sender_alloca, self.getSockaddrPortIndex(), "udpr.sport");
+        const sender_port_net = self.builder.buildLoad(llvm.Types.int16(self.ctx), sender_port_ptr, "udpr.spnet");
+        const sender_port_host = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(ntohs_fn), ntohs_fn, &[_]llvm.ValueRef{sender_port_net}, "udpr.sph");
+        const sender_port_i32 = llvm.c.LLVMBuildZExt(self.builder.ref, sender_port_host, i32_type, "udpr.sp32");
+
+        // Store Ok result
+        const ok_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "udpr.ok_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), ok_tag);
+        const ok_val = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "udpr.ok_val");
+
+        // UdpMessage fields
+        const msg_data = llvm.c.LLVMBuildStructGEP2(self.builder.ref, msg_type, ok_val, 0, "udpr.msg_data");
+        _ = self.builder.buildStore(buf, msg_data);
+        const msg_addr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, msg_type, ok_val, 1, "udpr.msg_addr");
+        _ = self.builder.buildStore(addr_buf, msg_addr);
+        const msg_port = llvm.c.LLVMBuildStructGEP2(self.builder.ref, msg_type, ok_val, 2, "udpr.msg_port");
+        _ = self.builder.buildStore(sender_port_i32, msg_port);
+
+        _ = self.builder.buildBr(cont_bb);
+
+        // Err: free buffer, return error
+        self.builder.positionAtEnd(err_bb);
+        const free_fn = self.getOrDeclareFree();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &[_]llvm.ValueRef{buf}, "");
+        const err_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "udpr.err_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), err_tag);
+        const err_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "udpr.err_ptr");
+        self.emitErrnoToIoError(err_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "udpr.val");
+    }
+
+    /// Emit udp_close(socket: UdpSocket) -> void
+    fn emitUdpClose(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: udp_close is not supported on WebAssembly targets");
+        if (call.args.len != 1) return EmitError.InvalidAST;
+
+        const socket_val = try self.emitExpr(call.args[0]);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const fd_type = self.getTcpFdStructType();
+
+        const socket_alloca = self.builder.buildAlloca(fd_type, "udpcl.socket");
+        _ = self.builder.buildStore(socket_val, socket_alloca);
+
+        const fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fd_type, socket_alloca, 0, "udpcl.fd_p");
+        const sock_fd = self.builder.buildLoad(i32_type, fd_ptr, "udpcl.fd");
+
+        const close_fn = self.getOrDeclareClose();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_fn), close_fn, &[_]llvm.ValueRef{sock_fd}, "");
+
+        return llvm.c.LLVMGetUndef(llvm.Types.void_(self.ctx));
+    }
+
+    /// Emit dns_lookup(hostname: string) -> Result#[string, IoError]
+    /// Returns the first resolved IPv4 address as a string.
+    fn emitDnsLookup(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: dns_lookup is not supported on WebAssembly targets");
+        if (call.args.len != 1) return EmitError.InvalidAST;
+
+        const hostname_val = try self.emitExpr(call.args[0]);
+
+        const result_type = self.getStringResultType();
+        const addrinfo_type = self.getAddrinfoType();
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const result_alloca = self.builder.buildAlloca(result_type, "dns.result");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "dns.cont");
+
+        // Prepare hints: ai_family = AF_INET, ai_socktype = SOCK_STREAM
+        const hints_alloca = self.builder.buildAlloca(addrinfo_type, "dns.hints");
+        const memset_fn = self.getOrDeclareMemset();
+        // Size of addrinfo struct: 4*i32 + i32 + 3*ptr = 20 + 24 = 44 bytes on 64-bit (with padding)
+        // Use a safe overestimate: 48 bytes
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{
+            hints_alloca,
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int64(self.ctx, 48),
+        }, "");
+
+        // hints.ai_family = AF_INET
+        const family_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addrinfo_type, hints_alloca, 1, "dns.fam");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, AF_INET), family_ptr);
+        // hints.ai_socktype = SOCK_STREAM
+        const socktype_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addrinfo_type, hints_alloca, 2, "dns.stype");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, SOCK_STREAM), socktype_ptr);
+
+        // struct addrinfo *res
+        const res_alloca = self.builder.buildAlloca(llvm.Types.pointer(self.ctx), "dns.res");
+        _ = self.builder.buildStore(llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx)), res_alloca);
+
+        // getaddrinfo(hostname, NULL, &hints, &res)
+        const getaddrinfo_fn = self.getOrDeclareGetaddrinfo();
+        const gai_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(getaddrinfo_fn), getaddrinfo_fn, &[_]llvm.ValueRef{
+            hostname_val,
+            llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx)),
+            hints_alloca,
+            res_alloca,
+        }, "dns.gai");
+
+        const gai_fail = self.builder.buildICmp(llvm.c.LLVMIntNE, gai_result, llvm.Const.int32(self.ctx, 0), "dns.fail");
+        const gai_ok_bb = llvm.appendBasicBlock(self.ctx, func, "dns.ok");
+        const gai_err_bb = llvm.appendBasicBlock(self.ctx, func, "dns.err");
+        _ = self.builder.buildCondBr(gai_fail, gai_err_bb, gai_ok_bb);
+
+        // Error: return Err(IoError)
+        self.builder.positionAtEnd(gai_err_bb);
+        const ge_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "dns.ge_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), ge_tag);
+        const ge_err = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "dns.ge_err");
+        self.emitErrnoToIoError(ge_err);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Ok: extract first address
+        self.builder.positionAtEnd(gai_ok_bb);
+        const res_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), res_alloca, "dns.rptr");
+
+        // res->ai_addr (platform-specific field index)
+        const ai_addr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addrinfo_type, res_ptr, self.getAddrinfoAddrIndex(), "dns.aiaddr");
+        const ai_addr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), ai_addr_ptr, "dns.addr");
+
+        // Cast to sockaddr_in*, get sin_addr
+        const addr_type = self.getSockaddrInType();
+        const sin_addr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addr_type, ai_addr, self.getSockaddrAddrIndex(), "dns.sinaddr");
+
+        // inet_ntop to convert to string
+        const malloc_fn = self.getOrDeclareMalloc();
+        const addr_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{llvm.Const.int64(self.ctx, 16)}, "dns.abuf");
+        const inet_ntop_fn = self.getOrDeclareInetNtop();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(inet_ntop_fn), inet_ntop_fn, &[_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, AF_INET),
+            sin_addr_ptr,
+            addr_buf,
+            llvm.Const.int32(self.ctx, 16),
+        }, "dns.ntop");
+
+        // Free the addrinfo list
+        const freeaddrinfo_fn = self.getOrDeclareFreeaddrinfo();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(freeaddrinfo_fn), freeaddrinfo_fn, &[_]llvm.ValueRef{res_ptr}, "");
+
+        // Store Ok result
+        const ok_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "dns.ok_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), ok_tag);
+        const ok_val = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "dns.ok_val");
+        _ = self.builder.buildStore(addr_buf, ok_val);
+        _ = self.builder.buildBr(cont_bb);
+
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "dns.val");
+    }
+
+    // ==================== Phase 9.4: Channel builtins ====================
+
+    /// Channel endpoint LLVM type: { ptr } (pointer to shared ChannelInner)
+    fn getChannelEndpointType(self: *Emitter) llvm.TypeRef {
+        var fields = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Get the LLVM type for the heap-allocated ChannelInner struct.
+    /// Layout: { buffer: ptr, capacity: i32, count: i32, head: i32, tail: i32,
+    ///           elem_size: i32, closed: i8, ref_count: i32,
+    ///           mutex: [N x i8], cond_not_empty: [M x i8], cond_not_full: [M x i8] }
+    fn getChannelInnerType(self: *Emitter) llvm.TypeRef {
+        const mutex_size: u32 = if (self.platform.os == .macos) 64 else 40;
+        const cond_size: u32 = 48; // same on macOS and Linux
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // 0: buffer
+            llvm.Types.int32(self.ctx), // 1: capacity
+            llvm.Types.int32(self.ctx), // 2: count
+            llvm.Types.int32(self.ctx), // 3: head
+            llvm.Types.int32(self.ctx), // 4: tail
+            llvm.Types.int32(self.ctx), // 5: elem_size
+            llvm.Types.int8(self.ctx), // 6: closed
+            llvm.Types.int32(self.ctx), // 7: ref_count
+            llvm.Types.array(llvm.Types.int8(self.ctx), mutex_size), // 8: mutex
+            llvm.Types.array(llvm.Types.int8(self.ctx), cond_size), // 9: cond_not_empty
+            llvm.Types.array(llvm.Types.int8(self.ctx), cond_size), // 10: cond_not_full
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    fn getOrDeclarePthreadMutexInit(self: *Emitter) llvm.ValueRef {
+        const fn_name = "pthread_mutex_init";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| return func;
+        var param_types = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx) };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 2, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclarePthreadMutexLock(self: *Emitter) llvm.ValueRef {
+        const fn_name = "pthread_mutex_lock";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| return func;
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclarePthreadMutexUnlock(self: *Emitter) llvm.ValueRef {
+        const fn_name = "pthread_mutex_unlock";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| return func;
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclarePthreadMutexDestroy(self: *Emitter) llvm.ValueRef {
+        const fn_name = "pthread_mutex_destroy";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| return func;
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclarePthreadCondInit(self: *Emitter) llvm.ValueRef {
+        const fn_name = "pthread_cond_init";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| return func;
+        var param_types = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx) };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 2, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclarePthreadCondWait(self: *Emitter) llvm.ValueRef {
+        const fn_name = "pthread_cond_wait";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| return func;
+        var param_types = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx) };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 2, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclarePthreadCondSignal(self: *Emitter) llvm.ValueRef {
+        const fn_name = "pthread_cond_signal";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| return func;
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclarePthreadCondBroadcast(self: *Emitter) llvm.ValueRef {
+        const fn_name = "pthread_cond_broadcast";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| return func;
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclarePthreadCondDestroy(self: *Emitter) llvm.ValueRef {
+        const fn_name = "pthread_cond_destroy";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| return func;
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    /// Emit channel_create(capacity: i32) -> (Sender#[T], Receiver#[T])
+    /// The element type T is determined from the call's type_args.
+    fn emitChannelCreate(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: channel_create is not supported on WebAssembly targets");
+        if (call.args.len != 1) return EmitError.InvalidAST;
+
+        const cap_val = try self.emitExpr(call.args[0]);
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Determine element size from type args
+        var elem_size: u32 = 8; // default to pointer size
+        if (call.type_args) |ta| {
+            if (ta.len == 1) {
+                if (self.type_checker) |tc| {
+                    const tc_mut = @constCast(tc);
+                    const elem_type = tc_mut.resolveTypeExpr(ta[0]) catch {
+                        return EmitError.InvalidAST;
+                    };
+                    elem_size = @intCast(self.getSizeOfKlarType(elem_type));
+                }
+            }
+        }
+
+        const inner_type = self.getChannelInnerType();
+        const endpoint_type = self.getChannelEndpointType();
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+
+        // Allocate ChannelInner on heap
+        const malloc_fn = self.getOrDeclareMalloc();
+        const inner_size: i64 = @intCast(self.getDataLayoutSize(inner_type));
+        const inner_ptr = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(malloc_fn),
+            malloc_fn,
+            &[_]llvm.ValueRef{llvm.Const.int64(self.ctx, inner_size)},
+            "ch.inner",
+        );
+
+        // Zero-initialize the inner struct
+        const memset_fn = self.getOrDeclareMemset();
+        _ = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(memset_fn),
+            memset_fn,
+            &[_]llvm.ValueRef{ inner_ptr, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, inner_size) },
+            "",
+        );
+
+        // Allocate element buffer: malloc(capacity * elem_size)
+        const cap_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, cap_val, llvm.Types.int64(self.ctx), "ch.cap64");
+        const es_i64 = llvm.Const.int64(self.ctx, @intCast(elem_size));
+        const buf_size = llvm.c.LLVMBuildMul(self.builder.ref, cap_i64, es_i64, "ch.bufsz");
+        const buf_ptr = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(malloc_fn),
+            malloc_fn,
+            &[_]llvm.ValueRef{buf_size},
+            "ch.buf",
+        );
+
+        // Store fields
+        const buf_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 0, "ch.f_buf");
+        _ = self.builder.buildStore(buf_ptr, buf_field);
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 1, "ch.f_cap");
+        _ = self.builder.buildStore(cap_val, cap_field);
+        // count=0, head=0, tail=0 already zeroed by memset
+        const esz_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 5, "ch.f_esz");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, @intCast(elem_size)), esz_field);
+        // closed=0 already zeroed
+        const ref_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 7, "ch.f_ref");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 2), ref_field); // 2 refs: sender + receiver
+
+        // Initialize mutex
+        const mutex_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 8, "ch.mutex");
+        const mutex_init_fn = self.getOrDeclarePthreadMutexInit();
+        _ = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(mutex_init_fn),
+            mutex_init_fn,
+            &[_]llvm.ValueRef{ mutex_ptr, null_ptr },
+            "",
+        );
+
+        // Initialize cond vars
+        const cond_init_fn = self.getOrDeclarePthreadCondInit();
+        const cond_ne_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 9, "ch.cond_ne");
+        _ = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(cond_init_fn),
+            cond_init_fn,
+            &[_]llvm.ValueRef{ cond_ne_ptr, null_ptr },
+            "",
+        );
+        const cond_nf_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 10, "ch.cond_nf");
+        _ = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(cond_init_fn),
+            cond_init_fn,
+            &[_]llvm.ValueRef{ cond_nf_ptr, null_ptr },
+            "",
+        );
+
+        // Build result tuple: (Sender{ptr}, Receiver{ptr})
+        var tuple_fields = [_]llvm.TypeRef{ endpoint_type, endpoint_type };
+        const tuple_type = llvm.Types.struct_(self.ctx, &tuple_fields, false);
+        const tuple_alloca = self.builder.buildAlloca(tuple_type, "ch.tuple");
+
+        // Sender = { inner_ptr }
+        const sender_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, tuple_type, tuple_alloca, 0, "ch.sender");
+        const sender_inner = llvm.c.LLVMBuildStructGEP2(self.builder.ref, endpoint_type, sender_ptr, 0, "ch.s_ptr");
+        _ = self.builder.buildStore(inner_ptr, sender_inner);
+
+        // Receiver = { inner_ptr }
+        const receiver_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, tuple_type, tuple_alloca, 1, "ch.receiver");
+        const receiver_inner = llvm.c.LLVMBuildStructGEP2(self.builder.ref, endpoint_type, receiver_ptr, 0, "ch.r_ptr");
+        _ = self.builder.buildStore(inner_ptr, receiver_inner);
+
+        _ = func;
+        _ = i32_type;
+        _ = i8_type;
+        return self.builder.buildLoad(tuple_type, tuple_alloca, "ch.val");
+    }
+
+    /// Get the size of an LLVM type according to the data layout.
+    fn getDataLayoutSize(self: *Emitter, ty: llvm.TypeRef) u64 {
+        // Use LLVM's ABI size to get accurate sizes
+        const data_layout = llvm.c.LLVMGetModuleDataLayout(self.module.ref);
+        if (data_layout) |dl| {
+            return llvm.c.LLVMABISizeOfType(dl, ty);
+        }
+        // Fallback: estimate based on struct field count
+        return 256;
+    }
+
+    /// Emit channel_send(sender, value) -> void
+    /// Blocking send: locks mutex, waits if buffer full, copies value, signals.
+    fn emitChannelSend(self: *Emitter, sender_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        if (method.args.len != 1) return EmitError.InvalidAST;
+
+        const value = try self.emitExpr(method.args[0]);
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const inner_type = self.getChannelInnerType();
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Get channel inner pointer from sender
+        // sender_ptr is an alloca holding just a ptr (due to tuple destructuring flattening)
+        const inner_ptr = self.builder.buildLoad(ptr_type, sender_ptr, "chs.inner");
+
+        // Get element size for memcpy
+        const esz_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 5, "chs.esz_p");
+        const elem_size = self.builder.buildLoad(i32_type, esz_ptr, "chs.esz");
+
+        // Store value to temp alloca for memcpy
+        const val_type = llvm.c.LLVMTypeOf(value);
+        const val_alloca = self.builder.buildAlloca(val_type, "chs.val");
+        _ = self.builder.buildStore(value, val_alloca);
+
+        // Get mutex and cond var pointers
+        const mutex_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 8, "chs.mutex");
+        const cond_ne_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 9, "chs.cnd_ne");
+        const cond_nf_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 10, "chs.cnd_nf");
+
+        // Lock mutex
+        const lock_fn = self.getOrDeclarePthreadMutexLock();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(lock_fn), lock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+
+        // Wait loop: while count == capacity && !closed
+        const loop_check_bb = llvm.appendBasicBlock(self.ctx, func, "chs.lcheck");
+        const loop_wait_bb = llvm.appendBasicBlock(self.ctx, func, "chs.lwait");
+        const loop_done_bb = llvm.appendBasicBlock(self.ctx, func, "chs.ldone");
+        _ = self.builder.buildBr(loop_check_bb);
+
+        self.builder.positionAtEnd(loop_check_bb);
+        const count_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 2, "chs.cnt_p");
+        const count = self.builder.buildLoad(i32_type, count_ptr, "chs.cnt");
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 1, "chs.cap_p");
+        const cap = self.builder.buildLoad(i32_type, cap_ptr, "chs.cap");
+        const full = self.builder.buildICmp(llvm.c.LLVMIntEQ, count, cap, "chs.full");
+        const closed_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 6, "chs.cls_p");
+        const closed = self.builder.buildLoad(i8_type, closed_ptr, "chs.cls");
+        const not_closed = self.builder.buildICmp(llvm.c.LLVMIntEQ, closed, llvm.Const.int8(self.ctx, 0), "chs.nclsd");
+        const should_wait = llvm.c.LLVMBuildAnd(self.builder.ref, full, not_closed, "chs.wait");
+        _ = self.builder.buildCondBr(should_wait, loop_wait_bb, loop_done_bb);
+
+        // Wait on not_full condition
+        self.builder.positionAtEnd(loop_wait_bb);
+        const wait_fn = self.getOrDeclarePthreadCondWait();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(wait_fn), wait_fn, &[_]llvm.ValueRef{ cond_nf_ptr, mutex_ptr }, "");
+        _ = self.builder.buildBr(loop_check_bb);
+
+        // Copy value to buffer
+        self.builder.positionAtEnd(loop_done_bb);
+        const buf_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 0, "chs.buf_p");
+        const buf = self.builder.buildLoad(ptr_type, buf_ptr, "chs.buf");
+        const tail_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 4, "chs.tail_p");
+        const tail = self.builder.buildLoad(i32_type, tail_ptr, "chs.tail");
+        const offset = llvm.c.LLVMBuildMul(self.builder.ref, tail, elem_size, "chs.off");
+        var chs_gep_idx = [_]llvm.ValueRef{offset};
+        const dest = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, buf, &chs_gep_idx, 1, "chs.dest");
+
+        // memcpy(dest, &value, elem_size)
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        const esz_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, elem_size, llvm.Types.int64(self.ctx), "chs.esz64");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &[_]llvm.ValueRef{ dest, val_alloca, esz_i64 }, "");
+
+        // tail = (tail + 1) % capacity
+        const new_tail = llvm.c.LLVMBuildAdd(self.builder.ref, tail, llvm.Const.int32(self.ctx, 1), "chs.ntail");
+        const cap2 = self.builder.buildLoad(i32_type, cap_ptr, "chs.cap2");
+        const wrapped_tail = llvm.c.LLVMBuildSRem(self.builder.ref, new_tail, cap2, "chs.wtail");
+        _ = self.builder.buildStore(wrapped_tail, tail_ptr);
+
+        // count++
+        const count2 = self.builder.buildLoad(i32_type, count_ptr, "chs.cnt2");
+        const new_count = llvm.c.LLVMBuildAdd(self.builder.ref, count2, llvm.Const.int32(self.ctx, 1), "chs.ncnt");
+        _ = self.builder.buildStore(new_count, count_ptr);
+
+        // Signal not_empty
+        const signal_fn = self.getOrDeclarePthreadCondSignal();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(signal_fn), signal_fn, &[_]llvm.ValueRef{cond_ne_ptr}, "");
+
+        // Unlock mutex
+        const unlock_fn = self.getOrDeclarePthreadMutexUnlock();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(unlock_fn), unlock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+
+        return llvm.c.LLVMGetUndef(llvm.Types.void_(self.ctx));
+    }
+
+    /// Emit channel_recv(receiver) -> ?T
+    /// Blocking recv: locks mutex, waits if buffer empty and not closed, copies value.
+    /// Returns Some(value) if got a value, None if channel is closed and empty.
+    fn emitChannelRecv(self: *Emitter, receiver_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const inner_type = self.getChannelInnerType();
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i1_type = llvm.Types.int1(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Get channel inner pointer from receiver
+        // receiver_ptr is an alloca holding just a ptr (due to tuple destructuring flattening)
+        const inner_ptr = self.builder.buildLoad(ptr_type, receiver_ptr, "chr.inner");
+
+        // Determine element LLVM type from the local value flags or type checker
+        var elem_llvm_type: llvm.TypeRef = i32_type; // default
+        if (method.object == .identifier) {
+            if (self.named_values.get(method.object.identifier.name)) |local| {
+                if (local.channel_element_type) |elem_type| {
+                    elem_llvm_type = self.typeToLLVM(elem_type);
+                }
+            }
+        }
+        if (elem_llvm_type == i32_type) {
+            // Fallback to type checker
+            if (self.type_checker) |tc| {
+                const tc_mut = @constCast(tc);
+                const obj_type = tc_mut.checkExpr(method.object);
+                if (obj_type == .receiver) {
+                    elem_llvm_type = self.typeToLLVM(obj_type.receiver.element);
+                }
+            }
+        }
+
+        // Build Optional type: { i1, T }
+        var opt_fields = [_]llvm.TypeRef{ i1_type, elem_llvm_type };
+        const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
+        const result_alloca = self.builder.buildAlloca(opt_type, "chr.result");
+
+        // Get mutex and cond var pointers
+        const mutex_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 8, "chr.mutex");
+        const cond_ne_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 9, "chr.cnd_ne");
+        const cond_nf_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 10, "chr.cnd_nf");
+
+        // Lock mutex
+        const lock_fn = self.getOrDeclarePthreadMutexLock();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(lock_fn), lock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+
+        // Wait loop: while count == 0 && !closed
+        const loop_check_bb = llvm.appendBasicBlock(self.ctx, func, "chr.lcheck");
+        const loop_wait_bb = llvm.appendBasicBlock(self.ctx, func, "chr.lwait");
+        const loop_done_bb = llvm.appendBasicBlock(self.ctx, func, "chr.ldone");
+        const got_value_bb = llvm.appendBasicBlock(self.ctx, func, "chr.gotval");
+        const none_bb = llvm.appendBasicBlock(self.ctx, func, "chr.none");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "chr.cont");
+        _ = self.builder.buildBr(loop_check_bb);
+
+        self.builder.positionAtEnd(loop_check_bb);
+        const count_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 2, "chr.cnt_p");
+        const count = self.builder.buildLoad(i32_type, count_ptr, "chr.cnt");
+        const empty = self.builder.buildICmp(llvm.c.LLVMIntEQ, count, llvm.Const.int32(self.ctx, 0), "chr.empty");
+        const closed_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 6, "chr.cls_p");
+        const closed = self.builder.buildLoad(i8_type, closed_ptr, "chr.cls");
+        const not_closed = self.builder.buildICmp(llvm.c.LLVMIntEQ, closed, llvm.Const.int8(self.ctx, 0), "chr.nclsd");
+        const should_wait = llvm.c.LLVMBuildAnd(self.builder.ref, empty, not_closed, "chr.wait");
+        _ = self.builder.buildCondBr(should_wait, loop_wait_bb, loop_done_bb);
+
+        // Wait on not_empty condition
+        self.builder.positionAtEnd(loop_wait_bb);
+        const wait_fn = self.getOrDeclarePthreadCondWait();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(wait_fn), wait_fn, &[_]llvm.ValueRef{ cond_ne_ptr, mutex_ptr }, "");
+        _ = self.builder.buildBr(loop_check_bb);
+
+        // Done waiting: check if we have a value or channel is closed+empty
+        self.builder.positionAtEnd(loop_done_bb);
+        const count2 = self.builder.buildLoad(i32_type, count_ptr, "chr.cnt2");
+        const has_value = self.builder.buildICmp(llvm.c.LLVMIntSGT, count2, llvm.Const.int32(self.ctx, 0), "chr.hasval");
+        _ = self.builder.buildCondBr(has_value, got_value_bb, none_bb);
+
+        // Got value: copy from buffer
+        self.builder.positionAtEnd(got_value_bb);
+        const buf_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 0, "chr.buf_p");
+        const buf = self.builder.buildLoad(ptr_type, buf_ptr, "chr.buf");
+        const head_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 3, "chr.head_p");
+        const head = self.builder.buildLoad(i32_type, head_ptr, "chr.head");
+        const esz_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 5, "chr.esz_p");
+        const elem_size = self.builder.buildLoad(i32_type, esz_ptr, "chr.esz");
+        const offset = llvm.c.LLVMBuildMul(self.builder.ref, head, elem_size, "chr.off");
+        var chr_gep_idx = [_]llvm.ValueRef{offset};
+        const src = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, buf, &chr_gep_idx, 1, "chr.src");
+
+        // Load value from buffer (cast src to proper type and load)
+        const typed_src = src; // already a byte pointer, we'll memcpy to result
+        const val_alloca = self.builder.buildAlloca(elem_llvm_type, "chr.val");
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        const esz_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, elem_size, llvm.Types.int64(self.ctx), "chr.esz64");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &[_]llvm.ValueRef{ val_alloca, typed_src, esz_i64 }, "");
+        const loaded_val = self.builder.buildLoad(elem_llvm_type, val_alloca, "chr.loaded");
+
+        // head = (head + 1) % capacity
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 1, "chr.cap_p");
+        const cap = self.builder.buildLoad(i32_type, cap_ptr, "chr.cap");
+        const new_head = llvm.c.LLVMBuildAdd(self.builder.ref, head, llvm.Const.int32(self.ctx, 1), "chr.nhead");
+        const wrapped_head = llvm.c.LLVMBuildSRem(self.builder.ref, new_head, cap, "chr.whead");
+        _ = self.builder.buildStore(wrapped_head, head_ptr);
+
+        // count--
+        const count3 = self.builder.buildLoad(i32_type, count_ptr, "chr.cnt3");
+        const new_count = llvm.c.LLVMBuildSub(self.builder.ref, count3, llvm.Const.int32(self.ctx, 1), "chr.ncnt");
+        _ = self.builder.buildStore(new_count, count_ptr);
+
+        // Signal not_full
+        const signal_fn = self.getOrDeclarePthreadCondSignal();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(signal_fn), signal_fn, &[_]llvm.ValueRef{cond_nf_ptr}, "");
+
+        // Unlock mutex
+        const unlock_fn = self.getOrDeclarePthreadMutexUnlock();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(unlock_fn), unlock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+
+        // Store Some(value) result
+        const some_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_alloca, 0, "chr.stag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), some_tag);
+        const some_val = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_alloca, 1, "chr.sval");
+        _ = self.builder.buildStore(loaded_val, some_val);
+        _ = self.builder.buildBr(cont_bb);
+
+        // None path: channel closed and empty
+        self.builder.positionAtEnd(none_bb);
+        // Unlock mutex
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(unlock_fn), unlock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+        const none_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_alloca, 0, "chr.ntag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), none_tag);
+        _ = self.builder.buildBr(cont_bb);
+
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(opt_type, result_alloca, "chr.val");
+    }
+
+    /// Emit channel_close(sender_or_receiver) -> void
+    /// Sets the closed flag and wakes all waiters.
+    fn emitChannelClose(self: *Emitter, endpoint_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const inner_type = self.getChannelInnerType();
+        const i8_type = llvm.Types.int8(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Get channel inner pointer
+        // endpoint_ptr is an alloca holding just a ptr
+        const inner_ptr = self.builder.buildLoad(ptr_type, endpoint_ptr, "chc.inner");
+
+        // Get mutex and cond var pointers
+        const mutex_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 8, "chc.mutex");
+        const cond_ne_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 9, "chc.cnd_ne");
+        const cond_nf_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 10, "chc.cnd_nf");
+
+        // Lock mutex
+        const lock_fn = self.getOrDeclarePthreadMutexLock();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(lock_fn), lock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+
+        // Set closed = 1
+        const closed_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 6, "chc.cls_p");
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 1), closed_ptr);
+
+        // Broadcast to all waiters
+        const broadcast_fn = self.getOrDeclarePthreadCondBroadcast();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(broadcast_fn), broadcast_fn, &[_]llvm.ValueRef{cond_ne_ptr}, "");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(broadcast_fn), broadcast_fn, &[_]llvm.ValueRef{cond_nf_ptr}, "");
+
+        // Unlock mutex
+        const unlock_fn = self.getOrDeclarePthreadMutexUnlock();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(unlock_fn), unlock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+
+        _ = i8_type;
+        return llvm.c.LLVMGetUndef(llvm.Types.void_(self.ctx));
+    }
+
+    /// Check if an expression is a Sender type.
+    fn isSenderExpr(self: *Emitter, expr: ast.Expr) bool {
+        if (expr == .identifier) {
+            if (self.named_values.get(expr.identifier.name)) |local| {
+                if (local.is_sender) return true;
+            }
+        }
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            return expr_type == .sender;
+        }
+        return false;
+    }
+
+    /// Check if an expression is a Receiver type.
+    fn isReceiverExpr(self: *Emitter, expr: ast.Expr) bool {
+        if (expr == .identifier) {
+            if (self.named_values.get(expr.identifier.name)) |local| {
+                if (local.is_receiver) return true;
+            }
+        }
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            return expr_type == .receiver;
+        }
+        return false;
+    }
+
+    // ==================== ThreadPool Implementation ====================
+
+    /// Check if a type expression refers to ThreadPool.
+    fn isTypeThreadPool(self: *Emitter, type_expr: ast.TypeExpr) bool {
+        _ = self;
+        if (type_expr == .named) {
+            return std.mem.eql(u8, type_expr.named.name, "ThreadPool");
+        }
+        return false;
+    }
+
+    /// Check if an expression is a ThreadPool type.
+    fn isThreadPoolExpr(self: *Emitter, expr: ast.Expr) bool {
+        if (expr == .identifier) {
+            if (self.named_values.get(expr.identifier.name)) |local| {
+                if (local.is_thread_pool) return true;
+            }
+        }
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            return expr_type == .thread_pool;
+        }
+        return false;
+    }
+
+    /// Get the LLVM struct type for the heap-allocated ThreadPoolInner.
+    /// Layout:
+    ///   0: queue_head: ptr (WorkItem linked list head)
+    ///   1: queue_tail: ptr (WorkItem linked list tail)
+    ///   2: mutex: [N x i8] (pthread_mutex_t)
+    ///   3: work_cond: [M x i8] (pthread_cond_t) - signal workers
+    ///   4: done_cond: [M x i8] (pthread_cond_t) - signal shutdown waiter
+    ///   5: threads: ptr (array of pthread_t)
+    ///   6: num_threads: i32
+    ///   7: shutdown: i8
+    ///   8: pending_count: i32
+    fn getThreadPoolInnerType(self: *Emitter) llvm.TypeRef {
+        const mutex_size: u32 = if (self.platform.os == .macos) 64 else 40;
+        const cond_size: u32 = 48;
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // 0: queue_head
+            llvm.Types.pointer(self.ctx), // 1: queue_tail
+            llvm.Types.array(llvm.Types.int8(self.ctx), mutex_size), // 2: mutex
+            llvm.Types.array(llvm.Types.int8(self.ctx), cond_size), // 3: work_cond
+            llvm.Types.array(llvm.Types.int8(self.ctx), cond_size), // 4: done_cond
+            llvm.Types.pointer(self.ctx), // 5: threads
+            llvm.Types.int32(self.ctx), // 6: num_threads
+            llvm.Types.int8(self.ctx), // 7: shutdown
+            llvm.Types.int32(self.ctx), // 8: pending_count
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Get the LLVM struct type for WorkItem.
+    /// Layout: { fn_ptr: ptr, env_ptr: ptr, next: ptr }
+    fn getWorkItemType(self: *Emitter) llvm.TypeRef {
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // 0: fn_ptr
+            llvm.Types.pointer(self.ctx), // 1: env_ptr
+            llvm.Types.pointer(self.ctx), // 2: next
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Declare pthread_create(thread, attr, start_routine, arg) -> i32
+    fn getOrDeclarePthreadCreate(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "pthread_create")) |f| return f;
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, ptr_type, ptr_type, ptr_type };
+        const fn_type = llvm.Types.function(llvm.Types.int32(self.ctx), &param_types, false);
+        return llvm.addFunction(self.module, "pthread_create", fn_type);
+    }
+
+    /// Declare pthread_join(thread, retval) -> i32
+    fn getOrDeclarePthreadJoin(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "pthread_join")) |f| return f;
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, ptr_type };
+        const fn_type = llvm.Types.function(llvm.Types.int32(self.ctx), &param_types, false);
+        return llvm.addFunction(self.module, "pthread_join", fn_type);
+    }
+
+    /// Get or create the worker thread function: __klar_threadpool_worker(pool_inner: ptr) -> ptr
+    /// Worker loop:
+    ///   lock mutex
+    ///   while (queue_head == null && !shutdown) { cond_wait(work_cond, mutex) }
+    ///   if (shutdown && queue_head == null) { unlock; return null }
+    ///   dequeue item from head
+    ///   unlock mutex
+    ///   call item.fn_ptr(item.env_ptr)
+    ///   free(item)
+    ///   lock mutex
+    ///   pending_count -= 1
+    ///   if (pending_count == 0) { cond_signal(done_cond) }
+    ///   unlock mutex
+    ///   goto loop
+    fn getOrDeclareThreadPoolWorker(self: *Emitter) EmitError!llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "__klar_threadpool_worker")) |f| return f;
+
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const inner_type = self.getThreadPoolInnerType();
+        const work_item_type = self.getWorkItemType();
+
+        // Worker function: ptr -> ptr
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.Types.function(ptr_type, &param_types, false);
+        const worker_fn = llvm.addFunction(self.module, "__klar_threadpool_worker", fn_type);
+
+        // Save current emitter state
+        const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        const saved_func = self.current_function;
+        const saved_terminator = self.has_terminator;
+
+        self.current_function = worker_fn;
+        self.has_terminator = false;
+
+        // Create basic blocks
+        const entry_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "entry");
+        const loop_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "loop");
+        const wait_check_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "wait.check");
+        const wait_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "wait");
+        const dequeue_check_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "dequeue.check");
+        const exit_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "exit");
+        const dequeue_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "dequeue");
+        const exec_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "exec");
+
+        const pool_inner = llvm.c.LLVMGetParam(worker_fn, 0);
+
+        // Get pthread function references
+        const lock_fn = self.getOrDeclarePthreadMutexLock();
+        const unlock_fn = self.getOrDeclarePthreadMutexUnlock();
+        const cond_wait_fn = self.getOrDeclarePthreadCondWait();
+        const cond_signal_fn = self.getOrDeclarePthreadCondSignal();
+        const free_fn = self.getOrCreateFreeFn();
+
+        // Entry: compute GEP helpers and jump to loop
+        self.builder.positionAtEnd(entry_bb);
+        const mutex_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, pool_inner, 2, "w.mutex");
+        const work_cond_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, pool_inner, 3, "w.wcond");
+        const done_cond_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, pool_inner, 4, "w.dcond");
+        _ = self.builder.buildBr(loop_bb);
+
+        // Loop: lock mutex, check condition
+        self.builder.positionAtEnd(loop_bb);
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(lock_fn), lock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+        _ = self.builder.buildBr(wait_check_bb);
+
+        // Wait check: while (queue_head == null && !shutdown) wait
+        self.builder.positionAtEnd(wait_check_bb);
+        const head_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, pool_inner, 0, "w.head_p");
+        const head_val = self.builder.buildLoad(ptr_type, head_ptr, "w.head");
+        const head_null = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, head_val, llvm.c.LLVMConstPointerNull(ptr_type), "w.hd_null");
+        const shutdown_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, pool_inner, 7, "w.sd_p");
+        const shutdown_val = self.builder.buildLoad(i8_type, shutdown_ptr, "w.sd");
+        const not_shutdown = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, shutdown_val, llvm.Const.int8(self.ctx, 0), "w.nsd");
+        const should_wait = llvm.c.LLVMBuildAnd(self.builder.ref, head_null, not_shutdown, "w.wait");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, should_wait, wait_bb, dequeue_check_bb);
+
+        // Wait: cond_wait then re-check
+        self.builder.positionAtEnd(wait_bb);
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(cond_wait_fn), cond_wait_fn, &[_]llvm.ValueRef{ work_cond_ptr, mutex_ptr }, "");
+        _ = self.builder.buildBr(wait_check_bb);
+
+        // Dequeue check: if shutdown && queue empty, exit
+        self.builder.positionAtEnd(dequeue_check_bb);
+        const head_val2 = self.builder.buildLoad(ptr_type, head_ptr, "w.head2");
+        const head_null2 = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, head_val2, llvm.c.LLVMConstPointerNull(ptr_type), "w.hd_null2");
+        const shutdown_val2 = self.builder.buildLoad(i8_type, shutdown_ptr, "w.sd2");
+        const is_shutdown = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntNE, shutdown_val2, llvm.Const.int8(self.ctx, 0), "w.issd");
+        const should_exit = llvm.c.LLVMBuildAnd(self.builder.ref, head_null2, is_shutdown, "w.exit");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, should_exit, exit_bb, dequeue_bb);
+
+        // Exit: unlock and return null
+        self.builder.positionAtEnd(exit_bb);
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(unlock_fn), unlock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+        _ = llvm.c.LLVMBuildRet(self.builder.ref, llvm.c.LLVMConstPointerNull(ptr_type));
+
+        // Dequeue: remove item from head of linked list
+        self.builder.positionAtEnd(dequeue_bb);
+        const item_ptr = self.builder.buildLoad(ptr_type, head_ptr, "w.item");
+        // head = item.next
+        const next_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, work_item_type, item_ptr, 2, "w.next_p");
+        const next_val = self.builder.buildLoad(ptr_type, next_ptr, "w.next");
+        _ = self.builder.buildStore(next_val, head_ptr);
+        // If head became null, also set tail to null
+        const new_head_null = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, next_val, llvm.c.LLVMConstPointerNull(ptr_type), "w.nhn");
+        const tail_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, pool_inner, 1, "w.tail_p");
+        const set_tail_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "set.tail");
+        const unlock_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "unlock");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, new_head_null, set_tail_bb, unlock_bb);
+
+        self.builder.positionAtEnd(set_tail_bb);
+        _ = self.builder.buildStore(llvm.c.LLVMConstPointerNull(ptr_type), tail_ptr);
+        _ = self.builder.buildBr(unlock_bb);
+
+        // Unlock mutex before executing the task
+        self.builder.positionAtEnd(unlock_bb);
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(unlock_fn), unlock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+        // Load fn_ptr and env_ptr from work item
+        const fn_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, work_item_type, item_ptr, 0, "w.fn_p");
+        const fn_ptr_val = self.builder.buildLoad(ptr_type, fn_ptr_ptr, "w.fn");
+        const env_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, work_item_type, item_ptr, 1, "w.env_p");
+        const env_ptr_val = self.builder.buildLoad(ptr_type, env_ptr_ptr, "w.env");
+        _ = self.builder.buildBr(exec_bb);
+
+        // Exec: call the task function, free the work item, update pending count
+        self.builder.positionAtEnd(exec_bb);
+        // Call fn_ptr(env_ptr) - closure calling convention: first arg is env
+        // Use i32 return type (closures typically return i32; result is discarded)
+        var task_param_types = [_]llvm.TypeRef{ptr_type};
+        const task_fn_type = llvm.Types.function(i32_type, &task_param_types, false);
+        _ = self.builder.buildCall(task_fn_type, fn_ptr_val, &[_]llvm.ValueRef{env_ptr_val}, "");
+        // Free the work item
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &[_]llvm.ValueRef{item_ptr}, "");
+        // Lock mutex, decrement pending_count, signal done if 0
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(lock_fn), lock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+        const pending_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, pool_inner, 8, "w.pend_p");
+        const pending_val = self.builder.buildLoad(i32_type, pending_ptr, "w.pend");
+        const new_pending = llvm.c.LLVMBuildSub(self.builder.ref, pending_val, llvm.Const.int32(self.ctx, 1), "w.npend");
+        _ = self.builder.buildStore(new_pending, pending_ptr);
+        // If pending == 0, signal done_cond
+        const is_zero = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, new_pending, llvm.Const.int32(self.ctx, 0), "w.zero");
+        const signal_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "signal");
+        const cont_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, worker_fn, "cont");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_zero, signal_bb, cont_bb);
+
+        self.builder.positionAtEnd(signal_bb);
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(cond_signal_fn), cond_signal_fn, &[_]llvm.ValueRef{done_cond_ptr}, "");
+        _ = self.builder.buildBr(cont_bb);
+
+        self.builder.positionAtEnd(cont_bb);
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(unlock_fn), unlock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+        _ = self.builder.buildBr(loop_bb);
+
+        // Restore emitter state
+        self.builder.positionAtEnd(saved_bb);
+        self.current_function = saved_func;
+        self.has_terminator = saved_terminator;
+
+        return worker_fn;
+    }
+
+    /// Emit ThreadPool.new(num_threads: i32) -> ThreadPool
+    fn emitThreadPoolNew(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: ThreadPool is not supported on WebAssembly targets");
+        if (method.args.len != 1) return EmitError.InvalidAST;
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const inner_type = self.getThreadPoolInnerType();
+
+        // Evaluate num_threads argument
+        const num_threads = try self.emitExpr(method.args[0]);
+
+        // Allocate ThreadPoolInner on heap
+        const malloc_fn = self.getOrCreateMallocFn();
+        const inner_size = self.getDataLayoutSize(inner_type);
+        const inner_ptr = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(malloc_fn),
+            malloc_fn,
+            &[_]llvm.ValueRef{llvm.Const.int64(self.ctx, @intCast(inner_size))},
+            "tp.inner",
+        );
+
+        // Zero-initialize the struct
+        const memset_fn = self.getOrDeclareMemset();
+        _ = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(memset_fn),
+            memset_fn,
+            &[_]llvm.ValueRef{ inner_ptr, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, @intCast(inner_size)) },
+            "",
+        );
+
+        // Set queue_head = null (already 0 from memset)
+        // Set queue_tail = null (already 0 from memset)
+
+        // Init mutex
+        const mutex_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 2, "tp.mutex");
+        const mutex_init_fn = self.getOrDeclarePthreadMutexInit();
+        _ = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(mutex_init_fn),
+            mutex_init_fn,
+            &[_]llvm.ValueRef{ mutex_ptr, llvm.c.LLVMConstPointerNull(ptr_type) },
+            "",
+        );
+
+        // Init work_cond
+        const work_cond_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 3, "tp.wcond");
+        const cond_init_fn = self.getOrDeclarePthreadCondInit();
+        _ = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(cond_init_fn),
+            cond_init_fn,
+            &[_]llvm.ValueRef{ work_cond_ptr, llvm.c.LLVMConstPointerNull(ptr_type) },
+            "",
+        );
+
+        // Init done_cond
+        const done_cond_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 4, "tp.dcond");
+        _ = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(cond_init_fn),
+            cond_init_fn,
+            &[_]llvm.ValueRef{ done_cond_ptr, llvm.c.LLVMConstPointerNull(ptr_type) },
+            "",
+        );
+
+        // Store num_threads
+        const num_threads_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 6, "tp.nt_p");
+        _ = self.builder.buildStore(num_threads, num_threads_ptr);
+
+        // Set shutdown = 0, pending_count = 0 (already 0 from memset)
+
+        // Allocate threads array: malloc(num_threads * sizeof(pthread_t))
+        // pthread_t is 8 bytes (pointer) on both macOS and Linux 64-bit
+        const num_threads_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, num_threads, llvm.Types.int64(self.ctx), "tp.nt64");
+        const thread_size = llvm.Const.int64(self.ctx, 8);
+        const threads_alloc_size = llvm.c.LLVMBuildMul(self.builder.ref, num_threads_i64, thread_size, "tp.tsz");
+        const threads_ptr = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(malloc_fn),
+            malloc_fn,
+            &[_]llvm.ValueRef{threads_alloc_size},
+            "tp.threads",
+        );
+        const threads_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 5, "tp.tf_p");
+        _ = self.builder.buildStore(threads_ptr, threads_field_ptr);
+
+        // Get worker function
+        const worker_fn = try self.getOrDeclareThreadPoolWorker();
+        const pthread_create_fn = self.getOrDeclarePthreadCreate();
+
+        // Spawn threads in a loop
+        // for i in 0..num_threads: pthread_create(&threads[i], null, worker_fn, pool_inner)
+        const loop_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tp.spawn.loop");
+        const body_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tp.spawn.body");
+        const done_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tp.spawn.done");
+
+        // Initialize counter
+        const counter = buildEntryBlockAlloca(self, i32_type, "tp.i");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), counter);
+        _ = self.builder.buildBr(loop_bb);
+
+        // Loop header: check i < num_threads
+        self.builder.positionAtEnd(loop_bb);
+        const i_val = self.builder.buildLoad(i32_type, counter, "tp.i_val");
+        const cmp = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntSLT, i_val, num_threads, "tp.cmp");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, cmp, body_bb, done_bb);
+
+        // Loop body: pthread_create
+        self.builder.positionAtEnd(body_bb);
+        const i_val2 = self.builder.buildLoad(i32_type, counter, "tp.i2");
+        var gep_idx = [_]llvm.ValueRef{i_val2};
+        const thread_slot = llvm.c.LLVMBuildGEP2(self.builder.ref, ptr_type, threads_ptr, &gep_idx, 1, "tp.slot");
+        _ = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(pthread_create_fn),
+            pthread_create_fn,
+            &[_]llvm.ValueRef{
+                thread_slot,
+                llvm.c.LLVMConstPointerNull(ptr_type),
+                worker_fn,
+                inner_ptr,
+            },
+            "",
+        );
+        // i++
+        const next_i = llvm.c.LLVMBuildAdd(self.builder.ref, i_val2, llvm.Const.int32(self.ctx, 1), "tp.next_i");
+        _ = self.builder.buildStore(next_i, counter);
+        _ = self.builder.buildBr(loop_bb);
+
+        // Done: return the ThreadPool struct { inner_ptr }
+        self.builder.positionAtEnd(done_bb);
+
+        // Return as raw ptr (ThreadPool stores { ptr } but will be flattened during assignment)
+        _ = i8_type;
+        return inner_ptr;
+    }
+
+    /// Emit pool.spawn(task_fn) -> void
+    /// Enqueues a work item: extracts fn_ptr and env_ptr from the closure,
+    /// creates a WorkItem, and adds it to the queue.
+    fn emitThreadPoolSpawn(self: *Emitter, pool_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        if (method.args.len != 1) return EmitError.InvalidAST;
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const inner_type = self.getThreadPoolInnerType();
+        const work_item_type = self.getWorkItemType();
+
+        // Get pool inner pointer
+        const inner_ptr = self.builder.buildLoad(ptr_type, pool_ptr, "tps.inner");
+
+        // Emit the closure argument
+        const closure_val = try self.emitExpr(method.args[0]);
+        const closure_struct_type = self.getClosureStructType();
+
+        // Store closure to alloca so we can GEP into it
+        const closure_alloca = self.builder.buildAlloca(closure_struct_type, "tps.cls");
+        _ = self.builder.buildStore(closure_val, closure_alloca);
+
+        // Extract fn_ptr and env_ptr from closure { fn_ptr, env_ptr }
+        var fn_gep_idx = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 0) };
+        const fn_ptr_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, closure_struct_type, closure_alloca, &fn_gep_idx, 2, "tps.fn_p");
+        const fn_ptr_val = self.builder.buildLoad(ptr_type, fn_ptr_ptr, "tps.fn");
+        var env_gep_idx = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 1) };
+        const env_ptr_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, closure_struct_type, closure_alloca, &env_gep_idx, 2, "tps.env_p");
+        const env_ptr_val = self.builder.buildLoad(ptr_type, env_ptr_ptr, "tps.env");
+
+        // Allocate WorkItem on heap
+        const malloc_fn = self.getOrCreateMallocFn();
+        const wi_size = self.getDataLayoutSize(work_item_type);
+        const wi_ptr = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(malloc_fn),
+            malloc_fn,
+            &[_]llvm.ValueRef{llvm.Const.int64(self.ctx, @intCast(wi_size))},
+            "tps.wi",
+        );
+
+        // Set WorkItem fields
+        const wi_fn_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, work_item_type, wi_ptr, 0, "tps.wi_fn");
+        _ = self.builder.buildStore(fn_ptr_val, wi_fn_ptr);
+        const wi_env_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, work_item_type, wi_ptr, 1, "tps.wi_env");
+        _ = self.builder.buildStore(env_ptr_val, wi_env_ptr);
+        const wi_next_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, work_item_type, wi_ptr, 2, "tps.wi_next");
+        _ = self.builder.buildStore(llvm.c.LLVMConstPointerNull(ptr_type), wi_next_ptr);
+
+        // Lock mutex
+        const mutex_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 2, "tps.mutex");
+        const lock_fn = self.getOrDeclarePthreadMutexLock();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(lock_fn), lock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+
+        // pending_count++
+        const pending_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 8, "tps.pend_p");
+        const pending_val = self.builder.buildLoad(i32_type, pending_ptr, "tps.pend");
+        const new_pending = llvm.c.LLVMBuildAdd(self.builder.ref, pending_val, llvm.Const.int32(self.ctx, 1), "tps.npend");
+        _ = self.builder.buildStore(new_pending, pending_ptr);
+
+        // Enqueue: if tail == null { head = item; tail = item } else { tail.next = item; tail = item }
+        const tail_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 1, "tps.tail_p");
+        const tail_val = self.builder.buildLoad(ptr_type, tail_ptr, "tps.tail");
+        const tail_null = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, tail_val, llvm.c.LLVMConstPointerNull(ptr_type), "tps.tn");
+
+        const empty_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tps.empty");
+        const nonempty_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tps.nonempty");
+        const enqueue_done_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tps.eq_done");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, tail_null, empty_bb, nonempty_bb);
+
+        // Empty queue: head = item, tail = item
+        self.builder.positionAtEnd(empty_bb);
+        const head_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 0, "tps.head_p");
+        _ = self.builder.buildStore(wi_ptr, head_ptr);
+        _ = self.builder.buildStore(wi_ptr, tail_ptr);
+        _ = self.builder.buildBr(enqueue_done_bb);
+
+        // Non-empty queue: tail.next = item, tail = item
+        self.builder.positionAtEnd(nonempty_bb);
+        const old_tail_next = llvm.c.LLVMBuildStructGEP2(self.builder.ref, work_item_type, tail_val, 2, "tps.otn");
+        _ = self.builder.buildStore(wi_ptr, old_tail_next);
+        _ = self.builder.buildStore(wi_ptr, tail_ptr);
+        _ = self.builder.buildBr(enqueue_done_bb);
+
+        // Signal work_cond and unlock
+        self.builder.positionAtEnd(enqueue_done_bb);
+        const work_cond_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 3, "tps.wcond");
+        const cond_signal_fn = self.getOrDeclarePthreadCondSignal();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(cond_signal_fn), cond_signal_fn, &[_]llvm.ValueRef{work_cond_ptr}, "");
+
+        const unlock_fn = self.getOrDeclarePthreadMutexUnlock();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(unlock_fn), unlock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+
+        return llvm.c.LLVMGetUndef(llvm.Types.void_(self.ctx));
+    }
+
+    /// Emit pool.shutdown() -> void
+    /// Sets shutdown flag, broadcasts to wake all workers, waits for pending tasks,
+    /// then joins all threads.
+    fn emitThreadPoolShutdown(self: *Emitter, pool_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const inner_type = self.getThreadPoolInnerType();
+
+        // Get pool inner pointer
+        const inner_ptr = self.builder.buildLoad(ptr_type, pool_ptr, "tpsd.inner");
+
+        // Lock mutex
+        const mutex_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 2, "tpsd.mutex");
+        const lock_fn = self.getOrDeclarePthreadMutexLock();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(lock_fn), lock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+
+        // Set shutdown = 1
+        const shutdown_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 7, "tpsd.sd_p");
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 1), shutdown_ptr);
+
+        // Broadcast work_cond to wake all workers
+        const work_cond_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 3, "tpsd.wcond");
+        const broadcast_fn = self.getOrDeclarePthreadCondBroadcast();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(broadcast_fn), broadcast_fn, &[_]llvm.ValueRef{work_cond_ptr}, "");
+
+        // Wait loop: while (pending_count > 0) cond_wait(done_cond, mutex)
+        const done_cond_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 4, "tpsd.dcond");
+        const wait_check_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tpsd.wchk");
+        const wait_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tpsd.wait");
+        const join_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tpsd.join");
+        _ = self.builder.buildBr(wait_check_bb);
+
+        self.builder.positionAtEnd(wait_check_bb);
+        const pending_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 8, "tpsd.pend_p");
+        const pending_val = self.builder.buildLoad(i32_type, pending_ptr, "tpsd.pend");
+        const has_pending = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntSGT, pending_val, llvm.Const.int32(self.ctx, 0), "tpsd.hp");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, has_pending, wait_bb, join_bb);
+
+        self.builder.positionAtEnd(wait_bb);
+        const cond_wait_fn = self.getOrDeclarePthreadCondWait();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(cond_wait_fn), cond_wait_fn, &[_]llvm.ValueRef{ done_cond_ptr, mutex_ptr }, "");
+        _ = self.builder.buildBr(wait_check_bb);
+
+        // Unlock mutex
+        self.builder.positionAtEnd(join_bb);
+        const unlock_fn = self.getOrDeclarePthreadMutexUnlock();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(unlock_fn), unlock_fn, &[_]llvm.ValueRef{mutex_ptr}, "");
+
+        // Join all threads
+        const threads_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 5, "tpsd.tf_p");
+        const threads_ptr = self.builder.buildLoad(ptr_type, threads_field_ptr, "tpsd.threads");
+        const num_threads_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 6, "tpsd.nt_p");
+        const num_threads = self.builder.buildLoad(i32_type, num_threads_ptr, "tpsd.nt");
+        const pthread_join_fn = self.getOrDeclarePthreadJoin();
+
+        // Loop: for i in 0..num_threads: pthread_join(threads[i], null)
+        const join_loop_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tpsd.jloop");
+        const join_body_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tpsd.jbody");
+        const join_done_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "tpsd.jdone");
+
+        const join_counter = buildEntryBlockAlloca(self, i32_type, "tpsd.ji");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), join_counter);
+        _ = self.builder.buildBr(join_loop_bb);
+
+        self.builder.positionAtEnd(join_loop_bb);
+        const ji_val = self.builder.buildLoad(i32_type, join_counter, "tpsd.ji_v");
+        const ji_cmp = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntSLT, ji_val, num_threads, "tpsd.ji_cmp");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, ji_cmp, join_body_bb, join_done_bb);
+
+        self.builder.positionAtEnd(join_body_bb);
+        const ji_val2 = self.builder.buildLoad(i32_type, join_counter, "tpsd.ji2");
+        var join_gep_idx = [_]llvm.ValueRef{ji_val2};
+        const thread_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, ptr_type, threads_ptr, &join_gep_idx, 1, "tpsd.tp");
+        const thread_val = self.builder.buildLoad(ptr_type, thread_ptr, "tpsd.tv");
+        _ = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(pthread_join_fn),
+            pthread_join_fn,
+            &[_]llvm.ValueRef{ thread_val, llvm.c.LLVMConstPointerNull(ptr_type) },
+            "",
+        );
+        const next_ji = llvm.c.LLVMBuildAdd(self.builder.ref, ji_val2, llvm.Const.int32(self.ctx, 1), "tpsd.nji");
+        _ = self.builder.buildStore(next_ji, join_counter);
+        _ = self.builder.buildBr(join_loop_bb);
+
+        self.builder.positionAtEnd(join_done_bb);
+        _ = i8_type;
+        return llvm.c.LLVMGetUndef(llvm.Types.void_(self.ctx));
     }
 
     // ==================== C Function Declarations for Filesystem ====================
@@ -34213,6 +37136,10 @@ pub const Emitter = struct {
             .map => map_constants.map_struct_size,
             // Set: { entries: ptr, len: i32, cap: i32, tombstones: i32 } = 8 + 4 + 4 + 4 = 20 bytes
             .set => 20,
+            // Channel types: { ptr } = 8 bytes (pointer to shared ChannelInner)
+            .sender, .receiver => 8,
+            // ThreadPool: { ptr } = 8 bytes (pointer to ThreadPoolInner)
+            .thread_pool => 8,
             .string_data => 8, // outer String struct { header_ptr } = 8 bytes (heap-indirected)
             .path => 8, // Path wraps String: { header_ptr } = 8 bytes (heap-indirected)
             .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle => 8, // handles/pointers
@@ -34556,6 +37483,15 @@ pub const Emitter = struct {
                 };
                 return llvm.Types.struct_(self.ctx, &fields, false);
             },
+            .sender, .receiver => {
+                // Channel endpoints: { ptr } (pointer to shared ChannelInner)
+                return self.getChannelEndpointType();
+            },
+            .thread_pool => {
+                // ThreadPool: { ptr } (pointer to ThreadPoolInner)
+                var fields = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+                return llvm.Types.struct_(self.ctx, &fields, false);
+            },
             .string_data => {
                 // String LLVM layout: { header_ptr } (heap-indirected)
                 // Header on heap: { ptr: *u8, len: i32, capacity: i32 }
@@ -34693,6 +37629,7 @@ pub const Emitter = struct {
             .field_indices = field_indices,
             .field_names = field_names,
         }) catch return EmitError.OutOfMemory;
+
     }
 
     // =========================================================================
@@ -35278,14 +38215,25 @@ pub const Emitter = struct {
         self.named_values.clearRetainingCapacity();
 
         // Construct the mangled struct name for field resolution (e.g., "Pair$i32")
-        var struct_name_buf = std.ArrayListUnmanaged(u8){};
-        defer struct_name_buf.deinit(self.allocator);
-        struct_name_buf.appendSlice(self.allocator, mono.struct_name) catch return EmitError.OutOfMemory;
-        for (mono.type_args) |type_arg| {
-            struct_name_buf.append(self.allocator, '$') catch return EmitError.OutOfMemory;
-            self.appendCheckerTypeNameForMangling(&struct_name_buf, type_arg) catch return EmitError.OutOfMemory;
-        }
-        const mangled_struct_name = self.allocator.dupe(u8, struct_name_buf.items) catch return EmitError.OutOfMemory;
+        // If type_args is empty, derive from mangled method name (e.g., "Pair$i32_get_first" → "Pair$i32")
+        const mangled_struct_name = if (mono.type_args.len == 0 and mono.method_name.len > 0) blk: {
+            // Find last occurrence of "_" + method_name in mangled_name
+            const suffix_len = mono.method_name.len + 1; // "_" + method_name
+            if (mono.mangled_name.len > suffix_len) {
+                const prefix = mono.mangled_name[0 .. mono.mangled_name.len - suffix_len];
+                break :blk self.allocator.dupe(u8, prefix) catch return EmitError.OutOfMemory;
+            }
+            break :blk self.allocator.dupe(u8, mono.struct_name) catch return EmitError.OutOfMemory;
+        } else blk: {
+            var struct_name_buf = std.ArrayListUnmanaged(u8){};
+            defer struct_name_buf.deinit(self.allocator);
+            struct_name_buf.appendSlice(self.allocator, mono.struct_name) catch return EmitError.OutOfMemory;
+            for (mono.type_args) |type_arg| {
+                struct_name_buf.append(self.allocator, '$') catch return EmitError.OutOfMemory;
+                self.appendCheckerTypeNameForMangling(&struct_name_buf, type_arg) catch return EmitError.OutOfMemory;
+            }
+            break :blk self.allocator.dupe(u8, struct_name_buf.items) catch return EmitError.OutOfMemory;
+        };
 
         // Add parameters to named values with concrete types
         for (func.params, 0..) |param, i| {

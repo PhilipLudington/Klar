@@ -1,0 +1,218 @@
+//! stdlib/deque.kl - Double-ended queue backed by a ring buffer
+//!
+//! Deque stores i32 values with efficient push/pop at both ends.
+//! Uses a growable ring buffer (circular array) for O(1) amortized operations.
+//!
+//! Usage:
+//!   var d: Deque = Deque.new()
+//!   d.push_back(1)
+//!   d.push_front(0)
+//!   let v: ?i32 = d.pop_front()  // Some(0)
+//!   let w: ?i32 = d.pop_back()   // Some(1)
+
+module stdlib.deque
+
+// Ring buffer layout:
+// buf: List#[i32] — backing storage (capacity is always a power of 2)
+// cfg[0] = head index (index of first element)
+// cfg[1] = len (number of elements)
+// cfg[2] = cap (capacity, always power of 2)
+//
+// Element at logical index i is at buf[(head + i) & (cap - 1)].
+// Empty when len == 0. Full when len == cap.
+
+pub struct Deque {
+    buf: List#[i32],
+    cfg: List#[i32],
+}
+
+impl Deque {
+    // --- Constructor ---
+
+    pub fn new() -> Deque {
+        let init_cap: i32 = 8
+        var buf: List#[i32] = List.new#[i32]()
+        var i: i32 = 0
+        while i < init_cap {
+            buf.push(0)
+            i = i + 1
+        }
+        var cfg: List#[i32] = List.new#[i32]()
+        cfg.push(0)          // head
+        cfg.push(0)          // len
+        cfg.push(init_cap)   // cap
+        return Deque { buf: buf, cfg: cfg }
+    }
+
+    // --- Basic queries (no method deps) ---
+
+    pub fn size(self: Deque) -> i32 {
+        return self.cfg[1]
+    }
+
+    pub fn is_empty(self: Deque) -> bool {
+        return self.cfg[1] == 0
+    }
+
+    pub fn capacity(self: Deque) -> i32 {
+        return self.cfg[2]
+    }
+
+    // --- Internal: mask for wrapping index ---
+
+    fn mask(self: Deque) -> i32 {
+        return self.cfg[2] - 1
+    }
+
+    // --- Peek (no mutation) ---
+
+    pub fn peek_front(self: Deque) -> ?i32 {
+        if self.cfg[1] == 0 {
+            return None
+        }
+        let head: i32 = self.cfg[0]
+        return Some(self.buf[head])
+    }
+
+    pub fn peek_back(self: Deque) -> ?i32 {
+        if self.cfg[1] == 0 {
+            return None
+        }
+        let head: i32 = self.cfg[0]
+        let length: i32 = self.cfg[1]
+        let cap: i32 = self.cfg[2]
+        let back_idx: i32 = (head + length - 1) & (cap - 1)
+        return Some(self.buf[back_idx])
+    }
+
+    // --- Index access ---
+
+    pub fn get(self: Deque, index: i32) -> ?i32 {
+        if index < 0 or index >= self.cfg[1] {
+            return None
+        }
+        let head: i32 = self.cfg[0]
+        let cap: i32 = self.cfg[2]
+        let real_idx: i32 = (head + index) & (cap - 1)
+        return Some(self.buf[real_idx])
+    }
+
+    // --- Grow (depends on nothing) ---
+
+    fn grow(self: Deque) -> void {
+        let old_cap: i32 = self.cfg[2]
+        let new_cap: i32 = old_cap * 2
+        let head: i32 = self.cfg[0]
+        let length: i32 = self.cfg[1]
+
+        // Extend buf to new_cap with zeros
+        var i: i32 = 0
+        while i < old_cap {
+            self.buf.push(0)
+            i = i + 1
+        }
+
+        // If elements wrap around, unwrap them.
+        // Wrapping means head + len > old_cap, i.e. some elements are before head.
+        if head + length > old_cap {
+            // Elements from 0..wrap_count need to move to old_cap..old_cap+wrap_count
+            let wrap_count: i32 = (head + length) - old_cap
+            var j: i32 = 0
+            while j < wrap_count {
+                self.buf[old_cap + j] = self.buf[j]
+                j = j + 1
+            }
+        }
+
+        self.cfg[2] = new_cap
+    }
+
+    // --- Push operations (depend on grow) ---
+
+    pub fn push_back(self: Deque, value: i32) -> void {
+        if self.cfg[1] == self.cfg[2] {
+            self.grow()
+        }
+        let head: i32 = self.cfg[0]
+        let length: i32 = self.cfg[1]
+        let cap: i32 = self.cfg[2]
+        let back_idx: i32 = (head + length) & (cap - 1)
+        self.buf[back_idx] = value
+        self.cfg[1] = length + 1
+    }
+
+    pub fn push_front(self: Deque, value: i32) -> void {
+        if self.cfg[1] == self.cfg[2] {
+            self.grow()
+        }
+        let head: i32 = self.cfg[0]
+        let cap: i32 = self.cfg[2]
+        let new_head: i32 = (head - 1 + cap) & (cap - 1)
+        self.buf[new_head] = value
+        self.cfg[0] = new_head
+        self.cfg[1] = self.cfg[1] + 1
+    }
+
+    // --- Pop operations (no method deps beyond mask) ---
+
+    pub fn pop_front(self: Deque) -> ?i32 {
+        if self.cfg[1] == 0 {
+            return None
+        }
+        let head: i32 = self.cfg[0]
+        let cap: i32 = self.cfg[2]
+        let value: i32 = self.buf[head]
+        self.cfg[0] = (head + 1) & (cap - 1)
+        self.cfg[1] = self.cfg[1] - 1
+        return Some(value)
+    }
+
+    pub fn pop_back(self: Deque) -> ?i32 {
+        if self.cfg[1] == 0 {
+            return None
+        }
+        let head: i32 = self.cfg[0]
+        let length: i32 = self.cfg[1]
+        let cap: i32 = self.cfg[2]
+        let back_idx: i32 = (head + length - 1) & (cap - 1)
+        let value: i32 = self.buf[back_idx]
+        self.cfg[1] = length - 1
+        return Some(value)
+    }
+
+    // --- Bulk operations ---
+
+    pub fn clear(self: Deque) -> void {
+        self.cfg[0] = 0
+        self.cfg[1] = 0
+    }
+
+    pub fn to_list(self: Deque) -> List#[i32] {
+        var result: List#[i32] = List.new#[i32]()
+        let head: i32 = self.cfg[0]
+        let length: i32 = self.cfg[1]
+        let cap: i32 = self.cfg[2]
+        var i: i32 = 0
+        while i < length {
+            let idx: i32 = (head + i) & (cap - 1)
+            result.push(self.buf[idx])
+            i = i + 1
+        }
+        return result
+    }
+
+    pub fn contains(self: Deque, value: i32) -> bool {
+        let head: i32 = self.cfg[0]
+        let length: i32 = self.cfg[1]
+        let cap: i32 = self.cfg[2]
+        var i: i32 = 0
+        while i < length {
+            let idx: i32 = (head + i) & (cap - 1)
+            if self.buf[idx] == value {
+                return true
+            }
+            i = i + 1
+        }
+        return false
+    }
+}

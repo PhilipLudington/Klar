@@ -80,6 +80,12 @@ pub const BuiltinName = struct {
     pub const tcp_close = "tcp_close";
     pub const tcp_set_nonblocking = "tcp_set_nonblocking";
     pub const tcp_listener_close = "tcp_listener_close";
+    // Phase 9.2: UDP socket builtins
+    pub const udp_bind = "udp_bind";
+    pub const udp_send_to = "udp_send_to";
+    pub const udp_recv_from = "udp_recv_from";
+    pub const udp_close = "udp_close";
+    pub const dns_lookup = "dns_lookup";
 };
 
 /// Check if a function name is a built-in.
@@ -118,7 +124,12 @@ pub fn isBuiltin(name: []const u8) bool {
         std.mem.eql(u8, name, BuiltinName.tcp_write) or
         std.mem.eql(u8, name, BuiltinName.tcp_close) or
         std.mem.eql(u8, name, BuiltinName.tcp_set_nonblocking) or
-        std.mem.eql(u8, name, BuiltinName.tcp_listener_close);
+        std.mem.eql(u8, name, BuiltinName.tcp_listener_close) or
+        std.mem.eql(u8, name, BuiltinName.udp_bind) or
+        std.mem.eql(u8, name, BuiltinName.udp_send_to) or
+        std.mem.eql(u8, name, BuiltinName.udp_recv_from) or
+        std.mem.eql(u8, name, BuiltinName.udp_close) or
+        std.mem.eql(u8, name, BuiltinName.dns_lookup);
 }
 
 /// Check if a built-in is a print function.

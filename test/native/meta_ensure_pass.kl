@@ -1,0 +1,15 @@
+// Test: meta ensure passes when postcondition holds on all return paths
+
+meta ensure(result >= lo and result <= hi)
+fn clamp(x: i32, lo: i32, hi: i32) -> i32 {
+    if x < lo { return lo }
+    if x > hi { return hi }
+    return x
+}
+
+fn main() -> i32 {
+    assert_eq(clamp(5, 0, 10), 5)
+    assert_eq(clamp(-3, 0, 10), 0)
+    assert_eq(clamp(15, 0, 10), 10)
+    return 0
+}

@@ -1,0 +1,73 @@
+// Benchmark: Quicksort of 100K integers
+// Generates a pseudo-random list of 100,000 integers, sorts them with quicksort,
+// then verifies the result is sorted.
+// Native-only (uses List operations not available in VM).
+
+fn swap(list: List#[i32], i: i32, j: i32) -> void {
+    let tmp: ?i32 = list.get(i)
+    let val_j: ?i32 = list.get(j)
+    list[i] = val_j ?? 0
+    list[j] = tmp ?? 0
+}
+
+fn partition(list: List#[i32], lo: i32, hi: i32) -> i32 {
+    let pivot: ?i32 = list.get(hi)
+    let pivot_val: i32 = pivot ?? 0
+    var i: i32 = lo - 1
+    for j: i32 in lo..hi {
+        let val: ?i32 = list.get(j)
+        let v: i32 = val ?? 0
+        if v <= pivot_val {
+            i = i + 1
+            swap(list, i, j)
+        }
+    }
+    swap(list, i + 1, hi)
+    return i + 1
+}
+
+fn quicksort(list: List#[i32], lo: i32, hi: i32) -> void {
+    if lo < hi {
+        let p: i32 = partition(list, lo, hi)
+        quicksort(list, lo, p - 1)
+        quicksort(list, p + 1, hi)
+    }
+}
+
+fn main() -> i32 {
+    let n: i32 = 100000
+    var list: List#[i32] = List.new#[i32]()
+
+    // Generate pseudo-random values using LCG: x = (x * 1103515245 + 12345) mod 2^31
+    var seed: i32 = 42
+    for i: i32 in 0..n {
+        // Simple hash to get varied values
+        seed = seed *% 1103515245 +% 12345
+        // Use wrapping arithmetic; take absolute value via bitwise
+        var val: i32 = seed
+        if val < 0 {
+            val = 0 - val
+        }
+        list.push(val)
+    }
+
+    // Sort
+    quicksort(list, 0, n - 1)
+
+    // Verify sorted
+    var prev: i32 = 0
+    for i: i32 in 0..n {
+        let cur: ?i32 = list.get(i)
+        let c: i32 = cur ?? 0
+        if i > 0 {
+            if c < prev {
+                println("FAIL: not sorted")
+                return 1
+            }
+        }
+        prev = c
+    }
+
+    println("OK")
+    return 0
+}
