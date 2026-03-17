@@ -1,0 +1,23 @@
+// Test string ordering comparisons (< > <= >=) use strcmp, not pointer comparison
+fn main() -> i32 {
+    let a: string = "apple"
+    let b: string = "banana"
+    let c: string = "apple"
+
+    // Less than
+    assert(a < b)
+    // Greater than
+    assert(b > a)
+    // Less than or equal (equal case)
+    assert(a <= c)
+    // Greater than or equal (equal case)
+    assert(a >= c)
+    // Not less than (reversed)
+    assert(not (b < a))
+    // Less than or equal (strict less)
+    assert(a <= b)
+    // Greater than or equal (strict greater)
+    assert(b >= a)
+
+    return 0
+}

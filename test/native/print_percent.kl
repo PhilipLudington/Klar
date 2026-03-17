@@ -1,0 +1,8 @@
+// Test that print() does not interpret % as format specifier
+fn main() -> i32 {
+    print("100%")
+    print(" done")
+    println("")
+    println("50% off")
+    return 0
+}

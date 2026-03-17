@@ -224,9 +224,17 @@ pub const Emitter = struct {
     /// Cached sret attribute kind ID (lazily initialized).
     sret_attr_kind: ?c_uint,
 
+    /// Cached byval attribute kind ID (lazily initialized).
+    byval_attr_kind: ?c_uint,
+
     /// Set of function names that use sret calling convention.
     /// Used to detect sret at call sites.
     sret_functions: std.StringHashMap(llvm.TypeRef),
+
+    /// Set of function names that have byval parameters.
+    /// Maps function name -> array of per-param struct types (null if not byval).
+    /// Used at call sites to pass large structs by pointer with byval attribute.
+    byval_functions: std.StringHashMap([]const ?llvm.TypeRef),
 
     /// Set of extern function declarations for FFI.
     extern_functions: std.StringHashMap(ExternFnInfo),
@@ -461,7 +469,9 @@ pub const Emitter = struct {
             .resolved_type_allocs = .{},
             .current_sret_ptr = null,
             .sret_attr_kind = null,
+            .byval_attr_kind = null,
             .sret_functions = std.StringHashMap(llvm.TypeRef).init(allocator),
+            .byval_functions = std.StringHashMap([]const ?llvm.TypeRef).init(allocator),
             .extern_functions = std.StringHashMap(ExternFnInfo).init(allocator),
         };
     }
@@ -700,6 +710,13 @@ pub const Emitter = struct {
             self.allocator.free(key.*);
         }
         self.sret_functions.deinit();
+        // Free byval function allocations
+        var byval_it = self.byval_functions.iterator();
+        while (byval_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.byval_functions.deinit();
         // Free extern function allocations
         var extern_it = self.extern_functions.iterator();
         while (extern_it.next()) |entry| {
@@ -1508,9 +1525,28 @@ pub const Emitter = struct {
             param_types.append(self.allocator, llvm.Types.pointer(self.ctx)) catch return EmitError.OutOfMemory;
         }
 
+        // Track byval info for large struct parameters
+        var byval_param_types = std.ArrayListUnmanaged(?llvm.TypeRef){};
+        defer byval_param_types.deinit(self.allocator);
+        var has_byval = false;
+
         for (func.params) |param| {
             const param_ty = try self.typeExprToLLVM(param.type_);
+
+            // Check if this is a large struct that needs byval passing
+            if (llvm.getTypeKind(param_ty) == llvm.c.LLVMStructTypeKind) {
+                const struct_size = self.getLLVMTypeSize(param_ty);
+                if (struct_size > 8) {
+                    // Large struct: pass as pointer with byval attribute
+                    param_types.append(self.allocator, llvm.Types.pointer(self.ctx)) catch return EmitError.OutOfMemory;
+                    byval_param_types.append(self.allocator, param_ty) catch return EmitError.OutOfMemory;
+                    has_byval = true;
+                    continue;
+                }
+            }
+
             param_types.append(self.allocator, param_ty) catch return EmitError.OutOfMemory;
+            byval_param_types.append(self.allocator, null) catch return EmitError.OutOfMemory;
         }
 
         // Get return type - void if using sret
@@ -1532,6 +1568,25 @@ pub const Emitter = struct {
         const name = self.allocator.dupeZ(u8, func_name) catch return EmitError.OutOfMemory;
         defer self.allocator.free(name);
         const llvm_func = llvm.addFunction(self.module, name, fn_type);
+
+        // Add byval attributes to large struct parameters
+        if (has_byval) {
+            const byval_kind = self.getByvalAttrKind();
+            const sret_offset: u32 = if (needs_sret) 1 else 0;
+            for (byval_param_types.items, 0..) |maybe_struct_ty, i| {
+                if (maybe_struct_ty) |struct_ty| {
+                    // Attribute index is 1-based: 1 = first param (or 2 if sret takes slot 1)
+                    const attr_index: c_uint = @intCast(i + 1 + sret_offset);
+                    const byval_attr = llvm.createTypeAttribute(self.ctx, byval_kind, struct_ty);
+                    llvm.addAttributeAtIndex(llvm_func, attr_index, byval_attr);
+                }
+            }
+
+            // Register byval info for call sites
+            const name_copy = self.allocator.dupe(u8, func_name) catch return EmitError.OutOfMemory;
+            const byval_info = self.allocator.dupe(?llvm.TypeRef, byval_param_types.items) catch return EmitError.OutOfMemory;
+            self.byval_functions.put(name_copy, byval_info) catch return EmitError.OutOfMemory;
+        }
 
         // Add sret attribute to first parameter if needed
         if (needs_sret) {
@@ -2187,6 +2242,9 @@ pub const Emitter = struct {
         }
         defer self.current_sret_ptr = null;
 
+        // Look up byval info for this function
+        const byval_info = self.byval_functions.get(func_name);
+
         // Add parameters to named values
         for (func.params, 0..) |param, i| {
             const param_value = llvm.getParam(function, @intCast(i + param_offset));
@@ -2196,8 +2254,20 @@ pub const Emitter = struct {
             const param_name = self.allocator.dupeZ(u8, param.name) catch return EmitError.OutOfMemory;
             defer self.allocator.free(param_name);
 
-            const alloca = self.builder.buildAlloca(param_ty, param_name);
-            _ = self.builder.buildStore(param_value, alloca);
+            // For byval parameters, the LLVM param is already a pointer to the struct.
+            // We copy it to a local alloca so the function body can mutate it freely
+            // without modifying the caller's copy.
+            const is_byval = byval_info != null and i < byval_info.?.len and byval_info.?[i] != null;
+            const alloca = if (is_byval) blk: {
+                const a = self.builder.buildAlloca(param_ty, param_name);
+                const loaded = self.builder.buildLoad(param_ty, param_value, "byval.load");
+                _ = self.builder.buildStore(loaded, a);
+                break :blk a;
+            } else blk: {
+                const a = self.builder.buildAlloca(param_ty, param_name);
+                _ = self.builder.buildStore(param_value, a);
+                break :blk a;
+            };
 
             const is_signed = self.isTypeSigned(param.type_);
 
@@ -4452,18 +4522,26 @@ pub const Emitter = struct {
                 self.builder.buildICmp(llvm.c.LLVMIntNE, lhs, rhs, "netmp"),
             .lt => if (is_float)
                 self.builder.buildFCmp(llvm.c.LLVMRealOLT, lhs, rhs, "flttmp")
+            else if (is_string)
+                self.emitStringPtrCmp(lhs_str_ptr, rhs_str_ptr, llvm.c.LLVMIntSLT, "strlt")
             else
                 self.builder.buildICmp(if (is_signed) llvm.c.LLVMIntSLT else llvm.c.LLVMIntULT, lhs, rhs, "lttmp"),
             .gt => if (is_float)
                 self.builder.buildFCmp(llvm.c.LLVMRealOGT, lhs, rhs, "fgttmp")
+            else if (is_string)
+                self.emitStringPtrCmp(lhs_str_ptr, rhs_str_ptr, llvm.c.LLVMIntSGT, "strgt")
             else
                 self.builder.buildICmp(if (is_signed) llvm.c.LLVMIntSGT else llvm.c.LLVMIntUGT, lhs, rhs, "gttmp"),
             .lt_eq => if (is_float)
                 self.builder.buildFCmp(llvm.c.LLVMRealOLE, lhs, rhs, "fletmp")
+            else if (is_string)
+                self.emitStringPtrCmp(lhs_str_ptr, rhs_str_ptr, llvm.c.LLVMIntSLE, "strle")
             else
                 self.builder.buildICmp(if (is_signed) llvm.c.LLVMIntSLE else llvm.c.LLVMIntULE, lhs, rhs, "letmp"),
             .gt_eq => if (is_float)
                 self.builder.buildFCmp(llvm.c.LLVMRealOGE, lhs, rhs, "fgetmp")
+            else if (is_string)
+                self.emitStringPtrCmp(lhs_str_ptr, rhs_str_ptr, llvm.c.LLVMIntSGE, "strge")
             else
                 self.builder.buildICmp(if (is_signed) llvm.c.LLVMIntSGE else llvm.c.LLVMIntUGE, lhs, rhs, "getmp"),
 
@@ -4669,6 +4747,27 @@ pub const Emitter = struct {
             result,
             llvm.Const.int32(self.ctx, 0),
             "strneq",
+        );
+    }
+
+    /// Emit string pointer ordering comparison using strcmp.
+    /// For binary <, >, <=, >= operators on char* strings.
+    /// predicate should be LLVMIntSLT, LLVMIntSGT, LLVMIntSLE, or LLVMIntSGE.
+    fn emitStringPtrCmp(self: *Emitter, lhs: llvm.ValueRef, rhs: llvm.ValueRef, predicate: llvm.c.LLVMIntPredicate, name: [:0]const u8) llvm.ValueRef {
+        const strcmp_fn = self.getOrDeclareStrcmp();
+        var args = [_]llvm.ValueRef{ lhs, rhs };
+        const result = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(strcmp_fn),
+            strcmp_fn,
+            &args,
+            "strcmp.result",
+        );
+        // strcmp returns <0, 0, or >0; compare as signed int
+        return self.builder.buildICmp(
+            predicate,
+            result,
+            llvm.Const.int32(self.ctx, 0),
+            name,
         );
     }
 
@@ -5763,6 +5862,9 @@ pub const Emitter = struct {
                         const sret_attr = llvm.createTypeAttribute(self.ctx, sret_kind, sret_return_type);
                         llvm.addCallSiteAttribute(call_inst, 1, sret_attr);
 
+                        // Add byval attributes to the call site
+                        self.addByvalCallSiteAttributes(call_inst, mangled_name, 1);
+
                         // Load and return the result
                         return self.builder.buildLoad(sret_return_type, sret_alloca, "sret.load");
                     }
@@ -5782,7 +5884,12 @@ pub const Emitter = struct {
 
                     const return_type = llvm.getReturnType(fn_type);
                     const call_name_str: [:0]const u8 = if (llvm.isVoidType(return_type)) "" else "calltmp";
-                    return self.builder.buildCall(fn_type, func, args.items, call_name_str);
+                    const call_inst = self.builder.buildCall(fn_type, func, args.items, call_name_str);
+
+                    // Add byval attributes to the call site
+                    self.addByvalCallSiteAttributes(call_inst, mangled_name, 0);
+
+                    return call_inst;
                 }
             }
         }
@@ -5899,6 +6006,9 @@ pub const Emitter = struct {
                     const sret_attr = llvm.createTypeAttribute(self.ctx, sret_kind, sret_return_type);
                     llvm.addCallSiteAttribute(call_inst, 1, sret_attr);
 
+                    // Add byval attributes to the call site
+                    self.addByvalCallSiteAttributes(call_inst, effective_lookup, 1);
+
                     // Load and return the result
                     return self.builder.buildLoad(sret_return_type, sret_alloca, "sret.load");
                 }
@@ -5983,7 +6093,12 @@ pub const Emitter = struct {
 
                 const return_type = llvm.getReturnType(fn_type);
                 const call_name_str: [:0]const u8 = if (llvm.isVoidType(return_type)) "" else "calltmp";
-                return self.builder.buildCall(fn_type, func, args.items, call_name_str);
+                const call_inst = self.builder.buildCall(fn_type, func, args.items, call_name_str);
+
+                // Add byval attributes to the call site
+                self.addByvalCallSiteAttributes(call_inst, effective_lookup, 0);
+
+                return call_inst;
             }
 
             // Check if it's a local variable
@@ -14536,9 +14651,11 @@ pub const Emitter = struct {
             const fn_type = llvm.c.LLVMGlobalGetValueType(puts_fn);
             return self.builder.buildCall(fn_type, puts_fn, &call_args, "");
         } else {
-            // Use printf for print (no newline)
+            // Use printf("%s", str) for print (no newline)
+            // Using "%s" format prevents interpreting % in the string as format specifiers
             const printf_fn = self.getOrDeclarePrintf();
-            var call_args = [_]llvm.ValueRef{arg_value};
+            const fmt_str = self.builder.buildGlobalStringPtr("%s", "print.fmt");
+            var call_args = [_]llvm.ValueRef{ fmt_str, arg_value };
             const fn_type = llvm.c.LLVMGlobalGetValueType(printf_fn);
             return self.builder.buildCall(fn_type, printf_fn, &call_args, "");
         }
@@ -32350,6 +32467,15 @@ pub const Emitter = struct {
             }
         }
 
+        // Check if argument is a struct but expected type is a pointer (byval convention).
+        // This happens when a large struct parameter is passed by pointer with byval attribute.
+        if (arg_kind == llvm.c.LLVMStructTypeKind and expected_kind == llvm.c.LLVMPointerTypeKind) {
+            // Allocate the struct on stack and pass a pointer to it
+            const byval_alloca = self.builder.buildAlloca(arg_type, "byval.arg");
+            _ = self.builder.buildStore(arg_value, byval_alloca);
+            return byval_alloca;
+        }
+
         // No conversion needed
         return arg_value;
     }
@@ -37169,6 +37295,32 @@ pub const Emitter = struct {
         return kind;
     }
 
+    /// Get or create the byval attribute kind ID.
+    fn getByvalAttrKind(self: *Emitter) c_uint {
+        if (self.byval_attr_kind) |kind| {
+            return kind;
+        }
+        const kind = llvm.getEnumAttributeKindForName("byval");
+        self.byval_attr_kind = kind;
+        return kind;
+    }
+
+    /// Add byval attributes to a call instruction for any byval parameters.
+    /// func_name is the callee name used to look up byval_functions.
+    /// sret_offset is 1 if the function has an sret param (which shifts user param indices), else 0.
+    fn addByvalCallSiteAttributes(self: *Emitter, call_inst: llvm.ValueRef, func_name: []const u8, sret_offset: u32) void {
+        const byval_info = self.byval_functions.get(func_name) orelse return;
+        const byval_kind = self.getByvalAttrKind();
+        for (byval_info, 0..) |maybe_struct_ty, i| {
+            if (maybe_struct_ty) |struct_ty| {
+                // Call site attribute index is 1-based, offset by sret if present
+                const attr_index: c_uint = @intCast(i + 1 + sret_offset);
+                const byval_attr = llvm.createTypeAttribute(self.ctx, byval_kind, struct_ty);
+                llvm.addCallSiteAttribute(call_inst, attr_index, byval_attr);
+            }
+        }
+    }
+
     /// Get or create the noalias attribute kind ID.
     fn getNoaliasAttrKind(_: *Emitter) c_uint {
         return llvm.getEnumAttributeKindForName("noalias");
@@ -37909,6 +38061,11 @@ pub const Emitter = struct {
         var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
         defer param_types.deinit(self.allocator);
 
+        // Track byval info for large struct parameters
+        var byval_param_types = std.ArrayListUnmanaged(?llvm.TypeRef){};
+        defer byval_param_types.deinit(self.allocator);
+        var has_byval = false;
+
         // If sret is needed, add pointer parameter as first param
         if (needs_sret) {
             param_types.append(self.allocator, llvm.Types.pointer(self.ctx)) catch return EmitError.OutOfMemory;
@@ -37916,7 +38073,20 @@ pub const Emitter = struct {
 
         for (func_type.params) |param_ty| {
             const llvm_param_ty = self.typeToLLVM(param_ty);
+
+            // Check if this is a large struct that needs byval passing
+            if (llvm.getTypeKind(llvm_param_ty) == llvm.c.LLVMStructTypeKind) {
+                const struct_size = self.getLLVMTypeSize(llvm_param_ty);
+                if (struct_size > 8) {
+                    param_types.append(self.allocator, llvm.Types.pointer(self.ctx)) catch return EmitError.OutOfMemory;
+                    byval_param_types.append(self.allocator, llvm_param_ty) catch return EmitError.OutOfMemory;
+                    has_byval = true;
+                    continue;
+                }
+            }
+
             param_types.append(self.allocator, llvm_param_ty) catch return EmitError.OutOfMemory;
+            byval_param_types.append(self.allocator, null) catch return EmitError.OutOfMemory;
         }
 
         // Get return type - void if using sret
@@ -37930,6 +38100,24 @@ pub const Emitter = struct {
         defer self.allocator.free(mangled_name);
 
         const llvm_func = llvm.addFunction(self.module, mangled_name, fn_type);
+
+        // Add byval attributes to large struct parameters
+        if (has_byval) {
+            const byval_kind = self.getByvalAttrKind();
+            const sret_offset: u32 = if (needs_sret) 1 else 0;
+            for (byval_param_types.items, 0..) |maybe_struct_ty, i| {
+                if (maybe_struct_ty) |struct_ty| {
+                    const attr_index: c_uint = @intCast(i + 1 + sret_offset);
+                    const byval_attr = llvm.createTypeAttribute(self.ctx, byval_kind, struct_ty);
+                    llvm.addAttributeAtIndex(llvm_func, attr_index, byval_attr);
+                }
+            }
+
+            // Register byval info for call sites
+            const name_copy = self.allocator.dupe(u8, mono.mangled_name) catch return EmitError.OutOfMemory;
+            const byval_info = self.allocator.dupe(?llvm.TypeRef, byval_param_types.items) catch return EmitError.OutOfMemory;
+            self.byval_functions.put(name_copy, byval_info) catch return EmitError.OutOfMemory;
+        }
 
         // Add sret attribute to first parameter if needed
         if (needs_sret) {
