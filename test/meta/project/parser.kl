@@ -1,13 +1,15 @@
 // Test fixture: parser module
+import lexer
+
 meta module {
     purpose: "Recursive descent parser",
     role: "frontend",
-    depends: ["lexer", "ast"]
+    depends: ["lexer"]
 }
 
 meta tag("parsing")
 meta intent("Entry point for expression parsing")
-fn parse_expr(input: i32) -> i32 {
+pub fn parse_expr(input: i32) -> i32 {
     return input + 1
 }
 

@@ -1,0 +1,10 @@
+// Expected: check-error meta related: 'helper' is not a module
+
+fn helper() -> i32 {
+    return 1
+}
+
+meta related(helper::something)
+fn process(x: i32) -> i32 {
+    return x
+}

@@ -790,18 +790,57 @@ fn scopeName(scope: ast.MetaScope) []const u8 {
 }
 
 /// Validate paths in a meta related annotation.
+/// Single-segment paths are resolved in the current scope.
+/// Multi-segment paths (e.g., module::function) are resolved across modules
+/// by looking up the namespace import, then the symbol in the module's exports.
 fn validateRelatedPaths(tc: anytype, related: *ast.MetaRelated) void {
     for (related.paths) |path| {
         if (path.segments.len == 0) continue;
 
-        // Single-segment path: look up in current scope
-        const name = path.segments[0];
-        if (tc.current_scope.lookup(name) == null) {
-            if (path.segments.len == 1) {
+        if (path.segments.len == 1) {
+            // Single-segment path: look up in current scope
+            const name = path.segments[0];
+            if (tc.current_scope.lookup(name) == null) {
                 tc.addError(.meta_error, path.span, "meta related: '{s}' does not refer to a known declaration", .{name});
             }
-            // Multi-segment paths: validate first segment only for M.5
-            // Full cross-module resolution deferred to later milestone
+        } else {
+            // Multi-segment path: resolve across modules
+            const module_name = path.segments[0];
+            const namespace_sym = tc.current_scope.lookup(module_name) orelse {
+                tc.addError(.meta_error, path.span, "meta related: '{s}' is not imported", .{module_name});
+                continue;
+            };
+
+            if (namespace_sym.kind != .module) {
+                tc.addError(.meta_error, path.span, "meta related: '{s}' is not a module", .{module_name});
+                continue;
+            }
+
+            const mod_ref = namespace_sym.module_ref orelse continue;
+            const canonical = mod_ref.canonicalName(tc.allocator) catch continue;
+            defer tc.allocator.free(canonical);
+
+            const mod_symbols = tc.module_registry.get(canonical) orelse {
+                // Module registered but no exports yet (Phase 1 of two-phase checking)
+                continue;
+            };
+
+            // Look up the symbol in the module's exports
+            const symbol_name = path.segments[1];
+            const mod_sym = mod_symbols.symbols.get(symbol_name) orelse {
+                const joined = joinMetaPath(tc.allocator, path.segments);
+                defer joined.deinit();
+                tc.addError(.meta_error, path.span, "meta related: '{s}' not found in module '{s}'", .{ symbol_name, module_name });
+                continue;
+            };
+
+            if (!mod_sym.is_pub) {
+                tc.addError(.meta_error, path.span, "meta related: '{s}' is not public in module '{s}'", .{ symbol_name, module_name });
+                continue;
+            }
+
+            // 3+ segments (e.g., module::Type::method) — module and type validated,
+            // method resolution would require impl tracking; accepted for now.
         }
     }
 }

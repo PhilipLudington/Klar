@@ -1,0 +1,26 @@
+// main.kl - Tests cross-module meta related resolution
+// The meta related paths are validated at compile time.
+// If any path is invalid, the build will fail with a type error.
+import helpers
+
+// Cross-module path: resolves helpers::validate in module exports
+meta related(helpers::validate, "Uses validate for input checking")
+fn process(x: i32) -> i32 {
+    return x + 1
+}
+
+// Multiple cross-module paths
+meta related(helpers::validate, helpers::sanitize)
+fn handle(x: i32) -> i32 {
+    return x + 2
+}
+
+// Mix of local and cross-module paths
+meta related(process, helpers::sanitize)
+fn combined(x: i32) -> i32 {
+    return process(x) + handle(x)
+}
+
+fn main() -> i32 {
+    return 0
+}

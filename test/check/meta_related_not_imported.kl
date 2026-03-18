@@ -1,0 +1,6 @@
+// Expected: check-error meta related: 'unknown_mod' is not imported
+
+meta related(unknown_mod::some_fn)
+fn process(x: i32) -> i32 {
+    return x
+}

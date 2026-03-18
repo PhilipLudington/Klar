@@ -772,6 +772,29 @@ else
     echo "⊘ registry (test not found, skipping)"
 fi
 
+# Test: Cross-module meta related resolution
+echo ""
+echo "--- meta_related: Cross-module meta related paths ---"
+if [ -f "$TEST_DIR/meta_related/main.kl" ]; then
+    temp_bin="/tmp/klar_module_meta_related"
+    if $KLAR build $TEST_DIR/meta_related/main.kl -o "$temp_bin" 2>/dev/null; then
+        result=$(run_with_timeout 10 "$temp_bin" 2>/dev/null; echo $?)
+        if [ $result -eq 0 ]; then
+            echo "✓ meta_related (exit: $result)"
+            record_success "meta_related"
+        else
+            echo "✗ meta_related (expected: 0, got: $result)"
+            record_failure "meta_related" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ meta_related (build failed)"
+        record_failure "meta_related" "build failed"
+    fi
+else
+    echo "⊘ meta_related (test not found, skipping)"
+fi
+
 TOTAL=$((PASSED + FAILED))
 
 # Write results JSON

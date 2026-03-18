@@ -1,0 +1,13 @@
+// helpers.kl - Module with exported functions for cross-module meta related tests
+
+pub fn validate(x: i32) -> i32 {
+    return x
+}
+
+pub fn sanitize(s: string) -> string {
+    return s
+}
+
+fn internal_helper() -> i32 {
+    return 1
+}
