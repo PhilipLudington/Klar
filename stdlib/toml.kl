@@ -206,7 +206,7 @@ fn hex_val(c: i32) -> i32 {
 }
 
 fn char_to_str(c: char) -> string {
-    return from_byte(c.as#[u8])
+    return encode_utf8(c.as#[i32])
 }
 
 fn make_error(msg: string, line: i32) -> TomlError {
@@ -294,7 +294,7 @@ fn skip_blank_lines(chars: [char], pos: i32, len: i32) -> i32 {
 
 pub fn toml_parse(input: string) -> Result#[TomlValue, TomlError] {
     let chars: [char] = input.chars()
-    let len: i32 = input.len()
+    let len: i32 = chars.len()
     var pos: i32 = 0
 
     var root: Map#[string, TomlValue] = Map.new#[string, TomlValue]()
