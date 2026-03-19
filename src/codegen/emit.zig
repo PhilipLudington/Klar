@@ -16426,6 +16426,21 @@ pub const Emitter = struct {
             },
             else => {},
         }
+        // Check for field access on structs (e.g., s.name where name is a String field)
+        if (expr == .field) {
+            const field = expr.field;
+            const struct_name = if (field.object == .identifier) blk: {
+                if (self.named_values.get(field.object.identifier.name)) |local| {
+                    break :blk local.struct_type_name;
+                }
+                break :blk self.getStructTypeNameFromExpr(field.object);
+            } else self.getStructTypeNameFromExpr(field.object);
+            if (struct_name) |sn| {
+                if (self.getFieldType(sn, field.field_name)) |field_type| {
+                    return field_type == .string_data;
+                }
+            }
+        }
         // Fallback: check via type checker (for non-identifier expressions)
         if (self.type_checker) |tc| {
             const tc_mut = @constCast(tc);
@@ -16501,6 +16516,21 @@ pub const Emitter = struct {
             if (self.named_values.get(expr.identifier.name)) |local| {
                 if (local.is_string) {
                     return true;
+                }
+            }
+        }
+        // Check for field access on structs (e.g., s.name where name: string)
+        if (expr == .field) {
+            const field = expr.field;
+            const struct_name = if (field.object == .identifier) blk: {
+                if (self.named_values.get(field.object.identifier.name)) |local| {
+                    break :blk local.struct_type_name;
+                }
+                break :blk self.getStructTypeNameFromExpr(field.object);
+            } else self.getStructTypeNameFromExpr(field.object);
+            if (struct_name) |sn| {
+                if (self.getFieldType(sn, field.field_name)) |field_type| {
+                    return field_type == .primitive and field_type.primitive == .string_;
                 }
             }
         }

@@ -1,0 +1,30 @@
+extern {
+    fn puts(s: CStr) -> i32
+}
+
+struct Sector {
+    name: string,
+    power: i32,
+}
+
+fn show_sector(s: Sector) -> void {
+    unsafe { puts(s.name.as_cstr()) }
+}
+
+fn get_name(s: Sector) -> string {
+    return s.name
+}
+
+fn main() -> i32 {
+    let sec: Sector = Sector { name: "Bridge", power: 80 }
+    show_sector(sec)
+
+    let n: string = get_name(sec)
+    if n != "Bridge" {
+        return 1
+    }
+    if sec.power != 80 {
+        return 2
+    }
+    return 0
+}
