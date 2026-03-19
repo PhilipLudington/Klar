@@ -33362,8 +33362,7 @@ pub const Emitter = struct {
     }
 
     /// Declare or get the klar_string_chars runtime function.
-    /// This function treats each byte as a character.
-    /// Note: ASCII-only; proper UTF-8 decoding is a future enhancement.
+    /// Properly decodes UTF-8 codepoints into an array of i32 values.
     fn getOrDeclareStringChars(self: *Emitter) llvm.ValueRef {
         const fn_name = "klar_string_chars";
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
@@ -33382,11 +33381,19 @@ pub const Emitter = struct {
         const fn_type = llvm.c.LLVMFunctionType(slice_type, &param_types, 1, 0);
         const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
 
-        // Build the function body inline
+        // Basic blocks for UTF-8 decoding
         const entry_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "entry");
         const loop_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "loop");
-        const loop_body_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "loop_body");
-        const loop_end_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "loop_end");
+        const body_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "body");
+        const ascii_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "ascii");
+        const not_ascii_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "not_ascii");
+        const cont_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "cont");
+        const not_cont_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "not_cont");
+        const decode2_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "decode2");
+        const not_2byte_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "not_2byte");
+        const decode3_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "decode3");
+        const decode4_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "decode4");
+        const store_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "store");
         const ret_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "return");
 
         const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
@@ -33397,29 +33404,31 @@ pub const Emitter = struct {
         const i64_type = llvm.Types.int64(self.ctx);
         const zero_i64 = llvm.Const.int64(self.ctx, 0);
         const one_i64 = llvm.Const.int64(self.ctx, 1);
-        const four_i64 = llvm.Const.int64(self.ctx, 4); // sizeof(i32)
+        const two_i64 = llvm.Const.int64(self.ctx, 2);
+        const three_i64 = llvm.Const.int64(self.ctx, 3);
+        const four_i64 = llvm.Const.int64(self.ctx, 4);
 
-        // Entry block
+        // Entry block: compute byte_len, allocate result array
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry_bb);
         const s = llvm.c.LLVMGetParam(func, 0);
 
-        // Get string length using strlen
+        // Get byte length using strlen
         const strlen_fn = self.getOrDeclareStrlen();
         var strlen_args = [_]llvm.ValueRef{s};
-        const len = llvm.c.LLVMBuildCall2(
+        const byte_len = llvm.c.LLVMBuildCall2(
             self.builder.ref,
             llvm.c.LLVMGlobalGetValueType(strlen_fn),
             strlen_fn,
             &strlen_args,
             1,
-            "len",
+            "byte_len",
         );
 
-        // Allocate array of i32 (len * 4 bytes)
-        const alloc_size = llvm.c.LLVMBuildMul(self.builder.ref, len, four_i64, "alloc_size");
+        // Allocate byte_len * 4 bytes (upper bound: at most byte_len codepoints)
+        const alloc_size = llvm.c.LLVMBuildMul(self.builder.ref, byte_len, four_i64, "alloc_size");
         const malloc_fn = self.getOrDeclareMalloc();
         var malloc_args = [_]llvm.ValueRef{alloc_size};
-        const result = llvm.c.LLVMBuildCall2(
+        const result_ptr = llvm.c.LLVMBuildCall2(
             self.builder.ref,
             llvm.c.LLVMGlobalGetValueType(malloc_fn),
             malloc_fn,
@@ -33428,59 +33437,152 @@ pub const Emitter = struct {
             "result",
         );
 
-        // Allocate index variable
-        const idx_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, i64_type, "idx_ptr");
-        _ = llvm.c.LLVMBuildStore(self.builder.ref, zero_i64, idx_ptr);
-
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_bb);
 
-        // Loop condition
+        // Loop header: phi nodes for byte_idx and char_idx
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_bb);
-        const idx = llvm.c.LLVMBuildLoad2(self.builder.ref, i64_type, idx_ptr, "idx");
-        const cond = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntULT, idx, len, "cond");
-        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, cond, loop_body_bb, loop_end_bb);
+        const byte_idx_phi = llvm.c.LLVMBuildPhi(self.builder.ref, i64_type, "byte_idx");
+        const char_idx_phi = llvm.c.LLVMBuildPhi(self.builder.ref, i64_type, "char_idx");
+        const loop_cond = self.builder.buildICmp(llvm.c.LLVMIntULT, byte_idx_phi, byte_len, "loop_cond");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, loop_cond, body_bb, ret_bb);
 
-        // Loop body: copy byte as i32
-        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_body_bb);
+        // Body: load lead byte and classify
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, body_bb);
+        var lead_gep = [_]llvm.ValueRef{byte_idx_phi};
+        const lead_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, s, &lead_gep, 1, "lead_ptr");
+        const lead_byte = self.builder.buildLoad(i8_type, lead_ptr, "lead_byte");
+        const lead_i32 = llvm.c.LLVMBuildZExt(self.builder.ref, lead_byte, i32_type, "lead_i32");
+        // Check ASCII (< 0x80)
+        const is_ascii = self.builder.buildICmp(llvm.c.LLVMIntULT, lead_i32, llvm.Const.int32(self.ctx, 0x80), "is_ascii");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_ascii, ascii_bb, not_ascii_bb);
 
-        // Load source byte
-        var src_indices = [_]llvm.ValueRef{idx};
-        const src_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, s, &src_indices, 1, "src_ptr");
-        const byte = llvm.c.LLVMBuildLoad2(self.builder.ref, i8_type, src_ptr, "byte");
+        // ASCII: codepoint = lead byte, advance 1
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, ascii_bb);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, store_bb);
 
-        // Zero-extend byte to i32
-        const char_val = llvm.c.LLVMBuildZExt(self.builder.ref, byte, i32_type, "char_val");
+        // Not ASCII: check continuation byte (< 0xC0)
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, not_ascii_bb);
+        const is_cont = self.builder.buildICmp(llvm.c.LLVMIntULT, lead_i32, llvm.Const.int32(self.ctx, 0xC0), "is_cont");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_cont, cont_bb, not_cont_bb);
 
-        // Store to result array
-        var dst_indices = [_]llvm.ValueRef{idx};
-        const dst_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i32_type, result, &dst_indices, 1, "dst_ptr");
-        _ = llvm.c.LLVMBuildStore(self.builder.ref, char_val, dst_ptr);
+        // Continuation byte without lead: replacement char U+FFFD, advance 1
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, cont_bb);
+        const replacement = llvm.Const.int32(self.ctx, 0xFFFD);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, store_bb);
 
-        // Increment index
-        const next_idx = llvm.c.LLVMBuildAdd(self.builder.ref, idx, one_i64, "next_idx");
-        _ = llvm.c.LLVMBuildStore(self.builder.ref, next_idx, idx_ptr);
+        // Not continuation: check 2-byte lead (< 0xE0)
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, not_cont_bb);
+        const is_2byte = self.builder.buildICmp(llvm.c.LLVMIntULT, lead_i32, llvm.Const.int32(self.ctx, 0xE0), "is_2byte");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_2byte, decode2_bb, not_2byte_bb);
+
+        // Decode 2-byte: cp = (lead & 0x1F) << 6 | (b1 & 0x3F)
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, decode2_bb);
+        const idx_p1_2 = llvm.c.LLVMBuildAdd(self.builder.ref, byte_idx_phi, one_i64, "idx_p1_2");
+        var b1_2_gep = [_]llvm.ValueRef{idx_p1_2};
+        const b1_2_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, s, &b1_2_gep, 1, "b1_2_ptr");
+        const b1_2 = self.builder.buildLoad(i8_type, b1_2_ptr, "b1_2");
+        const b1_2_i32 = llvm.c.LLVMBuildZExt(self.builder.ref, b1_2, i32_type, "b1_2_i32");
+        const lead_1f = llvm.c.LLVMBuildAnd(self.builder.ref, lead_i32, llvm.Const.int32(self.ctx, 0x1F), "lead_1f");
+        const lead_shl6 = llvm.c.LLVMBuildShl(self.builder.ref, lead_1f, llvm.Const.int32(self.ctx, 6), "lead_shl6");
+        const b1_3f_2 = llvm.c.LLVMBuildAnd(self.builder.ref, b1_2_i32, llvm.Const.int32(self.ctx, 0x3F), "b1_3f_2");
+        const cp_2byte = llvm.c.LLVMBuildOr(self.builder.ref, lead_shl6, b1_3f_2, "cp_2byte");
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, store_bb);
+
+        // Check 3-byte lead (< 0xF0)
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, not_2byte_bb);
+        const is_3byte = self.builder.buildICmp(llvm.c.LLVMIntULT, lead_i32, llvm.Const.int32(self.ctx, 0xF0), "is_3byte");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_3byte, decode3_bb, decode4_bb);
+
+        // Decode 3-byte: cp = (lead & 0x0F) << 12 | (b1 & 0x3F) << 6 | (b2 & 0x3F)
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, decode3_bb);
+        const idx_p1_3 = llvm.c.LLVMBuildAdd(self.builder.ref, byte_idx_phi, one_i64, "idx_p1_3");
+        const idx_p2_3 = llvm.c.LLVMBuildAdd(self.builder.ref, byte_idx_phi, two_i64, "idx_p2_3");
+        var b1_3_gep = [_]llvm.ValueRef{idx_p1_3};
+        const b1_3_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, s, &b1_3_gep, 1, "b1_3_ptr");
+        const b1_3 = self.builder.buildLoad(i8_type, b1_3_ptr, "b1_3");
+        const b1_3_i32 = llvm.c.LLVMBuildZExt(self.builder.ref, b1_3, i32_type, "b1_3_i32");
+        var b2_3_gep = [_]llvm.ValueRef{idx_p2_3};
+        const b2_3_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, s, &b2_3_gep, 1, "b2_3_ptr");
+        const b2_3 = self.builder.buildLoad(i8_type, b2_3_ptr, "b2_3");
+        const b2_3_i32 = llvm.c.LLVMBuildZExt(self.builder.ref, b2_3, i32_type, "b2_3_i32");
+        const lead_0f = llvm.c.LLVMBuildAnd(self.builder.ref, lead_i32, llvm.Const.int32(self.ctx, 0x0F), "lead_0f");
+        const lead_shl12 = llvm.c.LLVMBuildShl(self.builder.ref, lead_0f, llvm.Const.int32(self.ctx, 12), "lead_shl12");
+        const b1_3f_3 = llvm.c.LLVMBuildAnd(self.builder.ref, b1_3_i32, llvm.Const.int32(self.ctx, 0x3F), "b1_3f_3");
+        const b1_shl6_3 = llvm.c.LLVMBuildShl(self.builder.ref, b1_3f_3, llvm.Const.int32(self.ctx, 6), "b1_shl6_3");
+        const b2_3f_3 = llvm.c.LLVMBuildAnd(self.builder.ref, b2_3_i32, llvm.Const.int32(self.ctx, 0x3F), "b2_3f_3");
+        const tmp_3a = llvm.c.LLVMBuildOr(self.builder.ref, lead_shl12, b1_shl6_3, "tmp_3a");
+        const cp_3byte = llvm.c.LLVMBuildOr(self.builder.ref, tmp_3a, b2_3f_3, "cp_3byte");
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, store_bb);
+
+        // Decode 4-byte: cp = (lead & 0x07) << 18 | (b1 & 0x3F) << 12 | (b2 & 0x3F) << 6 | (b3 & 0x3F)
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, decode4_bb);
+        const idx_p1_4 = llvm.c.LLVMBuildAdd(self.builder.ref, byte_idx_phi, one_i64, "idx_p1_4");
+        const idx_p2_4 = llvm.c.LLVMBuildAdd(self.builder.ref, byte_idx_phi, two_i64, "idx_p2_4");
+        const idx_p3_4 = llvm.c.LLVMBuildAdd(self.builder.ref, byte_idx_phi, three_i64, "idx_p3_4");
+        var b1_4_gep = [_]llvm.ValueRef{idx_p1_4};
+        const b1_4_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, s, &b1_4_gep, 1, "b1_4_ptr");
+        const b1_4 = self.builder.buildLoad(i8_type, b1_4_ptr, "b1_4");
+        const b1_4_i32 = llvm.c.LLVMBuildZExt(self.builder.ref, b1_4, i32_type, "b1_4_i32");
+        var b2_4_gep = [_]llvm.ValueRef{idx_p2_4};
+        const b2_4_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, s, &b2_4_gep, 1, "b2_4_ptr");
+        const b2_4 = self.builder.buildLoad(i8_type, b2_4_ptr, "b2_4");
+        const b2_4_i32 = llvm.c.LLVMBuildZExt(self.builder.ref, b2_4, i32_type, "b2_4_i32");
+        var b3_4_gep = [_]llvm.ValueRef{idx_p3_4};
+        const b3_4_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, s, &b3_4_gep, 1, "b3_4_ptr");
+        const b3_4 = self.builder.buildLoad(i8_type, b3_4_ptr, "b3_4");
+        const b3_4_i32 = llvm.c.LLVMBuildZExt(self.builder.ref, b3_4, i32_type, "b3_4_i32");
+        const lead_07 = llvm.c.LLVMBuildAnd(self.builder.ref, lead_i32, llvm.Const.int32(self.ctx, 0x07), "lead_07");
+        const lead_shl18 = llvm.c.LLVMBuildShl(self.builder.ref, lead_07, llvm.Const.int32(self.ctx, 18), "lead_shl18");
+        const b1_3f_4 = llvm.c.LLVMBuildAnd(self.builder.ref, b1_4_i32, llvm.Const.int32(self.ctx, 0x3F), "b1_3f_4");
+        const b1_shl12_4 = llvm.c.LLVMBuildShl(self.builder.ref, b1_3f_4, llvm.Const.int32(self.ctx, 12), "b1_shl12_4");
+        const b2_3f_4 = llvm.c.LLVMBuildAnd(self.builder.ref, b2_4_i32, llvm.Const.int32(self.ctx, 0x3F), "b2_3f_4");
+        const b2_shl6_4 = llvm.c.LLVMBuildShl(self.builder.ref, b2_3f_4, llvm.Const.int32(self.ctx, 6), "b2_shl6_4");
+        const b3_3f_4 = llvm.c.LLVMBuildAnd(self.builder.ref, b3_4_i32, llvm.Const.int32(self.ctx, 0x3F), "b3_3f_4");
+        const tmp1_4 = llvm.c.LLVMBuildOr(self.builder.ref, lead_shl18, b1_shl12_4, "tmp1_4");
+        const tmp2_4 = llvm.c.LLVMBuildOr(self.builder.ref, tmp1_4, b2_shl6_4, "tmp2_4");
+        const cp_4byte = llvm.c.LLVMBuildOr(self.builder.ref, tmp2_4, b3_3f_4, "cp_4byte");
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, store_bb);
+
+        // Store block: phi for codepoint and byte advance, then store to result
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, store_bb);
+        const cp_phi = llvm.c.LLVMBuildPhi(self.builder.ref, i32_type, "cp");
+        const advance_phi = llvm.c.LLVMBuildPhi(self.builder.ref, i64_type, "advance");
+
+        var cp_vals = [_]llvm.ValueRef{ lead_i32, replacement, cp_2byte, cp_3byte, cp_4byte };
+        var cp_bbs = [_]llvm.BasicBlockRef{ ascii_bb, cont_bb, decode2_bb, decode3_bb, decode4_bb };
+        llvm.c.LLVMAddIncoming(cp_phi, &cp_vals, &cp_bbs, 5);
+
+        var adv_vals = [_]llvm.ValueRef{ one_i64, one_i64, two_i64, three_i64, four_i64 };
+        var adv_bbs = [_]llvm.BasicBlockRef{ ascii_bb, cont_bb, decode2_bb, decode3_bb, decode4_bb };
+        llvm.c.LLVMAddIncoming(advance_phi, &adv_vals, &adv_bbs, 5);
+
+        // Store codepoint to result[char_idx]
+        var dst_gep = [_]llvm.ValueRef{char_idx_phi};
+        const dst_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i32_type, result_ptr, &dst_gep, 1, "dst_ptr");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, cp_phi, dst_ptr);
+
+        // Advance byte index by sequence length, char index by 1
+        const next_byte_idx = llvm.c.LLVMBuildAdd(self.builder.ref, byte_idx_phi, advance_phi, "next_byte_idx");
+        const next_char_idx = llvm.c.LLVMBuildAdd(self.builder.ref, char_idx_phi, one_i64, "next_char_idx");
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_bb);
 
-        // Loop end: build result struct
-        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_end_bb);
-        _ = llvm.c.LLVMBuildBr(self.builder.ref, ret_bb);
+        // Wire up loop phi incoming values
+        var byte_idx_vals = [_]llvm.ValueRef{ zero_i64, next_byte_idx };
+        var byte_idx_bbs = [_]llvm.BasicBlockRef{ entry_bb, store_bb };
+        llvm.c.LLVMAddIncoming(byte_idx_phi, &byte_idx_vals, &byte_idx_bbs, 2);
 
-        // Return the slice struct
+        var char_idx_vals = [_]llvm.ValueRef{ zero_i64, next_char_idx };
+        var char_idx_bbs = [_]llvm.BasicBlockRef{ entry_bb, store_bb };
+        llvm.c.LLVMAddIncoming(char_idx_phi, &char_idx_vals, &char_idx_bbs, 2);
+
+        // Return block: build slice struct { result_ptr, char_count }
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, ret_bb);
-
-        // Build slice struct { ptr, len } using alloca + store + load
         const slice_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, slice_type, "slice_ptr");
-
-        // Store pointer field (index 0)
         const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, slice_ptr, 0, "ptr_field");
-        _ = llvm.c.LLVMBuildStore(self.builder.ref, result, ptr_field);
-
-        // Store length field (index 1)
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, result_ptr, ptr_field);
         const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, slice_ptr, 1, "len_field");
-        _ = llvm.c.LLVMBuildStore(self.builder.ref, len, len_field);
-
-        // Load the complete slice struct and return
-        const slice_val = llvm.c.LLVMBuildLoad2(self.builder.ref, slice_type, slice_ptr, "slice_val");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, char_idx_phi, len_field);
+        const slice_val = self.builder.buildLoad(slice_type, slice_ptr, "slice_val");
         _ = llvm.c.LLVMBuildRet(self.builder.ref, slice_val);
 
         // Restore builder position

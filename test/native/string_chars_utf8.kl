@@ -1,0 +1,46 @@
+// Test that string.chars() correctly decodes UTF-8 codepoints in native codegen
+
+fn main() -> i32 {
+    // ASCII: chars count == byte count
+    let ascii: string = "hello"
+    let ac: [char] = ascii.chars()
+    assert_eq(ac.len(), 5)
+    assert_eq(ac[0].as#[i32], 104)  // 'h'
+    assert_eq(ac[4].as#[i32], 111)  // 'o'
+
+    // 2-byte UTF-8: e-acute U+00E9 = 0xC3 0xA9
+    let s2: string = "caf" + from_byte(195.as#[u8]) + from_byte(169.as#[u8])
+    let c2: [char] = s2.chars()
+    assert_eq(s2.len(), 4)
+    assert_eq(c2.len(), 4)
+    assert_eq(c2[3].as#[i32], 233)  // U+00E9
+
+    // 3-byte UTF-8: em-dash U+2014 = 0xE2 0x80 0x94
+    let s3: string = "a" + from_byte(226.as#[u8]) + from_byte(128.as#[u8]) + from_byte(148.as#[u8]) + "b"
+    let c3: [char] = s3.chars()
+    assert_eq(s3.len(), 3)
+    assert_eq(c3.len(), 3)
+    assert_eq(c3[0].as#[i32], 97)    // 'a'
+    assert_eq(c3[1].as#[i32], 8212)  // U+2014 em-dash
+    assert_eq(c3[2].as#[i32], 98)    // 'b'
+
+    // 4-byte UTF-8: party emoji U+1F389 = 0xF0 0x9F 0x8E 0x89
+    let s4: string = from_byte(240.as#[u8]) + from_byte(159.as#[u8]) + from_byte(142.as#[u8]) + from_byte(137.as#[u8])
+    let c4: [char] = s4.chars()
+    assert_eq(s4.len(), 1)
+    assert_eq(c4.len(), 1)
+    assert_eq(c4[0].as#[i32], 127881)  // U+1F389
+
+    // Mixed: ASCII + 3-byte + ASCII
+    let sm: string = "hi" + from_byte(226.as#[u8]) + from_byte(128.as#[u8]) + from_byte(148.as#[u8]) + "ok"
+    let cm: [char] = sm.chars()
+    assert_eq(sm.len(), 5)
+    assert_eq(cm.len(), 5)
+    assert_eq(cm[0].as#[i32], 104)   // 'h'
+    assert_eq(cm[1].as#[i32], 105)   // 'i'
+    assert_eq(cm[2].as#[i32], 8212)  // em-dash
+    assert_eq(cm[3].as#[i32], 111)   // 'o'
+    assert_eq(cm[4].as#[i32], 107)   // 'k'
+
+    return 0
+}
