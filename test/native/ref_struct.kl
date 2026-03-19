@@ -1,0 +1,36 @@
+struct Point {
+    x: f32,
+    y: f32,
+}
+
+fn get_x(p: ref Point) -> f32 {
+    return (*p).x
+}
+
+fn get_y(p: ref Point) -> f32 {
+    return (*p).y
+}
+
+// Also test direct field access on ref (p.x syntax)
+fn get_x_direct(p: ref Point) -> f32 {
+    return p.x
+}
+
+fn main() -> i32 {
+    let pt: Point = Point { x: 10.0.as#[f32], y: 20.0.as#[f32] }
+    let vx: f32 = get_x(ref pt)
+    let vy: f32 = get_y(ref pt)
+    let vx2: f32 = get_x_direct(ref pt)
+
+    // Verify values (use integer comparison for exit code)
+    if vx != 10.0.as#[f32] {
+        return 1
+    }
+    if vy != 20.0.as#[f32] {
+        return 2
+    }
+    if vx2 != 10.0.as#[f32] {
+        return 3
+    }
+    return 0
+}

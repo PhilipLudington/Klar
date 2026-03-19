@@ -5315,6 +5315,12 @@ pub const Emitter = struct {
                         if (local.inner_type) |inner| {
                             break :blk inner;
                         }
+                        // For reference parameters (ref T), use the reference inner type
+                        if (local.is_reference) {
+                            if (local.reference_inner_type) |ref_inner| {
+                                break :blk ref_inner;
+                            }
+                        }
                     }
                     // Fallback: try to infer from expression
                     break :blk try self.inferDerefType(un.operand);
@@ -8961,6 +8967,25 @@ pub const Emitter = struct {
         // First try the basic getStructTypeName for identifiers and struct literals
         if (self.getStructTypeName(expr)) |name| {
             return name;
+        }
+
+        // Unwrap grouped expressions (parenthesized) to look through to the inner expr
+        if (expr == .grouped) {
+            return self.getStructTypeNameFromExpr(expr.grouped.expr);
+        }
+
+        // For unary deref expressions (*p), look through the deref to find struct name
+        if (expr == .unary) {
+            const un = expr.unary;
+            if (un.op == .deref) {
+                if (un.operand == .identifier) {
+                    const id = un.operand.identifier;
+                    if (self.named_values.get(id.name)) |local| {
+                        return local.struct_type_name;
+                    }
+                }
+            }
+            return null;
         }
 
         // For call expressions, look up the function's return type
