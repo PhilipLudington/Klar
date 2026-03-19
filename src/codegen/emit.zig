@@ -211,6 +211,9 @@ pub const Emitter = struct {
     /// Cache of allocated mangled enum names (for cleanup).
     mangled_enum_names: std.ArrayListUnmanaged([]const u8),
 
+    /// Cache of allocated mangled struct names (for cleanup).
+    mangled_struct_names: std.ArrayListUnmanaged([]const u8),
+
     /// Heap-allocated type objects from resolveTypeExprDirect (for cleanup).
     resolved_type_allocs: std.ArrayListUnmanaged(ResolvedTypeAlloc),
 
@@ -466,6 +469,7 @@ pub const Emitter = struct {
             .current_function_is_async = false,
             .skip_main = false,
             .mangled_enum_names = .{},
+            .mangled_struct_names = .{},
             .resolved_type_allocs = .{},
             .current_sret_ptr = null,
             .sret_attr_kind = null,
@@ -694,6 +698,11 @@ pub const Emitter = struct {
             self.allocator.free(name);
         }
         self.mangled_enum_names.deinit(self.allocator);
+        // Free allocated mangled struct names
+        for (self.mangled_struct_names.items) |name| {
+            self.allocator.free(name);
+        }
+        self.mangled_struct_names.deinit(self.allocator);
         // Free heap-allocated type objects from resolveTypeExprDirect
         for (self.resolved_type_allocs.items) |alloc| {
             switch (alloc) {
@@ -8952,7 +8961,12 @@ pub const Emitter = struct {
                         mangled.append(self.allocator, '$') catch return null;
                         self.appendTypeNameForMangling(&mangled, arg) catch return null;
                     }
-                    return mangled.items;
+                    const owned = mangled.toOwnedSlice(self.allocator) catch return null;
+                    self.mangled_struct_names.append(self.allocator, owned) catch {
+                        self.allocator.free(owned);
+                        return null;
+                    };
+                    return owned;
                 }
                 return null;
             },
