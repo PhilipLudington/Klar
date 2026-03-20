@@ -430,9 +430,14 @@ pub const Emitter = struct {
         const abi = target.ABI.init(platform);
         const calling_convention = target.CallingConvention.forPlatform(platform);
 
-        // Set target triple on the module for proper code generation
+        // Set target triple and data layout on the module for proper code generation.
+        // Data layout is required for correct ABI decisions (e.g., aggregate parameter passing).
         const triple = target.getDefaultTriple();
         module.setTarget(triple);
+        const data_layout = platform.getDataLayout();
+        if (data_layout.len > 0) {
+            module.setDataLayout(data_layout);
+        }
 
         return .{
             .allocator = allocator,
@@ -959,9 +964,13 @@ pub const Emitter = struct {
             "args",
         );
 
-        // Call _klar_user_main(args) -> i32
-        var user_main_args = [_]llvm.ValueRef{args_slice};
-        const user_main_fn_type = llvm.Types.function(i32_type, &[_]llvm.TypeRef{slice_type}, false);
+        // Call _klar_user_main(ptr, len) -> i32
+        // The slice is split into two scalar params to avoid LLVM ARM64 aggregate passing bugs.
+        const args_ptr = self.builder.buildExtractValue(args_slice, 0, "args.ptr");
+        const args_len = self.builder.buildExtractValue(args_slice, 1, "args.len");
+        var user_main_params = [_]llvm.TypeRef{ ptr_type, i64_type };
+        const user_main_fn_type = llvm.Types.function(i32_type, &user_main_params, false);
+        var user_main_args = [_]llvm.ValueRef{ args_ptr, args_len };
         const result = self.builder.buildCall(
             user_main_fn_type,
             user_main_fn,
@@ -1540,10 +1549,21 @@ pub const Emitter = struct {
         var has_byval = false;
 
         for (func.params) |param| {
+            // For main(args: [String]), split the slice { ptr, i64 } into two separate
+            // scalar parameters to avoid LLVM ARM64 aggregate parameter passing issues.
+            if (is_main_with_args and param.type_ == .slice) {
+                param_types.append(self.allocator, llvm.Types.pointer(self.ctx)) catch return EmitError.OutOfMemory;
+                byval_param_types.append(self.allocator, null) catch return EmitError.OutOfMemory;
+                param_types.append(self.allocator, llvm.Types.int64(self.ctx)) catch return EmitError.OutOfMemory;
+                byval_param_types.append(self.allocator, null) catch return EmitError.OutOfMemory;
+                continue;
+            }
+
             const param_ty = try self.typeExprToLLVM(param.type_);
 
-            // Check if this is a large struct that needs byval passing
-            if (llvm.getTypeKind(param_ty) == llvm.c.LLVMStructTypeKind) {
+            // Check if this is a large struct that needs byval passing.
+            // Exclude slices — they are { ptr, i64 } (16 bytes) and pass efficiently in registers.
+            if (llvm.getTypeKind(param_ty) == llvm.c.LLVMStructTypeKind and param.type_ != .slice) {
                 const struct_size = self.getLLVMTypeSize(param_ty);
                 if (struct_size > 8) {
                     // Large struct: pass as pointer with byval attribute
@@ -2255,27 +2275,48 @@ pub const Emitter = struct {
         const byval_info = self.byval_functions.get(func_name);
 
         // Add parameters to named values
-        for (func.params, 0..) |param, i| {
-            const param_value = llvm.getParam(function, @intCast(i + param_offset));
+        // Track LLVM param index separately since main's slice param splits into two LLVM params.
+        var llvm_param_idx: u32 = param_offset;
+        var ast_param_idx: u32 = 0;
+        for (func.params) |param| {
+            defer ast_param_idx += 1;
             const param_ty = try self.typeExprToLLVM(param.type_);
 
             // Allocate stack space for parameter
             const param_name = self.allocator.dupeZ(u8, param.name) catch return EmitError.OutOfMemory;
             defer self.allocator.free(param_name);
 
-            // For byval parameters, the LLVM param is already a pointer to the struct.
-            // We copy it to a local alloca so the function body can mutate it freely
-            // without modifying the caller's copy.
-            const is_byval = byval_info != null and i < byval_info.?.len and byval_info.?[i] != null;
-            const alloca = if (is_byval) blk: {
-                const a = self.builder.buildAlloca(param_ty, param_name);
-                const loaded = self.builder.buildLoad(param_ty, param_value, "byval.load");
-                _ = self.builder.buildStore(loaded, a);
+            // For main(args: [String]), the slice was split into two scalar LLVM params (ptr, i64).
+            // Reconstruct the slice struct from the two separate parameters.
+            const alloca = if (is_main_with_args and param.type_ == .slice) blk: {
+                const slice_type = self.getSliceStructType();
+                const a = self.builder.buildAlloca(slice_type, param_name);
+                const ptr_val = llvm.getParam(function, llvm_param_idx);
+                const len_val = llvm.getParam(function, llvm_param_idx + 1);
+                const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, a, 0, "args.ptr");
+                _ = self.builder.buildStore(ptr_val, ptr_field);
+                const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, a, 1, "args.len");
+                _ = self.builder.buildStore(len_val, len_field);
+                llvm_param_idx += 2;
                 break :blk a;
             } else blk: {
-                const a = self.builder.buildAlloca(param_ty, param_name);
-                _ = self.builder.buildStore(param_value, a);
-                break :blk a;
+                const param_value = llvm.getParam(function, llvm_param_idx);
+                llvm_param_idx += 1;
+
+                // For byval parameters, the LLVM param is already a pointer to the struct.
+                // We copy it to a local alloca so the function body can mutate it freely
+                // without modifying the caller's copy.
+                const is_byval = byval_info != null and (llvm_param_idx - 1 - param_offset) < byval_info.?.len and byval_info.?[llvm_param_idx - 1 - param_offset] != null;
+                if (is_byval) {
+                    const a = self.builder.buildAlloca(param_ty, param_name);
+                    const loaded = self.builder.buildLoad(param_ty, param_value, "byval.load");
+                    _ = self.builder.buildStore(loaded, a);
+                    break :blk a;
+                } else {
+                    const a = self.builder.buildAlloca(param_ty, param_name);
+                    _ = self.builder.buildStore(param_value, a);
+                    break :blk a;
+                }
             };
 
             const is_signed = self.isTypeSigned(param.type_);
@@ -2347,7 +2388,7 @@ pub const Emitter = struct {
 
             // Emit debug info for parameter
             if (semantic_type) |st| {
-                self.emitParamDebugInfo(param.name, alloca, st, @intCast(i + 1), param.span);
+                self.emitParamDebugInfo(param.name, alloca, st, @intCast(ast_param_idx + 1), param.span);
             }
         }
 
@@ -16435,6 +16476,16 @@ pub const Emitter = struct {
                         std.mem.eql(u8, mc.method_name, "clone"))
                     {
                         return true;
+                    }
+                }
+            },
+            // Check for index expressions on String arrays/slices (e.g., args[i])
+            .index => |idx| {
+                if (idx.object == .identifier) {
+                    if (self.named_values.get(idx.object.identifier.name)) |local| {
+                        if (local.array_element_type) |elem_type| {
+                            if (elem_type == .string_data) return true;
+                        }
                     }
                 }
             },
@@ -38245,8 +38296,9 @@ pub const Emitter = struct {
         for (func_type.params) |param_ty| {
             const llvm_param_ty = self.typeToLLVM(param_ty);
 
-            // Check if this is a large struct that needs byval passing
-            if (llvm.getTypeKind(llvm_param_ty) == llvm.c.LLVMStructTypeKind) {
+            // Check if this is a large struct that needs byval passing.
+            // Exclude slices — they are { ptr, i64 } (16 bytes) and pass efficiently in registers.
+            if (llvm.getTypeKind(llvm_param_ty) == llvm.c.LLVMStructTypeKind and param_ty != .slice) {
                 const struct_size = self.getLLVMTypeSize(llvm_param_ty);
                 if (struct_size > 8) {
                     param_types.append(self.allocator, llvm.Types.pointer(self.ctx)) catch return EmitError.OutOfMemory;

@@ -444,12 +444,25 @@ pub const Platform = struct {
     }
 
     /// Get the LLVM data layout string for this platform.
+    /// Required for correct ABI decisions (e.g., aggregate parameter passing on ARM64).
     pub fn getDataLayout(self: Platform) [:0]const u8 {
         if (self.isWasm()) {
             return "e-m:e-p:32:32-i64:64-n32:64-S128";
         }
-        // For other platforms, let LLVM's target machine set the layout
-        return "";
+        return switch (self.arch) {
+            .aarch64 => switch (self.os) {
+                .macos => "e-m:o-i64:64-i128:128-n32:64-S128-Fn32",
+                .linux => "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32",
+                else => "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32",
+            },
+            .x86_64 => switch (self.os) {
+                .macos => "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
+                .linux => "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
+                .windows => "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
+                else => "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
+            },
+            else => "",
+        };
     }
 };
 
