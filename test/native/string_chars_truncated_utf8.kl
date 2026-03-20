@@ -1,0 +1,42 @@
+// Test that string.chars() handles truncated/malformed UTF-8 without crashing (Issue #37)
+// Truncated multibyte sequences should produce U+FFFD replacement characters.
+
+fn main() -> i32 {
+    // Truncated 2-byte: lead byte 0xC3 at end of string (missing continuation)
+    let t2: string = "ab" + from_byte(195.as#[u8])
+    let c2: [char] = t2.chars()
+    assert_eq(c2.len(), 3)
+    assert_eq(c2[0].as#[i32], 97)      // 'a'
+    assert_eq(c2[1].as#[i32], 98)      // 'b'
+    assert_eq(c2[2].as#[i32], 65533)   // U+FFFD replacement
+
+    // Truncated 3-byte: lead 0xE2 + one continuation 0x80, missing second
+    let t3: string = "x" + from_byte(226.as#[u8]) + from_byte(128.as#[u8])
+    let c3: [char] = t3.chars()
+    assert_eq(c3.len(), 3)
+    assert_eq(c3[0].as#[i32], 120)     // 'x'
+    assert_eq(c3[1].as#[i32], 65533)   // U+FFFD for truncated 3-byte lead
+    assert_eq(c3[2].as#[i32], 65533)   // U+FFFD for orphan continuation 0x80
+
+    // Truncated 4-byte: lead 0xF0 alone at end
+    let t4: string = from_byte(240.as#[u8])
+    let c4: [char] = t4.chars()
+    assert_eq(c4.len(), 1)
+    assert_eq(c4[0].as#[i32], 65533)   // U+FFFD replacement
+
+    // Lone continuation byte 0x80 in the middle
+    let lc: string = "a" + from_byte(128.as#[u8]) + "b"
+    let cc: [char] = lc.chars()
+    assert_eq(cc.len(), 3)
+    assert_eq(cc[0].as#[i32], 97)      // 'a'
+    assert_eq(cc[1].as#[i32], 65533)   // U+FFFD for orphan continuation
+    assert_eq(cc[2].as#[i32], 98)      // 'b'
+
+    // Valid UTF-8 still works after fix
+    let valid: string = "caf" + from_byte(195.as#[u8]) + from_byte(169.as#[u8])
+    let cv: [char] = valid.chars()
+    assert_eq(cv.len(), 4)
+    assert_eq(cv[3].as#[i32], 233)     // U+00E9 e-acute
+
+    return 0
+}

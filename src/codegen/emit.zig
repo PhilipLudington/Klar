@@ -33458,6 +33458,10 @@ pub const Emitter = struct {
         const not_2byte_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "not_2byte");
         const decode3_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "decode3");
         const decode4_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "decode4");
+        const check2_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "check2");
+        const check3_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "check3");
+        const check4_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "check4");
+        const invalid_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "invalid");
         const store_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "store");
         const ret_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "return");
 
@@ -33538,7 +33542,13 @@ pub const Emitter = struct {
         // Not continuation: check 2-byte lead (< 0xE0)
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, not_cont_bb);
         const is_2byte = self.builder.buildICmp(llvm.c.LLVMIntULT, lead_i32, llvm.Const.int32(self.ctx, 0xE0), "is_2byte");
-        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_2byte, decode2_bb, not_2byte_bb);
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_2byte, check2_bb, not_2byte_bb);
+
+        // Bounds check 2-byte: need byte_idx + 2 <= byte_len
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check2_bb);
+        const need2 = llvm.c.LLVMBuildAdd(self.builder.ref, byte_idx_phi, two_i64, "need2");
+        const has2 = self.builder.buildICmp(llvm.c.LLVMIntULE, need2, byte_len, "has2");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, has2, decode2_bb, invalid_bb);
 
         // Decode 2-byte: cp = (lead & 0x1F) << 6 | (b1 & 0x3F)
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, decode2_bb);
@@ -33556,7 +33566,13 @@ pub const Emitter = struct {
         // Check 3-byte lead (< 0xF0)
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, not_2byte_bb);
         const is_3byte = self.builder.buildICmp(llvm.c.LLVMIntULT, lead_i32, llvm.Const.int32(self.ctx, 0xF0), "is_3byte");
-        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_3byte, decode3_bb, decode4_bb);
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_3byte, check3_bb, check4_bb);
+
+        // Bounds check 3-byte: need byte_idx + 3 <= byte_len
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check3_bb);
+        const need3 = llvm.c.LLVMBuildAdd(self.builder.ref, byte_idx_phi, three_i64, "need3");
+        const has3 = self.builder.buildICmp(llvm.c.LLVMIntULE, need3, byte_len, "has3");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, has3, decode3_bb, invalid_bb);
 
         // Decode 3-byte: cp = (lead & 0x0F) << 12 | (b1 & 0x3F) << 6 | (b2 & 0x3F)
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, decode3_bb);
@@ -33578,6 +33594,12 @@ pub const Emitter = struct {
         const tmp_3a = llvm.c.LLVMBuildOr(self.builder.ref, lead_shl12, b1_shl6_3, "tmp_3a");
         const cp_3byte = llvm.c.LLVMBuildOr(self.builder.ref, tmp_3a, b2_3f_3, "cp_3byte");
         _ = llvm.c.LLVMBuildBr(self.builder.ref, store_bb);
+
+        // Bounds check 4-byte: need byte_idx + 4 <= byte_len
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check4_bb);
+        const need4 = llvm.c.LLVMBuildAdd(self.builder.ref, byte_idx_phi, four_i64, "need4");
+        const has4 = self.builder.buildICmp(llvm.c.LLVMIntULE, need4, byte_len, "has4");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, has4, decode4_bb, invalid_bb);
 
         // Decode 4-byte: cp = (lead & 0x07) << 18 | (b1 & 0x3F) << 12 | (b2 & 0x3F) << 6 | (b3 & 0x3F)
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, decode4_bb);
@@ -33608,18 +33630,22 @@ pub const Emitter = struct {
         const cp_4byte = llvm.c.LLVMBuildOr(self.builder.ref, tmp2_4, b3_3f_4, "cp_4byte");
         _ = llvm.c.LLVMBuildBr(self.builder.ref, store_bb);
 
+        // Invalid/truncated multibyte sequence: emit U+FFFD replacement, advance 1 byte
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, invalid_bb);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, store_bb);
+
         // Store block: phi for codepoint and byte advance, then store to result
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, store_bb);
         const cp_phi = llvm.c.LLVMBuildPhi(self.builder.ref, i32_type, "cp");
         const advance_phi = llvm.c.LLVMBuildPhi(self.builder.ref, i64_type, "advance");
 
-        var cp_vals = [_]llvm.ValueRef{ lead_i32, replacement, cp_2byte, cp_3byte, cp_4byte };
-        var cp_bbs = [_]llvm.BasicBlockRef{ ascii_bb, cont_bb, decode2_bb, decode3_bb, decode4_bb };
-        llvm.c.LLVMAddIncoming(cp_phi, &cp_vals, &cp_bbs, 5);
+        var cp_vals = [_]llvm.ValueRef{ lead_i32, replacement, cp_2byte, cp_3byte, cp_4byte, replacement };
+        var cp_bbs = [_]llvm.BasicBlockRef{ ascii_bb, cont_bb, decode2_bb, decode3_bb, decode4_bb, invalid_bb };
+        llvm.c.LLVMAddIncoming(cp_phi, &cp_vals, &cp_bbs, 6);
 
-        var adv_vals = [_]llvm.ValueRef{ one_i64, one_i64, two_i64, three_i64, four_i64 };
-        var adv_bbs = [_]llvm.BasicBlockRef{ ascii_bb, cont_bb, decode2_bb, decode3_bb, decode4_bb };
-        llvm.c.LLVMAddIncoming(advance_phi, &adv_vals, &adv_bbs, 5);
+        var adv_vals = [_]llvm.ValueRef{ one_i64, one_i64, two_i64, three_i64, four_i64, one_i64 };
+        var adv_bbs = [_]llvm.BasicBlockRef{ ascii_bb, cont_bb, decode2_bb, decode3_bb, decode4_bb, invalid_bb };
+        llvm.c.LLVMAddIncoming(advance_phi, &adv_vals, &adv_bbs, 6);
 
         // Store codepoint to result[char_idx]
         var dst_gep = [_]llvm.ValueRef{char_idx_phi};
