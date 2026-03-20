@@ -1,0 +1,38 @@
+// Regression test for Bug #4: tuple types containing [char] crash codegen on import
+// Importing a module with functions returning (T, [char]) tuples must compile and run.
+
+import lib.{init, advance, peek, State}
+
+fn main() -> i32 {
+    // Test init returns (State, [char]) tuple from imported module
+    let pair: (State, [char]) = init("hello")
+    let state: State = pair.0
+    let chars: [char] = pair.1
+
+    if state.pos != 0 { return 1 }
+    if state.len != 5 { return 2 }
+    if chars.len() != 5 { return 3 }
+
+    // Test peek on imported [char]
+    let c: char = peek(chars, state)
+    if c != 'h' { return 4 }
+
+    // Test advance returns (char, State) tuple from imported module
+    let adv: (char, State) = advance(chars, state)
+    let got: char = adv.0
+    let state2: State = adv.1
+
+    if got != 'h' { return 5 }
+    if state2.pos != 1 { return 6 }
+
+    // Test chained advance
+    let adv2: (char, State) = advance(chars, state2)
+    if adv2.0 != 'e' { return 7 }
+
+    // Test peek at end
+    let end_state: State = State { pos: 5, len: 5 }
+    let end_c: char = peek(chars, end_state)
+    if end_c != '\0' { return 8 }
+
+    return 0
+}

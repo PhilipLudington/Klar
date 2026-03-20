@@ -1,0 +1,26 @@
+// Library module: functions returning tuples with [char] arrays
+// Regression test for Bug #4: tuple types containing [char] crash codegen on import
+
+pub struct State {
+    pos: i32,
+    len: i32,
+}
+
+pub fn init(s: string) -> (State, [char]) {
+    let chars: [char] = s.chars()
+    let state: State = State { pos: 0, len: s.len() }
+    return (state, chars)
+}
+
+pub fn advance(chars: [char], state: State) -> (char, State) {
+    let c: char = chars[state.pos]
+    let new_state: State = State { pos: state.pos + 1, len: state.len }
+    return (c, new_state)
+}
+
+pub fn peek(chars: [char], state: State) -> char {
+    if state.pos >= state.len {
+        return '\0'
+    }
+    return chars[state.pos]
+}

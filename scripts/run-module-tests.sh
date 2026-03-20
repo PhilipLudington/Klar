@@ -795,6 +795,28 @@ else
     echo "⊘ meta_related (test not found, skipping)"
 fi
 
+# Test: Tuple types containing [char] arrays across module boundaries (Bug #4 regression)
+echo "--- tuple_char_array: Tuple with [char] import (Bug #4) ---"
+temp_bin="/tmp/klar_module_tuple_char_array"
+if [ -d "$TEST_DIR/tuple_char_array" ]; then
+    if $KLAR build $TEST_DIR/tuple_char_array/main.kl -o "$temp_bin" 2>/dev/null; then
+        result=$(run_with_timeout 10 "$temp_bin" 2>/dev/null; echo $?)
+        if [ $result -eq 0 ]; then
+            echo "✓ tuple_char_array (exit: $result)"
+            record_success "tuple_char_array"
+        else
+            echo "✗ tuple_char_array (expected: 0, got: $result)"
+            record_failure "tuple_char_array" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ tuple_char_array (build failed)"
+        record_failure "tuple_char_array" "build failed"
+    fi
+else
+    echo "⊘ tuple_char_array (test not found, skipping)"
+fi
+
 TOTAL=$((PASSED + FAILED))
 
 # Write results JSON
