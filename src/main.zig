@@ -2778,7 +2778,8 @@ fn readSourceFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 /// Try to find the standard library path relative to the compiler binary.
 fn findStdLibPath(allocator: std.mem.Allocator) ?[]const u8 {
     // 1. Check KLAR_HOME environment variable first (user override)
-    if (std.posix.getenv("KLAR_HOME")) |home| {
+    if (std.process.getEnvVarOwned(allocator, "KLAR_HOME")) |home| {
+        defer allocator.free(home);
         const home_stdlib = std.fs.path.join(allocator, &.{ home, "stdlib" }) catch return null;
         const mod_path = std.fs.path.join(allocator, &.{ home_stdlib, "mod.kl" }) catch {
             allocator.free(home_stdlib);
@@ -2792,7 +2793,7 @@ fn findStdLibPath(allocator: std.mem.Allocator) ?[]const u8 {
         };
 
         return home_stdlib;
-    }
+    } else |_| {}
 
     return findStdLibPathFromExe(allocator);
 }
