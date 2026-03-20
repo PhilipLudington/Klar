@@ -1,0 +1,59 @@
+// Regression test for Bug 2: Result#[StructType, EnumType] codegen crash
+// Previously caused LLVM verification error:
+//   "Function return type does not match operand type of return inst"
+
+struct Config {
+    name: string
+    host: string
+    port: i32
+}
+
+enum ConfigError {
+    NotFound
+    Invalid
+}
+
+fn load_config(ok: bool) -> Result#[Config, ConfigError] {
+    if not ok {
+        return Err(ConfigError::NotFound)
+    }
+    let c: Config = Config { name: "app", host: "localhost", port: 8080 }
+    return Ok(c)
+}
+
+fn get_name(ok: bool) -> Result#[string, ConfigError] {
+    let c: Config = load_config(ok)?
+    return Ok(c.name)
+}
+
+fn main() -> i32 {
+    // Ok path
+    let r1: Result#[Config, ConfigError] = load_config(true)
+    assert(r1.is_ok())
+    let c: Config = r1.unwrap()
+    assert_eq(c.name, "app")
+    assert_eq(c.port, 8080)
+
+    // Err path
+    let r2: Result#[Config, ConfigError] = load_config(false)
+    assert(r2.is_err())
+
+    // Error propagation through struct Result
+    let r3: Result#[string, ConfigError] = get_name(true)
+    assert(r3.is_ok())
+    assert_eq(r3.unwrap(), "app")
+
+    let r4: Result#[string, ConfigError] = get_name(false)
+    assert(r4.is_err())
+
+    // Match on Result#[Struct, Enum]
+    let r5: Result#[Config, ConfigError] = load_config(true)
+    var port: i32 = 0
+    match r5 {
+        Ok(config) => { port = config.port }
+        Err(e) => { port = -1 }
+    }
+    assert_eq(port, 8080)
+
+    return 0
+}
