@@ -167,9 +167,9 @@ pub const ModuleResolver = struct {
         try self.search_paths.append(self.allocator, path);
     }
 
-    /// Set the standard library path.
+    /// Set the standard library path. Dupes into arena so caller can free.
     pub fn setStdLibPath(self: *ModuleResolver, path: []const u8) void {
-        self.std_lib_path = path;
+        self.std_lib_path = self.arena.allocator().dupe(u8, path) catch return;
     }
 
     /// Resolve the entry module and discover all dependencies.

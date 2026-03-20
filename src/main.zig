@@ -2777,6 +2777,27 @@ fn readSourceFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 
 /// Try to find the standard library path relative to the compiler binary.
 fn findStdLibPath(allocator: std.mem.Allocator) ?[]const u8 {
+    // 1. Check KLAR_HOME environment variable first (user override)
+    if (std.posix.getenv("KLAR_HOME")) |home| {
+        const home_stdlib = std.fs.path.join(allocator, &.{ home, "stdlib" }) catch return null;
+        const mod_path = std.fs.path.join(allocator, &.{ home_stdlib, "mod.kl" }) catch {
+            allocator.free(home_stdlib);
+            return null;
+        };
+        defer allocator.free(mod_path);
+
+        std.fs.cwd().access(mod_path, .{}) catch {
+            allocator.free(home_stdlib);
+            return findStdLibPathFromExe(allocator);
+        };
+
+        return home_stdlib;
+    }
+
+    return findStdLibPathFromExe(allocator);
+}
+
+fn findStdLibPathFromExe(allocator: std.mem.Allocator) ?[]const u8 {
     // Get the path to the current executable
     var exe_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const exe_path = std.fs.selfExePath(&exe_path_buf) catch return null;
@@ -2787,6 +2808,7 @@ fn findStdLibPath(allocator: std.mem.Allocator) ?[]const u8 {
     const candidates = [_][]const u8{
         "stdlib", // <exe_dir>/stdlib
         "../stdlib", // <exe_dir>/../stdlib
+        "../lib/klar/stdlib", // <exe_dir>/../lib/klar/stdlib (for /usr/local/bin -> /usr/local/lib/klar/stdlib)
         "../lib/stdlib", // <exe_dir>/../lib/stdlib
         "../../stdlib", // <exe_dir>/../../stdlib (for zig-out/bin)
     };
