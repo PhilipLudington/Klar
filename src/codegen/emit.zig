@@ -2582,17 +2582,27 @@ pub const Emitter = struct {
                     // Initialize directly into the alloca without intermediate load/store
                     try self.emitRepeatInto(repeat_info, alloca);
                 } else if (is_slice_decl and is_array_literal_value) {
-                    // Convert array literal to slice: create array alloca, then build slice struct
+                    // Convert array literal to slice. Heap-allocate the array
+                    // backing so the slice can safely outlive this stack frame
+                    // (e.g., when returned from a function).
                     const arr_lit = decl.value.array_literal;
                     const array_value = try self.emitExpr(decl.value);
                     const array_type = llvm.typeOf(array_value);
 
-                    // Store the array in an alloca so we can get a pointer to it
-                    const array_alloca = self.builder.buildAlloca(array_type, "arr.storage");
-                    _ = self.builder.buildStore(array_value, array_alloca);
+                    const size_val = llvm.c.LLVMSizeOf(array_type);
+                    const malloc_fn = self.getOrDeclareMalloc();
+                    var malloc_args = [_]llvm.ValueRef{size_val};
+                    const heap_ptr = llvm.c.LLVMBuildCall2(
+                        self.builder.ref,
+                        llvm.c.LLVMGlobalGetValueType(malloc_fn),
+                        malloc_fn,
+                        &malloc_args,
+                        1,
+                        "slice.backing",
+                    );
+                    _ = self.builder.buildStore(array_value, heap_ptr);
 
-                    // Convert to slice and store in the slice alloca
-                    const slice_value = self.convertArrayToSlice(array_alloca, arr_lit.elements.len);
+                    const slice_value = self.convertArrayToSlice(heap_ptr, arr_lit.elements.len);
                     _ = self.builder.buildStore(slice_value, alloca);
                 } else {
                     // Normal path: emit value and store
@@ -2748,17 +2758,27 @@ pub const Emitter = struct {
                     // Initialize directly into the alloca without intermediate load/store
                     try self.emitRepeatInto(repeat_info, alloca);
                 } else if (is_slice_decl and is_array_literal_value) {
-                    // Convert array literal to slice: create array alloca, then build slice struct
+                    // Convert array literal to slice. Heap-allocate the array
+                    // backing so the slice can safely outlive this stack frame
+                    // (e.g., when returned from a function).
                     const arr_lit = decl.value.array_literal;
                     const array_value = try self.emitExpr(decl.value);
                     const array_type = llvm.typeOf(array_value);
 
-                    // Store the array in an alloca so we can get a pointer to it
-                    const array_alloca = self.builder.buildAlloca(array_type, "arr.storage");
-                    _ = self.builder.buildStore(array_value, array_alloca);
+                    const size_val = llvm.c.LLVMSizeOf(array_type);
+                    const malloc_fn = self.getOrDeclareMalloc();
+                    var malloc_args = [_]llvm.ValueRef{size_val};
+                    const heap_ptr = llvm.c.LLVMBuildCall2(
+                        self.builder.ref,
+                        llvm.c.LLVMGlobalGetValueType(malloc_fn),
+                        malloc_fn,
+                        &malloc_args,
+                        1,
+                        "slice.backing",
+                    );
+                    _ = self.builder.buildStore(array_value, heap_ptr);
 
-                    // Convert to slice and store in the slice alloca
-                    const slice_value = self.convertArrayToSlice(array_alloca, arr_lit.elements.len);
+                    const slice_value = self.convertArrayToSlice(heap_ptr, arr_lit.elements.len);
                     _ = self.builder.buildStore(slice_value, alloca);
                 } else {
                     // Normal path: emit value and store
@@ -5032,6 +5052,78 @@ pub const Emitter = struct {
                 _ = try self.emitListSetInline(local.value, idx.object, index_val, rhs);
                 return rhs;
             }
+
+            // Check if this is a slice struct { ptr, i64 } — emit bounds-checked write.
+            if (arr_type_kind == llvm.c.LLVMStructTypeKind and
+                llvm.c.LLVMCountStructElementTypes(arr_type) == 2)
+            {
+                var element_types: [2]llvm.TypeRef = undefined;
+                llvm.c.LLVMGetStructElementTypes(arr_type, &element_types);
+
+                const first_is_ptr = llvm.c.LLVMGetTypeKind(element_types[0]) == llvm.c.LLVMPointerTypeKind;
+                const second_is_i64 = llvm.c.LLVMGetTypeKind(element_types[1]) == llvm.c.LLVMIntegerTypeKind and
+                    llvm.c.LLVMGetIntTypeWidth(element_types[1]) == 64;
+
+                if (first_is_ptr and second_is_i64) {
+                    const index_val = try self.emitExpr(idx.index);
+                    const rhs = try self.emitExpr(bin.right);
+
+                    const i64_type = llvm.Types.int64(self.ctx);
+                    const slice_type = self.getSliceStructType();
+
+                    // Element type: ask the type checker; default to i32.
+                    var element_llvm_type = llvm.Types.int32(self.ctx);
+                    if (self.type_checker) |tc| {
+                        const tc_mut = @constCast(tc);
+                        const obj_klar_type = tc_mut.checkExpr(idx.object);
+                        if (obj_klar_type == .slice) {
+                            element_llvm_type = self.typeToLLVM(obj_klar_type.slice.element);
+                        }
+                    }
+
+                    // Load length for bounds check.
+                    const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, local.value, 1, "slice.len_ptr");
+                    const slice_len = self.builder.buildLoad(i64_type, len_ptr, "slice.len");
+
+                    const index_type = llvm.typeOf(index_val);
+                    const index_bits = llvm.c.LLVMGetIntTypeWidth(index_type);
+                    const index_i64 = if (index_bits < 64)
+                        self.builder.buildZExt(index_val, i64_type, "idx.ext")
+                    else if (index_bits > 64)
+                        self.builder.buildTrunc(index_val, i64_type, "idx.trunc")
+                    else
+                        index_val;
+
+                    const in_bounds = self.builder.buildICmp(
+                        llvm.c.LLVMIntULT,
+                        index_i64,
+                        slice_len,
+                        "bounds.check",
+                    );
+
+                    const func = self.current_function orelse return EmitError.InvalidAST;
+                    const ok_block = llvm.appendBasicBlock(self.ctx, func, "bounds.ok");
+                    const fail_block = llvm.appendBasicBlock(self.ctx, func, "bounds.fail");
+                    _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
+
+                    self.builder.positionAtEnd(fail_block);
+                    _ = self.builder.buildUnreachable();
+
+                    self.builder.positionAtEnd(ok_block);
+
+                    // Load data pointer from slice struct (field 0).
+                    const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, local.value, 0, "slice.ptr_ptr");
+                    const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), ptr_ptr, "slice.data_ptr");
+
+                    // GEP into data pointer with the index.
+                    var gep_indices = [_]llvm.ValueRef{index_i64};
+                    const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, element_llvm_type, data_ptr, &gep_indices, 1, "slice.elem.ptr");
+
+                    _ = self.builder.buildStore(rhs, elem_ptr);
+                    return rhs;
+                }
+            }
+
             return unsupportedFeatureDebug(@src());
         }
 

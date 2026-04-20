@@ -3568,6 +3568,18 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         hasher.update(options.opt_level.toString());
         hasher.update(if (options.debug_info) "g" else "");
         if (options.target_triple) |tt| hasher.update(tt);
+        // Hash the compiler binary's identity so cached objects invalidate
+        // when the compiler is rebuilt.
+        var exe_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        if (compat.selfExePath(&exe_path_buf)) |exe_path| {
+            if (compat.cwd().openFile(exe_path, .{})) |exe_file| {
+                defer exe_file.close();
+                if (exe_file.stat()) |st| {
+                    hasher.update(std.mem.asBytes(&st.size));
+                    hasher.update(std.mem.asBytes(&st.mtime));
+                } else |_| {}
+            } else |_| {}
+        } else |_| {}
         const hash = hasher.finalResult();
         var hash_hex: [64]u8 = undefined;
         for (hash, 0..) |byte, idx| {
