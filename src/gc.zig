@@ -127,8 +127,8 @@ pub const GC = struct {
             .objects = null,
             .bytes_allocated = 0,
             .next_gc = initial_gc_threshold,
-            .strings = .{},
-            .gray_stack = .{},
+            .strings = .empty,
+            .gray_stack = .empty,
             .roots = .{
                 .stack = null,
                 .stack_top = undefined,
@@ -485,7 +485,7 @@ pub const GC = struct {
 
     /// Remove unreachable strings from intern table.
     fn removeWhiteStrings(self: *GC) void {
-        var to_remove = std.ArrayListUnmanaged(u32){};
+        var to_remove = std.ArrayListUnmanaged(u32).empty;
         defer to_remove.deinit(self.backing_allocator);
 
         var iter = self.strings.iterator();

@@ -32,9 +32,9 @@ pub const RunStats = struct {
 /// Single-threaded cooperative executor with deterministic FIFO scheduling.
 pub const CooperativeExecutor = struct {
     allocator: Allocator,
-    queue: std.ArrayListUnmanaged(Task) = .{},
+    queue: std.ArrayListUnmanaged(Task) = .empty,
     queue_head: usize = 0,
-    history: std.ArrayListUnmanaged(ExecutionRecord) = .{},
+    history: std.ArrayListUnmanaged(ExecutionRecord) = .empty,
     next_task_id: TaskId = 1,
     executed_count: usize = 0,
     failed_count: usize = 0,
@@ -126,7 +126,7 @@ pub const CooperativeExecutor = struct {
 
 const TestCtx = struct {
     allocator: Allocator,
-    log: std.ArrayListUnmanaged(u8) = .{},
+    log: std.ArrayListUnmanaged(u8) = .empty,
     fail_byte: ?u8 = null,
 
     fn deinit(self: *TestCtx) void {

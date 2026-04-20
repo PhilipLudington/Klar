@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat.zig");
 const Allocator = std.mem.Allocator;
 const ast = @import("ast.zig");
 const Span = ast.Span;
@@ -1257,9 +1258,9 @@ pub fn formatType(writer: anytype, t: Type) !void {
 }
 
 pub fn typeToString(allocator: Allocator, t: Type) ![]u8 {
-    var list: std.ArrayListUnmanaged(u8) = .{};
+    var list: std.ArrayListUnmanaged(u8) = .empty;
     errdefer list.deinit(allocator);
-    try formatType(list.writer(allocator), t);
+    try formatType(compat.listWriter(&list, allocator), t);
     return list.toOwnedSlice(allocator);
 }
 

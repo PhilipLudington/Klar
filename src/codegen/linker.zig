@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const compat = @import("../compat.zig");
 const target = @import("target.zig");
 
 pub const LinkerError = error{
@@ -86,11 +87,11 @@ fn linkForPlatform(
     // Check for cross-compilation scenarios
     const is_cross = if (target_info_opt) |ti| ti.isCrossCompile() else false;
 
-    var args = std.ArrayListUnmanaged([]const u8){};
+    var args = std.ArrayListUnmanaged([]const u8).empty;
     defer args.deinit(allocator);
 
     // Track allocated strings so we can free them after linking
-    var allocated_strings = std.ArrayListUnmanaged([]const u8){};
+    var allocated_strings = std.ArrayListUnmanaged([]const u8).empty;
     defer {
         for (allocated_strings.items) |s| {
             allocator.free(s);
@@ -283,7 +284,7 @@ fn linkForPlatform(
         }
     }
 
-    var child = std.process.Child.init(args.items, allocator);
+    var child = compat.Child.init(args.items, allocator);
     child.stderr_behavior = .Inherit;
     child.stdout_behavior = .Inherit;
 
@@ -309,7 +310,7 @@ fn linkForPlatform(
 /// Falls back to "link.exe" if the environment variable is not set.
 /// This avoids finding Git Bash's coreutils `link.exe` instead of MSVC's.
 fn findMSVCLinker(allocator: std.mem.Allocator) ![]const u8 {
-    const vc_dir = std.process.getEnvVarOwned(allocator, "VCToolsInstallDir") catch {
+    const vc_dir = compat.getEnvVarOwned(allocator, "VCToolsInstallDir") catch {
         return error.LinkerNotFound;
     };
     defer allocator.free(vc_dir);
@@ -321,7 +322,7 @@ fn findMSVCLinker(allocator: std.mem.Allocator) ![]const u8 {
     };
 
     // Verify the file exists
-    std.fs.accessAbsolute(link_path, .{}) catch {
+    compat.accessAbsolute(link_path, .{}) catch {
         allocator.free(link_path);
         return error.LinkerNotFound;
     };
@@ -338,7 +339,7 @@ fn findMacOSSDK() []const u8 {
     };
 
     for (paths) |path| {
-        if (std.fs.accessAbsolute(path, .{})) |_| {
+        if (compat.accessAbsolute(path, .{})) |_| {
             return path;
         } else |_| {}
     }
@@ -355,7 +356,7 @@ pub fn linkWithClang(
 ) LinkerError!void {
     const platform = target.Platform.current();
 
-    var args = std.ArrayListUnmanaged([]const u8){};
+    var args = std.ArrayListUnmanaged([]const u8).empty;
     defer args.deinit(allocator);
 
     // Use clang as the linker driver - handles all platform specifics
@@ -378,7 +379,7 @@ pub fn linkWithClang(
         else => {},
     }
 
-    var child = std.process.Child.init(args.items, allocator);
+    var child = compat.Child.init(args.items, allocator);
     child.stderr_behavior = .Pipe;
     child.stdout_behavior = .Pipe;
 
@@ -442,7 +443,7 @@ fn tryLinkBareMetal(
     output_file: []const u8,
     options: LinkerOptions,
 ) LinkerError!void {
-    var args = std.ArrayListUnmanaged([]const u8){};
+    var args = std.ArrayListUnmanaged([]const u8).empty;
     defer args.deinit(allocator);
 
     args.append(allocator, ld_name) catch return LinkerError.OutOfMemory;
@@ -450,7 +451,7 @@ fn tryLinkBareMetal(
     // Add linker script if provided
     if (options.linker_script) |script| {
         // Validate linker script exists before invoking linker
-        std.fs.cwd().access(script, .{}) catch {
+        compat.cwd().access(script, .{}) catch {
             std.debug.print("error: linker script not found: {s}\n", .{script});
             return LinkerError.LinkerScriptNotFound;
         };
@@ -469,7 +470,7 @@ fn tryLinkBareMetal(
     args.append(allocator, "--nostdlib") catch return LinkerError.OutOfMemory;
 
     // Track allocated strings for cleanup
-    var allocated_strings = std.ArrayListUnmanaged([]const u8){};
+    var allocated_strings = std.ArrayListUnmanaged([]const u8).empty;
     defer {
         for (allocated_strings.items) |s| {
             allocator.free(s);
@@ -491,7 +492,7 @@ fn tryLinkBareMetal(
         args.append(allocator, formatted) catch return LinkerError.OutOfMemory;
     }
 
-    var child = std.process.Child.init(args.items, allocator);
+    var child = compat.Child.init(args.items, allocator);
     child.stderr_behavior = .Inherit;
     child.stdout_behavior = .Inherit;
 
@@ -524,7 +525,7 @@ fn linkWasmTarget(
 ) LinkerError!void {
     const is_wasi = if (target_info_opt) |ti| ti.os == .wasi else false;
 
-    var args = std.ArrayListUnmanaged([]const u8){};
+    var args = std.ArrayListUnmanaged([]const u8).empty;
     defer args.deinit(allocator);
 
     // Try known wasm-ld locations
@@ -535,7 +536,7 @@ fn linkWasmTarget(
 
     var ld_path: []const u8 = "wasm-ld";
     for (wasm_ld_paths) |path| {
-        if (std.fs.accessAbsolute(path, .{})) |_| {
+        if (compat.accessAbsolute(path, .{})) |_| {
             ld_path = path;
             break;
         } else |_| {}
@@ -560,7 +561,7 @@ fn linkWasmTarget(
         object_file,
     }) catch return LinkerError.OutOfMemory;
 
-    var wasm_child = std.process.Child.init(args.items, allocator);
+    var wasm_child = compat.Child.init(args.items, allocator);
     wasm_child.stderr_behavior = .Inherit;
     wasm_child.stdout_behavior = .Inherit;
 

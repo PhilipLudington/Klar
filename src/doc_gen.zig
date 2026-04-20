@@ -5,6 +5,7 @@
 //! reads source files directly.
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const Allocator = std.mem.Allocator;
 
 /// A documented item (function, struct, enum, or trait).
@@ -46,14 +47,14 @@ pub const DocModule = struct {
 
 /// Extract doc items from a Klar source file.
 pub fn extractDocs(allocator: Allocator, source: []const u8, module_name: []const u8, file_path: []const u8) !DocModule {
-    var items = std.ArrayListUnmanaged(DocItem){};
+    var items = std.ArrayListUnmanaged(DocItem).empty;
     defer items.deinit(allocator);
 
     var lines_iter = std.mem.splitScalar(u8, source, '\n');
-    var pending_doc = std.ArrayListUnmanaged(u8){};
+    var pending_doc = std.ArrayListUnmanaged(u8).empty;
     defer pending_doc.deinit(allocator);
 
-    var module_doc = std.ArrayListUnmanaged(u8){};
+    var module_doc = std.ArrayListUnmanaged(u8).empty;
     defer module_doc.deinit(allocator);
 
     var line_num: usize = 0;
@@ -298,9 +299,9 @@ fn extractTypeAlias(allocator: Allocator, line: []const u8, line_num: usize) ?Al
 
 /// Generate HTML for a single module.
 pub fn generateModuleHtml(allocator: Allocator, module: *const DocModule) ![]const u8 {
-    var buf = std.ArrayListUnmanaged(u8){};
+    var buf = std.ArrayListUnmanaged(u8).empty;
     defer buf.deinit(allocator);
-    const w = buf.writer(allocator);
+    const w = compat.listWriter(&buf, allocator);
 
     try w.print(
         \\<!DOCTYPE html>
@@ -395,9 +396,9 @@ pub fn generateModuleHtml(allocator: Allocator, module: *const DocModule) ![]con
 
 /// Generate the index HTML page listing all modules.
 pub fn generateIndexHtml(allocator: Allocator, modules: []const DocModule) ![]const u8 {
-    var buf = std.ArrayListUnmanaged(u8){};
+    var buf = std.ArrayListUnmanaged(u8).empty;
     defer buf.deinit(allocator);
-    const w = buf.writer(allocator);
+    const w = compat.listWriter(&buf, allocator);
 
     try w.writeAll(
         \\<!DOCTYPE html>

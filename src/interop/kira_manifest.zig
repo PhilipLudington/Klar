@@ -9,6 +9,7 @@
 //!   klar import-kira manifest.json -o out.kl -> writes to out.kl
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 
 /// A parsed field (used in function params, struct fields, variant fields).
@@ -117,7 +118,7 @@ pub fn parseManifest(allocator: Allocator, content: []const u8) !KiraManifest {
     errdefer allocator.free(module_name);
 
     // Functions (required array)
-    var functions = std.ArrayListUnmanaged(FunctionDecl){};
+    var functions = std.ArrayListUnmanaged(FunctionDecl).empty;
     errdefer {
         for (functions.items) |func| allocator.free(func.params);
         functions.deinit(allocator);
@@ -152,7 +153,7 @@ pub fn parseManifest(allocator: Allocator, content: []const u8) !KiraManifest {
                 } else false;
 
                 // Parse params
-                var params = std.ArrayListUnmanaged(Field){};
+                var params = std.ArrayListUnmanaged(Field).empty;
                 errdefer {
                     for (params.items) |p| {
                         allocator.free(p.name);
@@ -194,7 +195,7 @@ pub fn parseManifest(allocator: Allocator, content: []const u8) !KiraManifest {
     }
 
     // Types (required array)
-    var types = std.ArrayListUnmanaged(TypeDecl){};
+    var types = std.ArrayListUnmanaged(TypeDecl).empty;
     errdefer {
         for (types.items) |td| {
             switch (td) {
@@ -229,7 +230,7 @@ pub fn parseManifest(allocator: Allocator, content: []const u8) !KiraManifest {
                 };
 
                 if (std.mem.eql(u8, kind, "sum")) {
-                    var variants = std.ArrayListUnmanaged(Variant){};
+                    var variants = std.ArrayListUnmanaged(Variant).empty;
                     errdefer {
                         for (variants.items) |v| {
                             allocator.free(v.name);
@@ -262,7 +263,7 @@ pub fn parseManifest(allocator: Allocator, content: []const u8) !KiraManifest {
                                     },
                                 };
 
-                                var fields = std.ArrayListUnmanaged(Field){};
+                                var fields = std.ArrayListUnmanaged(Field).empty;
                                 errdefer {
                                     for (fields.items) |f| {
                                         allocator.free(f.name);
@@ -309,7 +310,7 @@ pub fn parseManifest(allocator: Allocator, content: []const u8) !KiraManifest {
                         },
                     });
                 } else if (std.mem.eql(u8, kind, "product")) {
-                    var fields = std.ArrayListUnmanaged(Field){};
+                    var fields = std.ArrayListUnmanaged(Field).empty;
                     errdefer {
                         for (fields.items) |f| {
                             allocator.free(f.name);
@@ -394,7 +395,7 @@ fn needsStringWrapper(func: FunctionDecl) bool {
 /// Generate a Klar `.kl` file from a parsed manifest.
 /// The output contains extern struct/enum declarations and an extern function block.
 pub fn generateKlarSource(allocator: Allocator, m: *const KiraManifest) ![]u8 {
-    var output = std.ArrayListUnmanaged(u8){};
+    var output = std.ArrayListUnmanaged(u8).empty;
     errdefer output.deinit(allocator);
 
     // Header comment
@@ -656,8 +657,8 @@ pub fn generateKlarSource(allocator: Allocator, m: *const KiraManifest) ![]u8 {
 
 /// Run the import-kira command: read manifest JSON, generate .kl output.
 pub fn importKiraCommand(allocator: Allocator, args: []const []const u8) !void {
-    const stderr = std.fs.File{ .handle = if (comptime @import("builtin").os.tag == .windows) (std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) orelse @panic("failed to get stderr handle")) else std.posix.STDERR_FILENO };
-    const stdout = std.fs.File{ .handle = if (comptime @import("builtin").os.tag == .windows) (std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) orelse @panic("failed to get stdout handle")) else std.posix.STDOUT_FILENO };
+    const stderr = compat.File{ .handle = if (comptime @import("builtin").os.tag == .windows) (std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) orelse @panic("failed to get stderr handle")) else std.posix.STDERR_FILENO };
+    const stdout = compat.File{ .handle = if (comptime @import("builtin").os.tag == .windows) (std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) orelse @panic("failed to get stdout handle")) else std.posix.STDOUT_FILENO };
 
     var manifest_path: ?[]const u8 = null;
     var output_path: ?[]const u8 = null;
@@ -692,7 +693,7 @@ pub fn importKiraCommand(allocator: Allocator, args: []const []const u8) !void {
     };
 
     // Read manifest file
-    const content = std.fs.cwd().readFileAlloc(allocator, input_path, 10 * 1024 * 1024) catch |err| {
+    const content = compat.cwd().readFileAlloc(allocator, input_path, 10 * 1024 * 1024) catch |err| {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Error: could not read '{s}': {s}\n", .{ input_path, @errorName(err) }) catch "Error: could not read manifest file\n";
         try stderr.writeAll(msg);
@@ -720,7 +721,7 @@ pub fn importKiraCommand(allocator: Allocator, args: []const []const u8) !void {
 
     // Write output
     if (output_path) |out| {
-        const file = std.fs.cwd().createFile(out, .{}) catch |err| {
+        const file = compat.cwd().createFile(out, .{}) catch |err| {
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Error: could not create '{s}': {s}\n", .{ out, @errorName(err) }) catch "Error: could not create output file\n";
             try stderr.writeAll(msg);
@@ -746,7 +747,7 @@ pub fn importKiraCommand(allocator: Allocator, args: []const []const u8) !void {
     } else {
         // Default output: deps/kira_<module>.kl
         // Create deps/ directory if it doesn't exist
-        std.fs.cwd().makeDir("deps") catch |err| {
+        compat.cwd().makeDir("deps") catch |err| {
             if (err != error.PathAlreadyExists) {
                 var buf: [256]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Error: could not create deps/ directory: {s}\n", .{@errorName(err)}) catch "Error: could not create deps/ directory\n";
@@ -761,7 +762,7 @@ pub fn importKiraCommand(allocator: Allocator, args: []const []const u8) !void {
             return;
         };
 
-        const file = std.fs.cwd().createFile(default_name, .{}) catch |err| {
+        const file = compat.cwd().createFile(default_name, .{}) catch |err| {
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Error: could not create '{s}': {s}\n", .{ default_name, @errorName(err) }) catch "Error: could not create output file\n";
             try stderr.writeAll(msg);

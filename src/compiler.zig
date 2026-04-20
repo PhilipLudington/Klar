@@ -153,7 +153,7 @@ const CompilerScope = struct {
             .loop_depth = 0,
             .loop_starts = undefined,
             .loop_scope_depths = undefined,
-            .break_jumps = .{},
+            .break_jumps = .empty,
         };
 
         // Reserve slot 0 for the function itself (or 'this' in methods).
@@ -222,7 +222,7 @@ pub const Compiler = struct {
         return .{
             .allocator = allocator,
             .current = undefined,
-            .errors = .{},
+            .errors = .empty,
             .had_error = false,
             .arena = std.heap.ArenaAllocator.init(allocator),
         };
@@ -1123,7 +1123,7 @@ pub const Compiler = struct {
         // 3. If match, pop subject and compile body, then jump to end
         // 4. If no match, try next arm
 
-        var end_jumps = std.ArrayListUnmanaged(usize){};
+        var end_jumps = std.ArrayListUnmanaged(usize).empty;
         defer end_jumps.deinit(self.allocator);
 
         for (match_stmt.arms) |arm| {

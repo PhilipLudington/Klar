@@ -4,6 +4,7 @@
 //! like @typeName, @typeInfo, @fields, @assert, @repeat, @fn_ptr, etc.
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");
 const Type = types.Type;
@@ -78,7 +79,7 @@ fn checkComptimeFunctionCallFromBuiltin(tc: anytype, builtin: *ast.BuiltinCall, 
     }
 
     // Normal path: evaluate at compile time
-    var arg_values = std.ArrayListUnmanaged(Value){};
+    var arg_values = std.ArrayListUnmanaged(Value).empty;
     defer arg_values.deinit(tc.allocator);
 
     for (builtin.args) |arg| {
@@ -142,8 +143,8 @@ fn checkBuiltinTypeName(tc: anytype, builtin: *ast.BuiltinCall) Type {
     };
 
     // Format the type to a string and store it for codegen
-    var buf = std.ArrayListUnmanaged(u8){};
-    types.formatType(buf.writer(tc.allocator), resolved_type) catch {
+    var buf = std.ArrayListUnmanaged(u8).empty;
+    types.formatType(compat.listWriter(&buf, tc.allocator), resolved_type) catch {
         buf.deinit(tc.allocator);
         return tc.type_builder.stringType();
     };

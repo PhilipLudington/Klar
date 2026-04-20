@@ -5,6 +5,7 @@
 //! for querying meta annotations across Klar source files.
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const ast = @import("ast.zig");
 const Lexer = @import("lexer.zig").Lexer;
 const Parser = @import("parser.zig").Parser;
@@ -166,12 +167,12 @@ pub fn metaCommand(allocator: std.mem.Allocator, args: []const []const u8) !void
     const arena_alloc = arena.allocator();
 
     // Collect matches (arena-allocated, freed with arena)
-    var matches = std.ArrayListUnmanaged(MetaMatch){};
+    var matches = std.ArrayListUnmanaged(MetaMatch).empty;
 
     // Determine if path is a file or directory
     // Note: on Windows, statFile returns error.IsDir for directories
     const is_dir = blk: {
-        const stat = std.fs.cwd().statFile(path) catch |err| {
+        const stat = compat.cwd().statFile(path) catch |err| {
             if (err == error.IsDir) break :blk true;
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Error: cannot access '{s}': {}\n", .{ path, err }) catch "Error accessing path\n";
@@ -221,7 +222,7 @@ fn metaQueryDirectory(
 ) !void {
     const stderr = getStdErr();
 
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+    var dir = compat.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Error opening directory '{s}': {}\n", .{ dir_path, err }) catch "Error opening directory\n";
         try stderr.writeAll(msg);
@@ -434,7 +435,7 @@ fn collectExpandedMeta(
     if (!has_group_join) return meta;
 
     // Build expanded list — fall back to unexpanded on OOM
-    var expanded = std.ArrayListUnmanaged(ast.MetaAnnotation){};
+    var expanded = std.ArrayListUnmanaged(ast.MetaAnnotation).empty;
     for (meta) |ann| {
         switch (ann) {
             .group_join => |gj| {
@@ -476,7 +477,7 @@ fn shouldSkipPath(path: []const u8) bool {
 }
 
 fn readSourceFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const file = try std.fs.cwd().openFile(path, .{});
+    const file = try compat.cwd().openFile(path, .{});
     defer file.close();
 
     return try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
@@ -800,7 +801,7 @@ fn metaPathMatchesName(path: ast.MetaPath, name: []const u8) bool {
 
 const builtin = @import("builtin");
 
-fn getStdOut() std.fs.File {
+fn getStdOut() compat.File {
     if (comptime builtin.os.tag == .windows) {
         const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) orelse
             @panic("failed to get stdout handle");
@@ -810,7 +811,7 @@ fn getStdOut() std.fs.File {
     }
 }
 
-fn getStdErr() std.fs.File {
+fn getStdErr() compat.File {
     if (comptime builtin.os.tag == .windows) {
         const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) orelse
             @panic("failed to get stderr handle");
@@ -821,21 +822,21 @@ fn getStdErr() std.fs.File {
 }
 
 /// Write a MetaPath with :: separators (human-readable output)
-fn metaWritePath(out: std.fs.File, p: ast.MetaPath) !void {
+fn metaWritePath(out: compat.File, p: ast.MetaPath) !void {
     for (p.segments, 0..) |seg, sidx| {
         if (sidx > 0) try out.writeAll("::");
         try out.writeAll(seg);
     }
 }
 
-fn writeJsonEscaped(out: std.fs.File, s: []const u8) !void {
+fn writeJsonEscaped(out: compat.File, s: []const u8) !void {
     try out.writeAll("\"");
     try writeJsonEscapedRaw(out, s);
     try out.writeAll("\"");
 }
 
 /// Write a string with JSON escaping (no surrounding quotes).
-fn writeJsonEscapedRaw(out: std.fs.File, s: []const u8) !void {
+fn writeJsonEscapedRaw(out: compat.File, s: []const u8) !void {
     for (s) |c| {
         switch (c) {
             '"' => try out.writeAll("\\\""),
@@ -992,7 +993,7 @@ fn metaOutputHuman(mode: MetaQueryMode, matches: []const MetaMatch) !void {
     try out.writeAll(count_str);
 }
 
-fn metaOutputBlock(out: std.fs.File, label: []const u8, block: *const ast.MetaBlock) !void {
+fn metaOutputBlock(out: compat.File, label: []const u8, block: *const ast.MetaBlock) !void {
     try out.writeAll("    ");
     try out.writeAll(label);
     try out.writeAll(":\n");
@@ -1068,7 +1069,7 @@ fn metaOutputJson(mode: MetaQueryMode, matches: []const MetaMatch) !void {
     try out.writeAll("]}\n");
 }
 
-fn metaOutputJsonMeta(out: std.fs.File, meta: []const ast.MetaAnnotation) !void {
+fn metaOutputJsonMeta(out: compat.File, meta: []const ast.MetaAnnotation) !void {
     // Collect tags, then other fields
     var wrote_field = false;
 
@@ -1251,7 +1252,7 @@ fn metaOutputJsonMeta(out: std.fs.File, meta: []const ast.MetaAnnotation) !void 
 
 /// Write a MetaPath as a JSON-escaped string with :: separators.
 /// Path segments are escaped for JSON safety.
-fn metaOutputJsonPath(out: std.fs.File, p: ast.MetaPath) !void {
+fn metaOutputJsonPath(out: compat.File, p: ast.MetaPath) !void {
     try out.writeAll("\"");
     for (p.segments, 0..) |seg, sidx| {
         if (sidx > 0) try out.writeAll("::");
@@ -1260,7 +1261,7 @@ fn metaOutputJsonPath(out: std.fs.File, p: ast.MetaPath) !void {
     try out.writeAll("\"");
 }
 
-fn metaOutputJsonBlock(out: std.fs.File, block: *const ast.MetaBlock) !void {
+fn metaOutputJsonBlock(out: compat.File, block: *const ast.MetaBlock) !void {
     for (block.entries, 0..) |entry, eidx| {
         if (eidx > 0) try out.writeAll(",");
         try writeJsonEscaped(out, entry.key);

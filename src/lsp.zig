@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const compat = @import("compat.zig");
 const version = @import("version.zig");
 const Lexer = @import("lexer.zig").Lexer;
 const Parser = @import("parser.zig").Parser;
@@ -37,10 +38,10 @@ const RequestResultCacheEntry = struct {
 };
 
 const ServerState = struct {
-    documents: std.StringHashMapUnmanaged(DocumentEntry) = .{},
-    completion_cache: std.StringHashMapUnmanaged(CompletionCacheEntry) = .{},
-    hover_cache: std.StringHashMapUnmanaged(RequestResultCacheEntry) = .{},
-    definition_cache: std.StringHashMapUnmanaged(RequestResultCacheEntry) = .{},
+    documents: std.StringHashMapUnmanaged(DocumentEntry) = .empty,
+    completion_cache: std.StringHashMapUnmanaged(CompletionCacheEntry) = .empty,
+    hover_cache: std.StringHashMapUnmanaged(RequestResultCacheEntry) = .empty,
+    definition_cache: std.StringHashMapUnmanaged(RequestResultCacheEntry) = .empty,
     total_document_bytes: usize = 0,
     /// Workspace root path extracted from initialize rootUri.
     /// Used to restrict file reads to the workspace directory.
@@ -251,17 +252,17 @@ fn freeCompletionItems(allocator: std.mem.Allocator, items: []CompletionItem) vo
     allocator.free(items);
 }
 
-fn readContentLength(reader: *std.Io.Reader) !?usize {
+fn readContentLength(reader: *compat.File, line_buf: []u8) !?usize {
     var content_length: ?usize = null;
 
     while (true) {
-        const line_opt = try reader.takeDelimiter('\n');
+        const line_opt = try readLine(reader, line_buf);
         if (line_opt == null) {
             if (content_length == null) return null;
             return error.InvalidHeader;
         }
 
-        const line = std.mem.trimRight(u8, line_opt.?, "\r");
+        const line = std.mem.trimEnd(u8, line_opt.?, "\r");
         if (line.len == 0) break;
 
         if (std.mem.startsWith(u8, line, "Content-Length:")) {
@@ -275,7 +276,25 @@ fn readContentLength(reader: *std.Io.Reader) !?usize {
     return content_length orelse error.InvalidHeader;
 }
 
-fn writeMessage(out: std.fs.File, payload: []const u8) !void {
+fn readLine(file: *compat.File, buf: []u8) !?[]const u8 {
+    // Read one byte at a time until \n. This is slow but matches the
+    // simplified IO model we use across the compiler after the 0.16 migration.
+    var len: usize = 0;
+    while (true) {
+        if (len >= buf.len) return error.InvalidHeader;
+        const n = try file.read(buf[len .. len + 1]);
+        if (n == 0) {
+            if (len == 0) return null;
+            return buf[0..len];
+        }
+        if (buf[len] == '\n') {
+            return buf[0..len];
+        }
+        len += 1;
+    }
+}
+
+fn writeMessage(out: compat.File, payload: []const u8) !void {
     var header_buf: [128]u8 = undefined;
     const header = std.fmt.bufPrint(&header_buf, "Content-Length: {d}\r\n\r\n", .{payload.len}) catch return error.WriteFailed;
     try out.writeAll(header);
@@ -311,10 +330,10 @@ fn jsonNullId() std.json.Value {
     return .{ .null = {} };
 }
 
-fn sendResult(allocator: std.mem.Allocator, out: std.fs.File, id: std.json.Value, result_json: []const u8) !void {
-    var payload = std.ArrayListUnmanaged(u8){};
+fn sendResult(allocator: std.mem.Allocator, out: compat.File, id: std.json.Value, result_json: []const u8) !void {
+    var payload = std.ArrayListUnmanaged(u8).empty;
     defer payload.deinit(allocator);
-    const writer = payload.writer(allocator);
+    const writer = compat.listWriter(&payload, allocator);
 
     try writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
     try writeJsonId(writer, id);
@@ -324,10 +343,10 @@ fn sendResult(allocator: std.mem.Allocator, out: std.fs.File, id: std.json.Value
     try writeMessage(out, payload.items);
 }
 
-fn sendError(allocator: std.mem.Allocator, out: std.fs.File, id: std.json.Value, code: i64, message: []const u8) !void {
-    var payload = std.ArrayListUnmanaged(u8){};
+fn sendError(allocator: std.mem.Allocator, out: compat.File, id: std.json.Value, code: i64, message: []const u8) !void {
+    var payload = std.ArrayListUnmanaged(u8).empty;
     defer payload.deinit(allocator);
-    const writer = payload.writer(allocator);
+    const writer = compat.listWriter(&payload, allocator);
 
     try writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
     try writeJsonId(writer, id);
@@ -359,7 +378,7 @@ fn uriToPath(allocator: std.mem.Allocator, uri: []const u8) !?[]u8 {
             break :blk rest[slash_idx..];
         };
 
-        var decoded = std.ArrayListUnmanaged(u8){};
+        var decoded = std.ArrayListUnmanaged(u8).empty;
         errdefer decoded.deinit(allocator);
 
         var i: usize = 0;
@@ -410,12 +429,12 @@ fn readSourceFile(allocator: std.mem.Allocator, path: []const u8, workspace_root
 
     // If workspace root is set, ensure the resolved path is within it
     if (workspace_root) |root| {
-        const real_path = std.fs.cwd().realpathAlloc(allocator, path) catch return error.FileNotFound;
+        const real_path = compat.cwd().realpathAlloc(allocator, path) catch return error.FileNotFound;
         defer allocator.free(real_path);
         if (!std.mem.startsWith(u8, real_path, root)) return error.AccessDenied;
     }
 
-    const file = std.fs.cwd().openFile(path, .{}) catch return error.FileNotFound;
+    const file = compat.cwd().openFile(path, .{}) catch return error.FileNotFound;
     defer file.close();
     return try file.readToEndAlloc(allocator, max_source_bytes);
 }
@@ -471,7 +490,7 @@ fn zeroBasedLineCharacterFromOffset(source: []const u8, offset: usize) ?LineChar
 }
 
 fn collectDiagnosticsFromSource(allocator: std.mem.Allocator, source: []const u8) ![]Diagnostic {
-    var diagnostics = std.ArrayListUnmanaged(Diagnostic){};
+    var diagnostics = std.ArrayListUnmanaged(Diagnostic).empty;
     errdefer {
         for (diagnostics.items) |diag| allocator.free(diag.message);
         diagnostics.deinit(allocator);
@@ -513,9 +532,9 @@ fn collectDiagnosticsFromSource(allocator: std.mem.Allocator, source: []const u8
 }
 
 fn writeDiagnosticResultJson(allocator: std.mem.Allocator, diagnostics: []const Diagnostic) ![]u8 {
-    var out = std.ArrayListUnmanaged(u8){};
+    var out = std.ArrayListUnmanaged(u8).empty;
     errdefer out.deinit(allocator);
-    const writer = out.writer(allocator);
+    const writer = compat.listWriter(&out, allocator);
 
     try writer.writeAll("{\"kind\":\"full\",\"items\":[");
     for (diagnostics, 0..) |diag, idx| {
@@ -680,9 +699,9 @@ fn keywordHoverDescription(keyword: []const u8) ?[]const u8 {
 }
 
 fn keywordHoverResultJson(allocator: std.mem.Allocator, keyword: []const u8, description: []const u8) ![]u8 {
-    var out = std.ArrayListUnmanaged(u8){};
+    var out = std.ArrayListUnmanaged(u8).empty;
     errdefer out.deinit(allocator);
-    const writer = out.writer(allocator);
+    const writer = compat.listWriter(&out, allocator);
 
     const value = try std.fmt.allocPrint(allocator, "`{s}`: `keyword`\n\n{s}", .{
         keyword,
@@ -733,7 +752,7 @@ fn collectCompletionsFromSource(allocator: std.mem.Allocator, source: []const u8
     };
     defer allocator.free(scope_entries);
 
-    var items = std.ArrayListUnmanaged(CompletionItem){};
+    var items = std.ArrayListUnmanaged(CompletionItem).empty;
     errdefer {
         for (items.items) |item| {
             allocator.free(item.label);
@@ -772,9 +791,9 @@ fn hoverResultJson(
     type_name: []const u8,
     kind: checker_mod.Symbol.Kind,
 ) ![]u8 {
-    var out = std.ArrayListUnmanaged(u8){};
+    var out = std.ArrayListUnmanaged(u8).empty;
     errdefer out.deinit(allocator);
-    const writer = out.writer(allocator);
+    const writer = compat.listWriter(&out, allocator);
 
     const value = try std.fmt.allocPrint(allocator, "`{s}`: `{s}` ({s})", .{
         name,
@@ -862,9 +881,9 @@ fn definitionResultJson(
     const start = zeroBasedLineCharacterFromOffset(source, name_range.start) orelse return null;
     const end = zeroBasedLineCharacterFromOffset(source, name_range.end) orelse return null;
 
-    var out = std.ArrayListUnmanaged(u8){};
+    var out = std.ArrayListUnmanaged(u8).empty;
     errdefer out.deinit(allocator);
-    const writer = out.writer(allocator);
+    const writer = compat.listWriter(&out, allocator);
 
     try writer.writeAll("{\"uri\":");
     try writeJsonString(writer, uri);
@@ -913,9 +932,9 @@ fn collectDefinitionFromSource(
 }
 
 fn writeCompletionResultJson(allocator: std.mem.Allocator, items: []const CompletionItem) ![]u8 {
-    var out = std.ArrayListUnmanaged(u8){};
+    var out = std.ArrayListUnmanaged(u8).empty;
     errdefer out.deinit(allocator);
-    const writer = out.writer(allocator);
+    const writer = compat.listWriter(&out, allocator);
 
     try writer.writeAll("{\"isIncomplete\":false,\"items\":[");
     for (items, 0..) |item, idx| {
@@ -935,7 +954,7 @@ fn writeCompletionResultJson(allocator: std.mem.Allocator, items: []const Comple
 fn handleCompletionRequest(
     allocator: std.mem.Allocator,
     state: *ServerState,
-    out: std.fs.File,
+    out: compat.File,
     id: std.json.Value,
     params_opt: ?std.json.Value,
 ) !void {
@@ -999,7 +1018,7 @@ fn handleCompletionRequest(
 fn handleHoverRequest(
     allocator: std.mem.Allocator,
     state: *ServerState,
-    out: std.fs.File,
+    out: compat.File,
     id: std.json.Value,
     params_opt: ?std.json.Value,
 ) !void {
@@ -1059,7 +1078,7 @@ fn handleHoverRequest(
 fn handleDiagnosticRequest(
     allocator: std.mem.Allocator,
     state: *ServerState,
-    out: std.fs.File,
+    out: compat.File,
     id: std.json.Value,
     params_opt: ?std.json.Value,
 ) !void {
@@ -1108,7 +1127,7 @@ fn handleDiagnosticRequest(
 fn handleDefinitionRequest(
     allocator: std.mem.Allocator,
     state: *ServerState,
-    out: std.fs.File,
+    out: compat.File,
     id: std.json.Value,
     params_opt: ?std.json.Value,
 ) !void {
@@ -1223,7 +1242,7 @@ fn handleDidClose(
 fn handleMessage(
     allocator: std.mem.Allocator,
     state: *ServerState,
-    out: std.fs.File,
+    out: compat.File,
     payload: []const u8,
     shutdown_requested: *bool,
 ) !LspAction {
@@ -1261,7 +1280,7 @@ fn handleMessage(
                 if (params.object.get("rootUri")) |root_uri_val| {
                     if (root_uri_val == .string) {
                         if (uriToPath(allocator, root_uri_val.string) catch null) |root_path| {
-                            const resolved = std.fs.cwd().realpathAlloc(allocator, root_path) catch null;
+                            const resolved = compat.cwd().realpathAlloc(allocator, root_path) catch null;
                             if (state.workspace_root) |old| allocator.free(old);
                             if (resolved) |r| {
                                 allocator.free(root_path);
@@ -1347,26 +1366,26 @@ fn handleMessage(
 }
 
 pub fn runStdio(allocator: std.mem.Allocator) !void {
-    const stdin_file: std.fs.File = if (comptime builtin.os.tag == .windows)
+    const stdin_file: compat.File = if (comptime builtin.os.tag == .windows)
         .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_INPUT_HANDLE) orelse
             @panic("failed to get stdin handle") }
     else
         .{ .handle = std.posix.STDIN_FILENO };
-    const stdout_file: std.fs.File = if (comptime builtin.os.tag == .windows)
+    const stdout_file: compat.File = if (comptime builtin.os.tag == .windows)
         .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) orelse
             @panic("failed to get stdout handle") }
     else
         .{ .handle = std.posix.STDOUT_FILENO };
 
-    var read_buffer: [4096]u8 = undefined;
-    var reader = stdin_file.reader(&read_buffer);
+    var line_buf: [4096]u8 = undefined;
+    var stdin_mut = stdin_file;
     var shutdown_requested = false;
     var state = ServerState{};
     defer state.deinit(allocator);
 
     while (true) {
-        const content_length_opt = readContentLength(&reader.interface) catch |err| switch (err) {
-            error.InvalidHeader, error.PayloadTooLarge => std.process.exit(1),
+        const content_length_opt = readContentLength(&stdin_mut, &line_buf) catch |err| switch (err) {
+            error.InvalidHeader, error.PayloadTooLarge => compat.exit(1),
             else => return err,
         };
         if (content_length_opt == null) break;
@@ -1374,11 +1393,11 @@ pub fn runStdio(allocator: std.mem.Allocator) !void {
 
         const payload = try allocator.alloc(u8, content_length);
         defer allocator.free(payload);
-        reader.interface.readSliceAll(payload) catch std.process.exit(1);
+        _ = stdin_mut.readAll(payload) catch compat.exit(1);
 
-        const action = handleMessage(allocator, &state, stdout_file, payload, &shutdown_requested) catch std.process.exit(1);
+        const action = handleMessage(allocator, &state, stdout_file, payload, &shutdown_requested) catch compat.exit(1);
         if (action == .stop) {
-            std.process.exit(if (shutdown_requested) 0 else 1);
+            compat.exit(if (shutdown_requested) 0 else 1);
         }
     }
 }

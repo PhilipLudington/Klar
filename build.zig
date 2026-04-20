@@ -10,7 +10,7 @@ pub fn build(b: *std.Build) void {
     // different target (e.g., Linux LLVM can't produce Windows COFF objects).
     const is_cross_compiling = target.result.os.tag != builtin.os.tag or
         target.result.cpu.arch != builtin.cpu.arch;
-    const llvm_prefix = if (is_cross_compiling) null else detectLLVMPrefix();
+    const llvm_prefix = if (is_cross_compiling) null else detectLLVMPrefix(b);
     const has_llvm = llvm_prefix != null;
 
     // Build options module (pass has_llvm to source code)
@@ -35,15 +35,15 @@ pub fn build(b: *std.Build) void {
 
     // Add LLVM include and library paths
     if (llvm_prefix) |prefix| {
-        exe.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{prefix}) });
-        exe.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/lib", .{prefix}) });
+        main_mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{prefix}) });
+        main_mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/lib", .{prefix}) });
         // Windows: LLVM-C.lib/dll (vovkos packages); macOS/Linux: libLLVM.dylib/.so
         if (builtin.os.tag == .windows) {
-            exe.linkSystemLibrary("LLVM-C");
+            main_mod.linkSystemLibrary("LLVM-C", .{});
         } else {
-            exe.linkSystemLibrary("LLVM");
+            main_mod.linkSystemLibrary("LLVM", .{});
         }
-        exe.linkLibC();
+        main_mod.link_libc = true;
     }
 
     b.installArtifact(exe);
@@ -72,14 +72,14 @@ pub fn build(b: *std.Build) void {
 
     // Add LLVM to tests as well
     if (llvm_prefix) |prefix| {
-        unit_tests.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{prefix}) });
-        unit_tests.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/lib", .{prefix}) });
+        test_mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{prefix}) });
+        test_mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/lib", .{prefix}) });
         if (builtin.os.tag == .windows) {
-            unit_tests.linkSystemLibrary("LLVM-C");
+            test_mod.linkSystemLibrary("LLVM-C", .{});
         } else {
-            unit_tests.linkSystemLibrary("LLVM");
+            test_mod.linkSystemLibrary("LLVM", .{});
         }
-        unit_tests.linkLibC();
+        test_mod.link_libc = true;
     }
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
@@ -156,19 +156,19 @@ pub fn build(b: *std.Build) void {
 
 /// Detect LLVM installation path.
 /// Checks environment variable first, then known locations.
-fn detectLLVMPrefix() ?[]const u8 {
+fn detectLLVMPrefix(b: *std.Build) ?[]const u8 {
     // Try environment variable first
-    if (std.process.getEnvVarOwned(std.heap.page_allocator, "LLVM_PREFIX")) |prefix| {
-        return prefix;
-    } else |_| {}
+    if (b.graph.environ_map.get("LLVM_PREFIX")) |prefix| {
+        return b.dupe(prefix);
+    }
 
     // macOS ARM64 (Apple Silicon) - Homebrew (unversioned)
-    if (std.fs.accessAbsolute("/opt/homebrew/opt/llvm/include/llvm-c/Core.h", .{})) |_| {
+    if (std.Io.Dir.accessAbsolute(b.graph.io,"/opt/homebrew/opt/llvm/include/llvm-c/Core.h", .{})) |_| {
         return "/opt/homebrew/opt/llvm";
     } else |_| {}
 
     // macOS x86_64 (Intel) - Homebrew (unversioned)
-    if (std.fs.accessAbsolute("/usr/local/opt/llvm/include/llvm-c/Core.h", .{})) |_| {
+    if (std.Io.Dir.accessAbsolute(b.graph.io,"/usr/local/opt/llvm/include/llvm-c/Core.h", .{})) |_| {
         return "/usr/local/opt/llvm";
     } else |_| {}
 
@@ -179,7 +179,7 @@ fn detectLLVMPrefix() ?[]const u8 {
         for (prefixes) |prefix| {
             for (versions) |ver| {
                 const path = std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}/include/llvm-c/Core.h", .{ prefix, ver }) catch continue;
-                if (std.fs.accessAbsolute(path, .{})) |_| {
+                if (std.Io.Dir.accessAbsolute(b.graph.io,path, .{})) |_| {
                     return std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ prefix, ver }) catch continue;
                 } else |_| {}
             }
@@ -187,11 +187,11 @@ fn detectLLVMPrefix() ?[]const u8 {
     }
 
     // Linux - check common paths
-    if (std.fs.accessAbsolute("/usr/include/llvm-c/Core.h", .{})) |_| {
+    if (std.Io.Dir.accessAbsolute(b.graph.io,"/usr/include/llvm-c/Core.h", .{})) |_| {
         return "/usr";
     } else |_| {}
 
-    if (std.fs.accessAbsolute("/usr/local/include/llvm-c/Core.h", .{})) |_| {
+    if (std.Io.Dir.accessAbsolute(b.graph.io,"/usr/local/include/llvm-c/Core.h", .{})) |_| {
         return "/usr/local";
     } else |_| {}
 
@@ -200,7 +200,7 @@ fn detectLLVMPrefix() ?[]const u8 {
         const versions = [_][]const u8{ "20", "19", "18", "17", "16", "15", "14" };
         for (versions) |ver| {
             const path = std.fmt.allocPrint(std.heap.page_allocator, "/usr/lib/llvm-{s}/include/llvm-c/Core.h", .{ver}) catch continue;
-            if (std.fs.accessAbsolute(path, .{})) |_| {
+            if (std.Io.Dir.accessAbsolute(b.graph.io,path, .{})) |_| {
                 return std.fmt.allocPrint(std.heap.page_allocator, "/usr/lib/llvm-{s}", .{ver}) catch continue;
             } else |_| {}
         }
@@ -214,7 +214,7 @@ fn detectLLVMPrefix() ?[]const u8 {
         };
         for (win_paths) |p| {
             const check = std.fmt.allocPrint(std.heap.page_allocator, "{s}\\include\\llvm-c\\Core.h", .{p}) catch continue;
-            if (std.fs.accessAbsolute(check, .{})) |_| {
+            if (std.Io.Dir.accessAbsolute(b.graph.io,check, .{})) |_| {
                 return p;
             } else |_| {}
         }

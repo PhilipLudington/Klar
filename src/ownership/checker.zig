@@ -66,7 +66,7 @@ pub const OwnershipChecker = struct {
         // current_scope must be set after the struct is in its final location.
         return OwnershipChecker{
             .allocator = allocator,
-            .errors = .{},
+            .errors = .empty,
             .current_scope = undefined, // Set in analyze() after struct is placed
             .global_scope = OwnershipScope.init(allocator, null, .global),
             .scope_arena = std.heap.ArenaAllocator.init(allocator),

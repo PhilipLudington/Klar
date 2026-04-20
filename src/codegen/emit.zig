@@ -450,8 +450,8 @@ pub const Emitter = struct {
             .calling_convention = calling_convention,
             .named_values = std.StringHashMap(LocalValue).init(allocator),
             .has_terminator = false,
-            .loop_stack = .{},
-            .scope_stack = .{},
+            .loop_stack = .empty,
+            .scope_stack = .empty,
             .current_return_type = null,
             .sadd_overflow_id = null,
             .ssub_overflow_id = null,
@@ -473,9 +473,9 @@ pub const Emitter = struct {
             .current_return_klar_type = null,
             .current_function_is_async = false,
             .skip_main = false,
-            .mangled_enum_names = .{},
-            .mangled_struct_names = .{},
-            .resolved_type_allocs = .{},
+            .mangled_enum_names = .empty,
+            .mangled_struct_names = .empty,
+            .resolved_type_allocs = .empty,
             .current_sret_ptr = null,
             .sret_attr_kind = null,
             .byval_attr_kind = null,
@@ -1535,7 +1535,7 @@ pub const Emitter = struct {
             llvm.Types.void_(self.ctx);
 
         // Build parameter types
-        var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        var param_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
         defer param_types.deinit(self.allocator);
 
         // If sret is needed, add pointer parameter as first param
@@ -1544,7 +1544,7 @@ pub const Emitter = struct {
         }
 
         // Track byval info for large struct parameters
-        var byval_param_types = std.ArrayListUnmanaged(?llvm.TypeRef){};
+        var byval_param_types = std.ArrayListUnmanaged(?llvm.TypeRef).empty;
         defer byval_param_types.deinit(self.allocator);
         var has_byval = false;
 
@@ -1692,16 +1692,16 @@ pub const Emitter = struct {
         } else llvm.Types.void_(self.ctx);
 
         // Build parameter types with ABI lowering for small structs
-        var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        var param_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
         defer param_types.deinit(self.allocator);
 
         // Track which parameters need ABI lowering (struct -> integer)
-        var abi_lowered_params = std.ArrayListUnmanaged(?AbiLoweredParam){};
+        var abi_lowered_params = std.ArrayListUnmanaged(?AbiLoweredParam).empty;
         defer abi_lowered_params.deinit(self.allocator);
 
         // Track out parameters
         var out_params: u64 = 0;
-        var out_param_types = std.ArrayListUnmanaged(?llvm.TypeRef){};
+        var out_param_types = std.ArrayListUnmanaged(?llvm.TypeRef).empty;
         defer out_param_types.deinit(self.allocator);
 
         for (func.params, 0..) |param, i| {
@@ -1844,7 +1844,7 @@ pub const Emitter = struct {
 
         for (impl_decl.methods) |method| {
             // Build the mangled method name: StructName_methodName
-            var name_buf = std.ArrayListUnmanaged(u8){};
+            var name_buf = std.ArrayListUnmanaged(u8).empty;
             defer name_buf.deinit(self.allocator);
             name_buf.appendSlice(self.allocator, struct_name) catch return EmitError.OutOfMemory;
             name_buf.append(self.allocator, '_') catch return EmitError.OutOfMemory;
@@ -1854,7 +1854,7 @@ pub const Emitter = struct {
             defer self.allocator.free(mangled_name);
 
             // Build parameter types
-            var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+            var param_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
             defer param_types.deinit(self.allocator);
 
             for (method.params) |param| {
@@ -1894,7 +1894,7 @@ pub const Emitter = struct {
             if (method.body == null) continue;
 
             // Build the mangled method name
-            var name_buf = std.ArrayListUnmanaged(u8){};
+            var name_buf = std.ArrayListUnmanaged(u8).empty;
             defer name_buf.deinit(self.allocator);
             name_buf.appendSlice(self.allocator, struct_name) catch return EmitError.OutOfMemory;
             name_buf.append(self.allocator, '_') catch return EmitError.OutOfMemory;
@@ -5895,7 +5895,7 @@ pub const Emitter = struct {
                         // Sret call: allocate space, prepend pointer, call, load result
                         const sret_alloca = self.builder.buildAlloca(sret_return_type, "sret.tmp");
 
-                        var args = std.ArrayListUnmanaged(llvm.ValueRef){};
+                        var args = std.ArrayListUnmanaged(llvm.ValueRef).empty;
                         defer args.deinit(self.allocator);
 
                         // First argument is the sret pointer
@@ -5926,7 +5926,7 @@ pub const Emitter = struct {
                     }
 
                     // Normal call (non-sret)
-                    var args = std.ArrayListUnmanaged(llvm.ValueRef){};
+                    var args = std.ArrayListUnmanaged(llvm.ValueRef).empty;
                     defer args.deinit(self.allocator);
 
                     for (call.args, 0..) |arg, i| {
@@ -5966,7 +5966,7 @@ pub const Emitter = struct {
                             if (param_count <= 32) {
                                 llvm.c.LLVMGetParamTypes(fn_type, &param_types);
                             }
-                            var args = std.ArrayListUnmanaged(llvm.ValueRef){};
+                            var args = std.ArrayListUnmanaged(llvm.ValueRef).empty;
                             defer args.deinit(self.allocator);
                             for (call.args, 0..) |arg, i| {
                                 const arg_value = try self.emitExpr(arg);
@@ -6039,7 +6039,7 @@ pub const Emitter = struct {
                     // Sret call: allocate space, prepend pointer, call, load result
                     const sret_alloca = self.builder.buildAlloca(sret_return_type, "sret.tmp");
 
-                    var args = std.ArrayListUnmanaged(llvm.ValueRef){};
+                    var args = std.ArrayListUnmanaged(llvm.ValueRef).empty;
                     defer args.deinit(self.allocator);
 
                     // First argument is the sret pointer
@@ -6077,7 +6077,7 @@ pub const Emitter = struct {
 
                     if (has_abi_lowered_return or has_abi_lowered_params or has_out_params) {
                         // Build args with ABI lowering for struct parameters and out parameter handling
-                        var args = std.ArrayListUnmanaged(llvm.ValueRef){};
+                        var args = std.ArrayListUnmanaged(llvm.ValueRef).empty;
                         defer args.deinit(self.allocator);
 
                         for (call.args, 0..) |arg, i| {
@@ -6135,7 +6135,7 @@ pub const Emitter = struct {
                 }
 
                 // Normal direct function call (non-sret)
-                var args = std.ArrayListUnmanaged(llvm.ValueRef){};
+                var args = std.ArrayListUnmanaged(llvm.ValueRef).empty;
                 defer args.deinit(self.allocator);
 
                 for (call.args, 0..) |arg, i| {
@@ -6200,7 +6200,7 @@ pub const Emitter = struct {
         };
 
         // Build arguments
-        var call_args = std.ArrayListUnmanaged(llvm.ValueRef){};
+        var call_args = std.ArrayListUnmanaged(llvm.ValueRef).empty;
         defer call_args.deinit(self.allocator);
 
         for (args) |arg| {
@@ -6218,7 +6218,7 @@ pub const Emitter = struct {
     /// Emit a call through an extern fn pointer value with known Klar type.
     fn emitExternFnPtrCall(self: *Emitter, fn_ptr: llvm.ValueRef, extern_fn: *const types.ExternFnType, args: []const ast.Expr) EmitError!llvm.ValueRef {
         // Build LLVM function type from Klar extern fn type
-        var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        var param_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
         defer param_types.deinit(self.allocator);
 
         for (extern_fn.params) |param_type| {
@@ -6230,7 +6230,7 @@ pub const Emitter = struct {
         const fn_type = llvm.Types.function(return_type, param_types.items, false);
 
         // Build arguments
-        var call_args = std.ArrayListUnmanaged(llvm.ValueRef){};
+        var call_args = std.ArrayListUnmanaged(llvm.ValueRef).empty;
         defer call_args.deinit(self.allocator);
 
         for (args) |arg| {
@@ -6279,7 +6279,7 @@ pub const Emitter = struct {
         const env_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), env_ptr_gep, "env.ptr");
 
         // Build argument list: env_ptr + user args
-        var call_args = std.ArrayListUnmanaged(llvm.ValueRef){};
+        var call_args = std.ArrayListUnmanaged(llvm.ValueRef).empty;
         defer call_args.deinit(self.allocator);
 
         call_args.append(self.allocator, env_ptr) catch return EmitError.OutOfMemory;
@@ -6290,7 +6290,7 @@ pub const Emitter = struct {
 
         // Build function type for the call
         // Use provided types if available, otherwise default to i32
-        var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        var param_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
         defer param_types.deinit(self.allocator);
 
         // First param is always the environment pointer
@@ -7078,7 +7078,7 @@ pub const Emitter = struct {
             },
             .tuple => |tup| {
                 // Create struct type for tuple
-                var elem_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+                var elem_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
                 defer elem_types.deinit(self.allocator);
 
                 for (tup.elements) |elem| {
@@ -7192,7 +7192,7 @@ pub const Emitter = struct {
 
                     // Try to look up user-defined generic struct types
                     // Build mangled name: BaseName$Type1$Type2...
-                    var mangled = std.ArrayListUnmanaged(u8){};
+                    var mangled = std.ArrayListUnmanaged(u8).empty;
                     defer mangled.deinit(self.allocator);
                     mangled.appendSlice(self.allocator, base_name) catch return EmitError.OutOfMemory;
                     for (g.args) |arg| {
@@ -7509,7 +7509,7 @@ pub const Emitter = struct {
 
     /// Build LLVM function type for an extern fn (C function pointer).
     fn buildExternFnLLVMType(self: *Emitter, extern_fn: *const types.ExternFnType) EmitError!llvm.TypeRef {
-        var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        var param_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
         defer param_types.deinit(self.allocator);
 
         for (extern_fn.params) |param_type| {
@@ -7757,7 +7757,7 @@ pub const Emitter = struct {
                 if (tup.elements.len == 0) {
                     return llvm.Types.int32(self.ctx); // Empty tuple as unit
                 }
-                var elem_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+                var elem_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
                 defer elem_types.deinit(self.allocator);
                 for (tup.elements) |elem| {
                     const elem_ty = try self.inferExprType(elem);
@@ -7786,7 +7786,7 @@ pub const Emitter = struct {
                     }
                 }
                 // Fallback: Infer struct type from field values (anonymous struct)
-                var field_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+                var field_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
                 defer field_types.deinit(self.allocator);
                 for (s.fields) |field_init| {
                     const field_ty = try self.inferExprType(field_init.value);
@@ -8425,7 +8425,7 @@ pub const Emitter = struct {
                 // First check if this is a user-defined struct/enum method
                 const has_user_method = blk: {
                     if (self.getStructNameFromExpr(m.object)) |struct_name| {
-                        var fn_name_buf = std.ArrayListUnmanaged(u8){};
+                        var fn_name_buf = std.ArrayListUnmanaged(u8).empty;
                         defer fn_name_buf.deinit(self.allocator);
                         fn_name_buf.appendSlice(self.allocator, struct_name) catch break :blk false;
                         fn_name_buf.append(self.allocator, '_') catch break :blk false;
@@ -8705,7 +8705,7 @@ pub const Emitter = struct {
                 // Function name format: StructName_method_name
                 // First check for instance methods (object is a variable of struct type)
                 if (self.getStructNameFromExpr(m.object)) |struct_name| {
-                    var fn_name_buf = std.ArrayListUnmanaged(u8){};
+                    var fn_name_buf = std.ArrayListUnmanaged(u8).empty;
                     defer fn_name_buf.deinit(self.allocator);
                     fn_name_buf.appendSlice(self.allocator, struct_name) catch return EmitError.OutOfMemory;
                     fn_name_buf.append(self.allocator, '_') catch return EmitError.OutOfMemory;
@@ -8735,7 +8735,7 @@ pub const Emitter = struct {
                     const type_name = m.object.identifier.name;
                     // Check if this identifier is a struct type (not a variable)
                     if (self.struct_types.contains(type_name)) {
-                        var fn_name_buf = std.ArrayListUnmanaged(u8){};
+                        var fn_name_buf = std.ArrayListUnmanaged(u8).empty;
                         defer fn_name_buf.deinit(self.allocator);
                         fn_name_buf.appendSlice(self.allocator, type_name) catch return EmitError.OutOfMemory;
                         fn_name_buf.append(self.allocator, '_') catch return EmitError.OutOfMemory;
@@ -8948,7 +8948,7 @@ pub const Emitter = struct {
                                 .named => |n| n.name,
                                 else => break :blk null,
                             };
-                            var mangled = std.ArrayListUnmanaged(u8){};
+                            var mangled = std.ArrayListUnmanaged(u8).empty;
                             mangled.appendSlice(self.allocator, base_name) catch break :blk null;
                             for (g.args) |arg| {
                                 mangled.append(self.allocator, '$') catch break :blk null;
@@ -8996,7 +8996,7 @@ pub const Emitter = struct {
                         std.mem.eql(u8, base_name, "Sender") or
                         std.mem.eql(u8, base_name, "Receiver"))
                         return null;
-                    var mangled = std.ArrayListUnmanaged(u8){};
+                    var mangled = std.ArrayListUnmanaged(u8).empty;
                     mangled.appendSlice(self.allocator, base_name) catch return null;
                     for (g.args) |arg| {
                         mangled.append(self.allocator, '$') catch return null;
@@ -9400,7 +9400,7 @@ pub const Emitter = struct {
         }
 
         // Create array of field types
-        var field_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        var field_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
         defer field_types.deinit(self.allocator);
 
         var field_indices = try self.allocator.alloc(u32, fields.len);
@@ -9459,7 +9459,7 @@ pub const Emitter = struct {
                     else => return unsupportedFeatureDebug(@src()),
                 };
                 // Build mangled name: BaseName$Type1$Type2...
-                var mangled = std.ArrayListUnmanaged(u8){};
+                var mangled = std.ArrayListUnmanaged(u8).empty;
                 errdefer mangled.deinit(self.allocator);
                 mangled.appendSlice(self.allocator, base_name) catch return EmitError.OutOfMemory;
                 for (g.args) |arg| {
@@ -9523,13 +9523,13 @@ pub const Emitter = struct {
 
         // Fallback: Create a simple struct type based on the field initializers (in order).
         // This is used when no struct declaration is available.
-        var field_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        var field_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
         defer field_types.deinit(self.allocator);
 
-        var field_values = std.ArrayListUnmanaged(llvm.ValueRef){};
+        var field_values = std.ArrayListUnmanaged(llvm.ValueRef).empty;
         defer field_values.deinit(self.allocator);
 
-        var field_names = std.ArrayListUnmanaged([]const u8){};
+        var field_names = std.ArrayListUnmanaged([]const u8).empty;
         defer field_names.deinit(self.allocator);
 
         for (lit.fields) |field_init| {
@@ -9589,7 +9589,7 @@ pub const Emitter = struct {
         }
 
         // Emit all elements
-        var element_values = std.ArrayListUnmanaged(llvm.ValueRef){};
+        var element_values = std.ArrayListUnmanaged(llvm.ValueRef).empty;
         defer element_values.deinit(self.allocator);
 
         for (arr.elements) |elem| {
@@ -9634,10 +9634,10 @@ pub const Emitter = struct {
         } else null;
 
         // Emit all elements
-        var element_values = std.ArrayListUnmanaged(llvm.ValueRef){};
+        var element_values = std.ArrayListUnmanaged(llvm.ValueRef).empty;
         defer element_values.deinit(self.allocator);
 
-        var element_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        var element_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
         defer element_types.deinit(self.allocator);
 
         const prev_expected = self.expected_type;
@@ -10754,7 +10754,7 @@ pub const Emitter = struct {
         _: StructMethod, // struct_method - unused but kept for potential future use
     ) EmitError!llvm.ValueRef {
         // Build the function name: StructName_methodName
-        var fn_name_buf = std.ArrayListUnmanaged(u8){};
+        var fn_name_buf = std.ArrayListUnmanaged(u8).empty;
         defer fn_name_buf.deinit(self.allocator);
         fn_name_buf.appendSlice(self.allocator, struct_name) catch return EmitError.OutOfMemory;
         fn_name_buf.append(self.allocator, '_') catch return EmitError.OutOfMemory;
@@ -10769,7 +10769,7 @@ pub const Emitter = struct {
         };
 
         // Build arguments from the payload
-        var args = std.ArrayListUnmanaged(llvm.ValueRef){};
+        var args = std.ArrayListUnmanaged(llvm.ValueRef).empty;
         defer args.deinit(self.allocator);
 
         for (lit.payload) |arg| {
@@ -10971,7 +10971,7 @@ pub const Emitter = struct {
                 };
 
                 // Build mangled name: EnumName$Arg1$Arg2
-                var result = std.ArrayListUnmanaged(u8){};
+                var result = std.ArrayListUnmanaged(u8).empty;
                 errdefer result.deinit(self.allocator);
 
                 result.appendSlice(self.allocator, base_name) catch return EmitError.OutOfMemory;
@@ -12464,7 +12464,7 @@ pub const Emitter = struct {
                 }
                 return null;
             },
-            .field => |_| {
+            .field => {
                 // Field access returns a value, harder to track type
                 return null;
             },
@@ -12483,7 +12483,7 @@ pub const Emitter = struct {
         // Determine the mangled function name
         // For generic structs, the struct_name already contains the monomorphization (e.g., "Pair$i32$i32")
         // The method name becomes "Pair$i32$i32_get_first"
-        var fn_name_buf = std.ArrayListUnmanaged(u8){};
+        var fn_name_buf = std.ArrayListUnmanaged(u8).empty;
         defer fn_name_buf.deinit(self.allocator);
         fn_name_buf.appendSlice(self.allocator, struct_name) catch return EmitError.OutOfMemory;
         fn_name_buf.append(self.allocator, '_') catch return EmitError.OutOfMemory;
@@ -12500,7 +12500,7 @@ pub const Emitter = struct {
         };
 
         // Build arguments: self (if needed) + actual arguments
-        var args = std.ArrayListUnmanaged(llvm.ValueRef){};
+        var args = std.ArrayListUnmanaged(llvm.ValueRef).empty;
         defer args.deinit(self.allocator);
 
         // Add 'self' if method has it
@@ -12560,7 +12560,7 @@ pub const Emitter = struct {
             const sret_alloca = self.builder.buildAlloca(sret_return_type, "sret.tmp");
 
             // Build new args list with sret pointer prepended
-            var sret_args = std.ArrayListUnmanaged(llvm.ValueRef){};
+            var sret_args = std.ArrayListUnmanaged(llvm.ValueRef).empty;
             defer sret_args.deinit(self.allocator);
 
             // First argument is the sret pointer
@@ -12963,7 +12963,7 @@ pub const Emitter = struct {
 
         // Build parameter types for the lifted function
         // First parameter is the environment pointer (for captured variables)
-        var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        var param_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
         defer param_types.deinit(self.allocator);
 
         // Add environment pointer as first parameter
@@ -14089,10 +14089,10 @@ pub const Emitter = struct {
 
         // Multiple parts: build format string and args for snprintf
         // We'll use a fixed-size stack buffer and snprintf
-        var format_parts = std.ArrayListUnmanaged(u8){};
+        var format_parts = std.ArrayListUnmanaged(u8).empty;
         defer format_parts.deinit(self.allocator);
 
-        var expr_values = std.ArrayListUnmanaged(llvm.ValueRef){};
+        var expr_values = std.ArrayListUnmanaged(llvm.ValueRef).empty;
         defer expr_values.deinit(self.allocator);
 
         for (interp.parts) |part| {
@@ -14168,7 +14168,7 @@ pub const Emitter = struct {
         const i64_type = llvm.Types.int64(self.ctx);
         const size_val = llvm.Const.int(i64_type, buffer_size, false);
 
-        var call_args = std.ArrayListUnmanaged(llvm.ValueRef){};
+        var call_args = std.ArrayListUnmanaged(llvm.ValueRef).empty;
         defer call_args.deinit(self.allocator);
         call_args.append(self.allocator, buffer_ptr) catch return EmitError.OutOfMemory;
         call_args.append(self.allocator, size_val) catch return EmitError.OutOfMemory;
@@ -14394,7 +14394,7 @@ pub const Emitter = struct {
                 try self.typeExprToLLVM(closure.return_type);
 
             // Build parameter types (NO env pointer - this is for C compatibility)
-            var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+            var param_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
             defer param_types.deinit(self.allocator);
 
             for (closure.params) |param| {
@@ -14556,7 +14556,7 @@ pub const Emitter = struct {
                 const struct_type = struct_info.llvm_type;
 
                 // Build constant field values in the correct order
-                var field_values = std.ArrayListUnmanaged(llvm.ValueRef){};
+                var field_values = std.ArrayListUnmanaged(llvm.ValueRef).empty;
                 defer field_values.deinit(self.allocator);
 
                 // Iterate through struct fields in declaration order
@@ -14578,7 +14578,7 @@ pub const Emitter = struct {
                 const element_llvm_type = self.typeToLLVM(arr.element_type);
 
                 // Recursively emit each element as a constant
-                var element_values = std.ArrayListUnmanaged(llvm.ValueRef){};
+                var element_values = std.ArrayListUnmanaged(llvm.ValueRef).empty;
                 defer element_values.deinit(self.allocator);
 
                 for (arr.elements) |elem| {
@@ -18855,7 +18855,7 @@ pub const Emitter = struct {
             const orig_param_count = llvm.c.LLVMCountParamTypes(orig_fn_type);
 
             // Build wrapper parameter types: [ptr (env), original params...]
-            var wrapper_param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+            var wrapper_param_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
             defer wrapper_param_types.deinit(self.allocator);
             wrapper_param_types.append(self.allocator, ptr_type) catch return EmitError.OutOfMemory; // env_ptr
 
@@ -18886,7 +18886,7 @@ pub const Emitter = struct {
                 self.builder.positionAtEnd(entry);
 
                 // Build call to original function (skip env_ptr argument)
-                var call_args = std.ArrayListUnmanaged(llvm.ValueRef){};
+                var call_args = std.ArrayListUnmanaged(llvm.ValueRef).empty;
                 defer call_args.deinit(self.allocator);
                 for (0..orig_param_count) |i| {
                     // Skip param 0 (env_ptr), use params 1..
@@ -37252,7 +37252,7 @@ pub const Emitter = struct {
     /// Push a new scope onto the scope stack.
     fn pushScope(self: *Emitter, is_loop: bool) EmitError!void {
         self.scope_stack.append(self.allocator, .{
-            .droppables = .{},
+            .droppables = .empty,
             .is_loop = is_loop,
         }) catch return EmitError.OutOfMemory;
     }
@@ -37734,7 +37734,7 @@ pub const Emitter = struct {
                 return llvm.Types.struct_(self.ctx, &fields, false);
             },
             .tuple => |tup| {
-                var elem_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+                var elem_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
                 defer elem_types.deinit(self.allocator);
                 for (tup.elements) |elem| {
                     elem_types.append(self.allocator, self.typeToLLVM(elem)) catch {
@@ -37795,7 +37795,7 @@ pub const Emitter = struct {
                     return llvm.Types.struct_(self.ctx, &future_fields, false);
                 }
                 // For applied types (e.g., Pair[i32]), construct mangled name and look up
-                var name_buf = std.ArrayListUnmanaged(u8){};
+                var name_buf = std.ArrayListUnmanaged(u8).empty;
                 defer name_buf.deinit(self.allocator);
 
                 // Get base name
@@ -38003,7 +38003,7 @@ pub const Emitter = struct {
         }
 
         // Build LLVM field types from the concrete struct type
-        var field_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        var field_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
         defer field_types.deinit(self.allocator);
 
         const field_count = mono.concrete_type.fields.len;
@@ -38086,7 +38086,7 @@ pub const Emitter = struct {
         const variant_count = mono.concrete_type.variants.len;
         const tag_type = if (variant_count <= 256) llvm.Types.int8(self.ctx) else llvm.Types.int16(self.ctx);
 
-        var field_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        var field_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
         defer field_types.deinit(self.allocator);
 
         // Tag field
@@ -38195,7 +38195,7 @@ pub const Emitter = struct {
         const variant_count = enum_type.variants.len;
         const tag_type = if (variant_count <= 256) llvm.Types.int8(self.ctx) else llvm.Types.int16(self.ctx);
 
-        var field_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        var field_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
         defer field_types.deinit(self.allocator);
 
         // Tag field
@@ -38306,11 +38306,11 @@ pub const Emitter = struct {
         const return_llvm_type = self.typeToLLVM(func_type.return_type);
 
         // Build parameter types from the concrete function type
-        var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        var param_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
         defer param_types.deinit(self.allocator);
 
         // Track byval info for large struct parameters
-        var byval_param_types = std.ArrayListUnmanaged(?llvm.TypeRef){};
+        var byval_param_types = std.ArrayListUnmanaged(?llvm.TypeRef).empty;
         defer byval_param_types.deinit(self.allocator);
         var has_byval = false;
 
@@ -38586,7 +38586,7 @@ pub const Emitter = struct {
         const func_type = mono.concrete_type.function;
 
         // Build parameter types from the concrete function type
-        var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        var param_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
         defer param_types.deinit(self.allocator);
 
         for (func_type.params) |param_ty| {
@@ -38662,7 +38662,7 @@ pub const Emitter = struct {
             }
             break :blk self.allocator.dupe(u8, mono.struct_name) catch return EmitError.OutOfMemory;
         } else blk: {
-            var struct_name_buf = std.ArrayListUnmanaged(u8){};
+            var struct_name_buf = std.ArrayListUnmanaged(u8).empty;
             defer struct_name_buf.deinit(self.allocator);
             struct_name_buf.appendSlice(self.allocator, mono.struct_name) catch return EmitError.OutOfMemory;
             for (mono.type_args) |type_arg| {

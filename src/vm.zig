@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat.zig");
 const Allocator = std.mem.Allocator;
 const bytecode = @import("bytecode.zig");
 const OpCode = bytecode.OpCode;
@@ -29,7 +30,7 @@ const GC = gc_mod.GC;
 const zig_builtin = @import("builtin");
 
 // Cross-platform IO helpers
-fn getStdOut() std.fs.File {
+fn getStdOut() compat.File {
     if (comptime zig_builtin.os.tag == .windows) {
         return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) orelse
             @panic("failed to get stdout handle") };
@@ -38,7 +39,7 @@ fn getStdOut() std.fs.File {
     }
 }
 
-fn getStdErr() std.fs.File {
+fn getStdErr() compat.File {
     if (comptime zig_builtin.os.tag == .windows) {
         return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) orelse
             @panic("failed to get stderr handle") };
@@ -103,7 +104,7 @@ pub const VM = struct {
     open_upvalues: ?*ObjUpvalue,
 
     /// Output file for print statements.
-    stdout: std.fs.File,
+    stdout: compat.File,
 
     /// Debug mode flag.
     debug_trace: bool,
@@ -139,7 +140,7 @@ pub const VM = struct {
             .stack_top = 0,
             .frames = undefined,
             .frame_count = 0,
-            .globals = .{},
+            .globals = .empty,
             .open_upvalues = null,
             .stdout = getStdOut(),
             .debug_trace = false,
@@ -147,7 +148,7 @@ pub const VM = struct {
             .stress_gc = false,
             .last_error = null,
             .next_future_task_id = 1,
-            .future_payloads = .{},
+            .future_payloads = .empty,
         };
 
         // Initialize stack with void values
@@ -668,7 +669,7 @@ pub const VM = struct {
                 // -------------------------------------------------------------
                 .op_array => {
                     const count = self.readU16();
-                    var items = std.ArrayListUnmanaged(Value){};
+                    var items = std.ArrayListUnmanaged(Value).empty;
                     defer items.deinit(self.allocator);
 
                     // Pop items in reverse order.
@@ -682,7 +683,7 @@ pub const VM = struct {
                 },
                 .op_tuple => {
                     const count = self.readByte();
-                    var items = std.ArrayListUnmanaged(Value){};
+                    var items = std.ArrayListUnmanaged(Value).empty;
                     defer items.deinit(self.allocator);
 
                     var i: u8 = 0;
@@ -802,7 +803,7 @@ pub const VM = struct {
                     if (arr_val != .array) return RuntimeError.TypeError;
 
                     // Create a new array with the value appended
-                    var new_items = std.ArrayListUnmanaged(Value){};
+                    var new_items = std.ArrayListUnmanaged(Value).empty;
                     defer new_items.deinit(self.allocator);
                     try new_items.appendSlice(self.allocator, arr_val.array.items);
                     try new_items.append(self.allocator, value);
@@ -905,11 +906,11 @@ pub const VM = struct {
                 },
                 .op_string_build => {
                     const count = self.readByte();
-                    var parts = std.ArrayListUnmanaged([]const u8){};
+                    var parts = std.ArrayListUnmanaged([]const u8).empty;
                     defer parts.deinit(self.allocator);
 
                     // Track which strings need to be freed (allocated by valueToString)
-                    var to_free = std.ArrayListUnmanaged([]const u8){};
+                    var to_free = std.ArrayListUnmanaged([]const u8).empty;
                     defer {
                         for (to_free.items) |s| {
                             self.allocator.free(s);
@@ -1179,7 +1180,7 @@ pub const VM = struct {
         if (closure.function.arity == 1) {
             // Convert program_args to ObjArray of ObjString
             // Build array of Value.string from program_args
-            var string_values = std.ArrayListUnmanaged(Value){};
+            var string_values = std.ArrayListUnmanaged(Value).empty;
             defer string_values.deinit(self.allocator);
 
             for (program_args) |arg| {
@@ -1509,7 +1510,7 @@ pub const VM = struct {
             // Return array of characters
             if (arg_count != 0) return RuntimeError.WrongArity;
             _ = try self.pop();
-            var chars = std.ArrayListUnmanaged(Value){};
+            var chars = std.ArrayListUnmanaged(Value).empty;
             defer chars.deinit(self.allocator);
             var i: usize = 0;
             while (i < str.chars.len) {

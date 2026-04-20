@@ -20,7 +20,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const fs = std.fs;
+const fs = @import("../compat.zig");
 const manifest = @import("manifest.zig");
 
 /// Lock file format version. Increment when making breaking changes.
@@ -93,7 +93,7 @@ pub const Lockfile = struct {
         return .{
             .allocator = allocator,
             .version = LOCKFILE_VERSION,
-            .dependencies = .{},
+            .dependencies = .empty,
         };
     }
 
@@ -153,7 +153,7 @@ pub const Lockfile = struct {
         manifest_deps: *const std.StringHashMapUnmanaged(manifest.Dependency),
         allocator: Allocator,
     ) ![]const []const u8 {
-        var mismatched = std.ArrayListUnmanaged([]const u8){};
+        var mismatched = std.ArrayListUnmanaged([]const u8).empty;
         errdefer {
             for (mismatched.items) |m| allocator.free(m);
             mismatched.deinit(allocator);
@@ -325,16 +325,17 @@ fn parseResolvedDependency(allocator: Allocator, value: std.json.Value) !Resolve
 /// Generate lock file JSON content.
 /// Dependencies are sorted alphabetically by name for deterministic output.
 pub fn generateLockfile(allocator: Allocator, lf: *const Lockfile) ![]const u8 {
-    var buffer = std.ArrayListUnmanaged(u8){};
+    var buffer = std.ArrayListUnmanaged(u8).empty;
     errdefer buffer.deinit(allocator);
-    const writer = buffer.writer(allocator);
+    const compat_mod = @import("../compat.zig");
+    const writer = compat_mod.listWriter(&buffer, allocator);
 
     try writer.writeAll("{\n");
     try writer.print("  \"version\": {d},\n", .{lf.version});
     try writer.writeAll("  \"dependencies\": {");
 
     // Collect and sort dependency names for deterministic output
-    var names = std.ArrayListUnmanaged([]const u8){};
+    var names = std.ArrayListUnmanaged([]const u8).empty;
     defer names.deinit(allocator);
 
     var it = lf.dependencies.iterator();
@@ -549,7 +550,7 @@ test "Lockfile checkMismatch detects new dependency" {
     });
 
     // Manifest has "utils" and "http"
-    var manifest_deps = std.StringHashMapUnmanaged(manifest.Dependency){};
+    var manifest_deps = std.StringHashMapUnmanaged(manifest.Dependency).empty;
     defer manifest_deps.deinit(std.testing.allocator);
 
     try manifest_deps.put(std.testing.allocator, "utils", .{ .path = "../utils" });

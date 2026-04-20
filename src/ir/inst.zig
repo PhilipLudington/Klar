@@ -593,9 +593,9 @@ pub const BasicBlock = struct {
         return .{
             .id = id,
             .name = name,
-            .instructions = .{},
-            .predecessors = .{},
-            .successors = .{},
+            .instructions = .empty,
+            .predecessors = .empty,
+            .successors = .empty,
         };
     }
 
@@ -650,7 +650,7 @@ pub const Function = struct {
             .name = name,
             .params = params,
             .return_ty = return_ty,
-            .blocks = .{},
+            .blocks = .empty,
             .next_value_id = @intCast(params.len),
             .next_block_id = 0,
             .is_extern = false,
@@ -726,9 +726,9 @@ pub const Module = struct {
     pub fn init(allocator: Allocator, name: []const u8) Module {
         return .{
             .name = name,
-            .functions = .{},
-            .globals = .{},
-            .struct_types = .{},
+            .functions = .empty,
+            .globals = .empty,
+            .struct_types = .empty,
             .allocator = allocator,
         };
     }

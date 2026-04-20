@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const compat = @import("compat.zig");
 const build_options = @import("build_options");
 const has_llvm = build_options.has_llvm;
 const version = @import("version.zig");
@@ -39,7 +40,7 @@ const kira_manifest = @import("interop/kira_manifest.zig");
 const kira_build = @import("interop/kira_build.zig");
 
 // Cross-platform IO helpers
-fn getStdOut() std.fs.File {
+fn getStdOut() compat.File {
     if (comptime builtin.os.tag == .windows) {
         const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) orelse
             @panic("failed to get stdout handle");
@@ -49,7 +50,7 @@ fn getStdOut() std.fs.File {
     }
 }
 
-fn getStdErr() std.fs.File {
+fn getStdErr() compat.File {
     if (comptime builtin.os.tag == .windows) {
         const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) orelse
             @panic("failed to get stderr handle");
@@ -120,7 +121,7 @@ const JsonFileSummary = struct {
     compile_errors: []JsonCompileError = &.{},
 };
 
-fn writeJsonEscaped(out: std.fs.File, s: []const u8) !void {
+fn writeJsonEscaped(out: compat.File, s: []const u8) !void {
     try out.writeAll("\"");
     for (s) |c| {
         switch (c) {
@@ -144,13 +145,13 @@ fn writeJsonEscaped(out: std.fs.File, s: []const u8) !void {
     try out.writeAll("\"");
 }
 
-fn writeJsonUsize(out: std.fs.File, value: usize) !void {
+fn writeJsonUsize(out: compat.File, value: usize) !void {
     var buf: [32]u8 = undefined;
     const n = std.fmt.bufPrint(&buf, "{d}", .{value}) catch unreachable;
     try out.writeAll(n);
 }
 
-fn writeJsonBool(out: std.fs.File, value: bool) !void {
+fn writeJsonBool(out: compat.File, value: bool) !void {
     if (value) {
         try out.writeAll("true");
     } else {
@@ -355,7 +356,7 @@ fn freeJsonCompilerErrors(allocator: std.mem.Allocator, compile_errors: []JsonCo
 
 /// Detect circular imports and emit warnings to stderr.
 /// Returns true if cycles were found (for callers that want to know).
-fn warnCircularImports(resolver: *ModuleResolver, stderr: std.fs.File) bool {
+fn warnCircularImports(resolver: *ModuleResolver, stderr: compat.File) bool {
     const cycle = resolver.detectCycle() catch return false;
     if (cycle) |modules| {
         defer resolver.allocator.free(modules);
@@ -472,13 +473,13 @@ fn loadManifestWithErrors(allocator: std.mem.Allocator, path: []const u8, comman
     };
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(minimal: std.process.Init.Minimal) !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    const args = try compat.argsAllocFromMinimal(minimal, allocator);
+    defer compat.argsFree(allocator, args);
 
     if (args.len < 2) {
         try printUsage();
@@ -625,9 +626,9 @@ pub fn main() !void {
         var verbose_opt = false;
         var debug_info = false;
         var target_triple: ?[]const u8 = null;
-        var link_libs = std.ArrayListUnmanaged([]const u8){};
+        var link_libs = std.ArrayListUnmanaged([]const u8).empty;
         defer link_libs.deinit(allocator);
-        var link_paths = std.ArrayListUnmanaged([]const u8){};
+        var link_paths = std.ArrayListUnmanaged([]const u8).empty;
         defer link_paths.deinit(allocator);
         var freestanding = false;
         var entry_point: ?[]const u8 = null;
@@ -812,7 +813,7 @@ pub fn main() !void {
         }
 
         // Merge Kira build results into search paths and extra objects
-        var all_search_paths = std.ArrayListUnmanaged([]const u8){};
+        var all_search_paths = std.ArrayListUnmanaged([]const u8).empty;
         defer all_search_paths.deinit(allocator);
         all_search_paths.appendSlice(allocator, search_paths) catch {
             try getStdErr().writeAll("Error: out of memory\n");
@@ -1026,7 +1027,7 @@ pub fn main() !void {
             .json_output = json_output,
             .include_source = include_source,
         }) catch |err| switch (err) {
-            error.TestsFailed => std.process.exit(1),
+            error.TestsFailed => compat.exit(1),
             else => return err,
         };
     } else if (std.mem.eql(u8, command, "fmt")) {
@@ -1056,7 +1057,7 @@ fn executeMainFunction(
     path: []const u8,
     program_args: []const []const u8,
     arena_alloc: std.mem.Allocator,
-    stderr: std.fs.File,
+    stderr: compat.File,
 ) !void {
     const main_val = interp.global_env.get("main") orelse return;
     if (main_val != .function) return;
@@ -1064,7 +1065,7 @@ fn executeMainFunction(
 
     if (func.params.len > 0) {
         // Build args array: [path, program_args...]
-        var string_values = std.ArrayListUnmanaged(values.Value){};
+        var string_values = std.ArrayListUnmanaged(values.Value).empty;
         string_values.ensureTotalCapacity(arena_alloc, program_args.len + 1) catch {
             try stderr.writeAll("Failed to allocate args array\n");
             return;
@@ -1088,11 +1089,11 @@ fn executeMainFunction(
             if (interp.consumeLastErrorMessage()) |msg_text| {
                 const msg = std.fmt.bufPrint(&buf, "{s}\n", .{msg_text}) catch "runtime error\n";
                 try stderr.writeAll(msg);
-                std.process.exit(1);
+                compat.exit(1);
             }
             const msg = std.fmt.bufPrint(&buf, "Runtime error in main: {s}\n", .{@errorName(err)}) catch "Runtime error in main\n";
             try stderr.writeAll(msg);
-            std.process.exit(1);
+            compat.exit(1);
         };
     } else {
         _ = interp.callFunction(func, &.{}) catch |err| {
@@ -1100,11 +1101,11 @@ fn executeMainFunction(
             if (interp.consumeLastErrorMessage()) |msg_text| {
                 const msg = std.fmt.bufPrint(&buf, "{s}\n", .{msg_text}) catch "runtime error\n";
                 try stderr.writeAll(msg);
-                std.process.exit(1);
+                compat.exit(1);
             }
             const msg = std.fmt.bufPrint(&buf, "Runtime error in main: {s}\n", .{@errorName(err)}) catch "Runtime error in main\n";
             try stderr.writeAll(msg);
-            std.process.exit(1);
+            compat.exit(1);
         };
     }
 }
@@ -1148,7 +1149,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
     defer checker.deinit();
 
     // Track source strings for imported modules
-    var module_sources = std.ArrayListUnmanaged([]const u8){};
+    var module_sources = std.ArrayListUnmanaged([]const u8).empty;
     defer {
         for (module_sources.items) |src| {
             allocator.free(src);
@@ -1170,7 +1171,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
 
         // Add current working directory as a search path
         var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-        if (std.fs.cwd().realpath(".", &cwd_buf)) |cwd_path| {
+        if (compat.cwd().realpath(".", &cwd_buf)) |cwd_path| {
             resolver.addSearchPath(cwd_path) catch {};
         } else |_| {}
 
@@ -1183,7 +1184,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
         entry.state = .parsed;
 
         // Discover all imported modules (breadth-first)
-        var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo){};
+        var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo).empty;
         defer modules_to_process.deinit(allocator);
         try modules_to_process.append(allocator, entry);
 
@@ -1259,10 +1260,10 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
         try printMetaWarnings(&checker, stderr);
 
         // Multi-module execution: create per-module interpreters in dependency order
-        var module_interpreters = std.AutoHashMapUnmanaged(*ModuleInfo, *Interpreter){};
+        var module_interpreters = std.AutoHashMapUnmanaged(*ModuleInfo, *Interpreter).empty;
         defer module_interpreters.deinit(allocator);
 
-        var owned_interpreters = std.ArrayListUnmanaged(*Interpreter){};
+        var owned_interpreters = std.ArrayListUnmanaged(*Interpreter).empty;
         defer {
             for (owned_interpreters.items) |interp_ptr| {
                 interp_ptr.deinit();
@@ -1296,7 +1297,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Runtime import error: {s}\n", .{@errorName(err)}) catch "Runtime import error\n";
                 try stderr.writeAll(msg);
-                std.process.exit(1);
+                compat.exit(1);
             };
 
             interp_ptr.executeModule(mod_ast) catch |err| {
@@ -1304,11 +1305,11 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
                 if (interp_ptr.consumeLastErrorMessage()) |msg_text| {
                     const msg = std.fmt.bufPrint(&buf, "{s}\n", .{msg_text}) catch "runtime error\n";
                     try stderr.writeAll(msg);
-                    std.process.exit(1);
+                    compat.exit(1);
                 }
                 const msg = std.fmt.bufPrint(&buf, "Runtime error: {s}\n", .{@errorName(err)}) catch "Runtime error\n";
                 try stderr.writeAll(msg);
-                std.process.exit(1);
+                compat.exit(1);
             };
 
             module_interpreters.put(allocator, mod, interp_ptr) catch {
@@ -1326,7 +1327,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Runtime import error (pass 2): {s}\n", .{@errorName(err)}) catch "Runtime import error\n";
                 try stderr.writeAll(msg);
-                std.process.exit(1);
+                compat.exit(1);
             };
         }
 
@@ -1364,11 +1365,11 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
         if (interp.consumeLastErrorMessage()) |msg_text| {
             const msg = std.fmt.bufPrint(&buf, "{s}\n", .{msg_text}) catch "runtime error\n";
             try stderr.writeAll(msg);
-            std.process.exit(1);
+            compat.exit(1);
         }
         const msg = std.fmt.bufPrint(&buf, "Runtime error: {s}\n", .{@errorName(err)}) catch "Runtime error\n";
         try stderr.writeAll(msg);
-        std.process.exit(1);
+        compat.exit(1);
     };
 
     try executeMainFunction(&interp, path, program_args, arena.allocator(), stderr);
@@ -1433,7 +1434,7 @@ fn dumpTokensFile(allocator: std.mem.Allocator, path: []const u8) !void {
         try out.writeAll("{\"error\":\"file_not_found\",\"message\":");
         try writeJsonEscaped(out, msg);
         try out.writeAll("}\n");
-        std.process.exit(1);
+        compat.exit(1);
     };
     defer allocator.free(source);
 
@@ -1480,7 +1481,7 @@ fn dumpAstFile(allocator: std.mem.Allocator, path: []const u8) !void {
         try out.writeAll("{\"error\":\"file_not_found\",\"message\":");
         try writeJsonEscaped(out, msg);
         try out.writeAll("}\n");
-        std.process.exit(1);
+        compat.exit(1);
     };
     defer allocator.free(source);
 
@@ -1507,7 +1508,7 @@ fn dumpAstFile(allocator: std.mem.Allocator, path: []const u8) !void {
         try out.writeAll("{\"error\":\"parse_failed\",\"message\":");
         try writeJsonEscaped(out, msg);
         try out.writeAll("}\n");
-        std.process.exit(1);
+        compat.exit(1);
     };
 
     const out = getStdOut();
@@ -1515,7 +1516,7 @@ fn dumpAstFile(allocator: std.mem.Allocator, path: []const u8) !void {
     try out.writeAll("\n");
 }
 
-fn dumpMetaAnnotations(out: std.fs.File, annotations: []const ast.MetaAnnotation) anyerror!void {
+fn dumpMetaAnnotations(out: compat.File, annotations: []const ast.MetaAnnotation) anyerror!void {
     if (annotations.len == 0) return;
     try out.writeAll(",\"meta\":[");
     for (annotations, 0..) |ann, i| {
@@ -1525,7 +1526,7 @@ fn dumpMetaAnnotations(out: std.fs.File, annotations: []const ast.MetaAnnotation
     try out.writeAll("]");
 }
 
-fn dumpOneMetaAnnotation(out: std.fs.File, ann: ast.MetaAnnotation) anyerror!void {
+fn dumpOneMetaAnnotation(out: compat.File, ann: ast.MetaAnnotation) anyerror!void {
     switch (ann) {
         .intent => |s| {
             try out.writeAll("{\"kind\":\"intent\",\"value\":");
@@ -1660,7 +1661,7 @@ fn metaScopeString(scope: ast.MetaScope) []const u8 {
     };
 }
 
-fn dumpMetaBlockEntries(out: std.fs.File, entries: []const ast.MetaKeyValue) anyerror!void {
+fn dumpMetaBlockEntries(out: compat.File, entries: []const ast.MetaKeyValue) anyerror!void {
     try out.writeAll(",\"entries\":[");
     for (entries, 0..) |entry, i| {
         if (i > 0) try out.writeAll(",");
@@ -1683,7 +1684,7 @@ fn dumpMetaBlockEntries(out: std.fs.File, entries: []const ast.MetaKeyValue) any
     try out.writeAll("]");
 }
 
-fn dumpMetaPath(out: std.fs.File, path: ast.MetaPath) anyerror!void {
+fn dumpMetaPath(out: compat.File, path: ast.MetaPath) anyerror!void {
     try out.writeAll("{\"segments\":[");
     for (path.segments, 0..) |seg, i| {
         if (i > 0) try out.writeAll(",");
@@ -1692,7 +1693,7 @@ fn dumpMetaPath(out: std.fs.File, path: ast.MetaPath) anyerror!void {
     try out.writeAll("]}");
 }
 
-fn dumpModule(out: std.fs.File, module: ast.Module) anyerror!void {
+fn dumpModule(out: compat.File, module: ast.Module) anyerror!void {
     try out.writeAll("{\"module_decl\":");
     if (module.module_decl) |md| {
         try dumpModuleDecl(out, md);
@@ -1714,7 +1715,7 @@ fn dumpModule(out: std.fs.File, module: ast.Module) anyerror!void {
     try out.writeAll("}");
 }
 
-fn dumpModuleDecl(out: std.fs.File, md: ast.ModuleDecl) anyerror!void {
+fn dumpModuleDecl(out: compat.File, md: ast.ModuleDecl) anyerror!void {
     try out.writeAll("{\"path\":[");
     for (md.path, 0..) |seg, i| {
         if (i > 0) try out.writeAll(",");
@@ -1723,7 +1724,7 @@ fn dumpModuleDecl(out: std.fs.File, md: ast.ModuleDecl) anyerror!void {
     try out.writeAll("]}");
 }
 
-fn dumpImportDecl(out: std.fs.File, imp: ast.ImportDecl) anyerror!void {
+fn dumpImportDecl(out: compat.File, imp: ast.ImportDecl) anyerror!void {
     try out.writeAll("{\"path\":[");
     for (imp.path, 0..) |seg, i| {
         if (i > 0) try out.writeAll(",");
@@ -1762,7 +1763,7 @@ fn dumpImportDecl(out: std.fs.File, imp: ast.ImportDecl) anyerror!void {
     try out.writeAll("}");
 }
 
-fn dumpDecl(out: std.fs.File, decl: ast.Decl) anyerror!void {
+fn dumpDecl(out: compat.File, decl: ast.Decl) anyerror!void {
     switch (decl) {
         .function => |f| {
             try out.writeAll("{\"kind\":\"function\",\"name\":");
@@ -1998,7 +1999,7 @@ fn dumpDecl(out: std.fs.File, decl: ast.Decl) anyerror!void {
     }
 }
 
-fn dumpFunctionDeclInline(out: std.fs.File, f: ast.FunctionDecl) anyerror!void {
+fn dumpFunctionDeclInline(out: compat.File, f: ast.FunctionDecl) anyerror!void {
     try out.writeAll("{\"name\":");
     try writeJsonEscaped(out, f.name);
     try out.writeAll(",\"is_pub\":");
@@ -2037,7 +2038,7 @@ fn dumpFunctionDeclInline(out: std.fs.File, f: ast.FunctionDecl) anyerror!void {
     try out.writeAll("}");
 }
 
-fn dumpTypeParams(out: std.fs.File, type_params: []const ast.TypeParam) anyerror!void {
+fn dumpTypeParams(out: compat.File, type_params: []const ast.TypeParam) anyerror!void {
     try out.writeAll(",\"type_params\":[");
     for (type_params, 0..) |tp, i| {
         if (i > 0) try out.writeAll(",");
@@ -2053,7 +2054,7 @@ fn dumpTypeParams(out: std.fs.File, type_params: []const ast.TypeParam) anyerror
     try out.writeAll("]");
 }
 
-fn dumpFunctionParams(out: std.fs.File, params: []const ast.FunctionParam) anyerror!void {
+fn dumpFunctionParams(out: compat.File, params: []const ast.FunctionParam) anyerror!void {
     try out.writeAll(",\"params\":[");
     for (params, 0..) |p, i| {
         if (i > 0) try out.writeAll(",");
@@ -2076,7 +2077,7 @@ fn dumpFunctionParams(out: std.fs.File, params: []const ast.FunctionParam) anyer
     try out.writeAll("]");
 }
 
-fn dumpWhereClause(out: std.fs.File, wc: []const ast.WhereConstraint) anyerror!void {
+fn dumpWhereClause(out: compat.File, wc: []const ast.WhereConstraint) anyerror!void {
     try out.writeAll("[");
     for (wc, 0..) |c, i| {
         if (i > 0) try out.writeAll(",");
@@ -2092,7 +2093,7 @@ fn dumpWhereClause(out: std.fs.File, wc: []const ast.WhereConstraint) anyerror!v
     try out.writeAll("]");
 }
 
-fn dumpStructField(out: std.fs.File, field: ast.StructField) anyerror!void {
+fn dumpStructField(out: compat.File, field: ast.StructField) anyerror!void {
     try out.writeAll("{\"name\":");
     try writeJsonEscaped(out, field.name);
     try out.writeAll(",\"type\":");
@@ -2103,7 +2104,7 @@ fn dumpStructField(out: std.fs.File, field: ast.StructField) anyerror!void {
     try out.writeAll("}");
 }
 
-fn dumpEnumVariant(out: std.fs.File, v: ast.EnumVariant) anyerror!void {
+fn dumpEnumVariant(out: compat.File, v: ast.EnumVariant) anyerror!void {
     try out.writeAll("{\"name\":");
     try writeJsonEscaped(out, v.name);
     try out.writeAll(",\"value\":");
@@ -2141,7 +2142,7 @@ fn dumpEnumVariant(out: std.fs.File, v: ast.EnumVariant) anyerror!void {
     try out.writeAll("}");
 }
 
-fn dumpBlock(out: std.fs.File, block: *const ast.Block) anyerror!void {
+fn dumpBlock(out: compat.File, block: *const ast.Block) anyerror!void {
     try out.writeAll("{\"statements\":[");
     for (block.statements, 0..) |stmt, i| {
         if (i > 0) try out.writeAll(",");
@@ -2156,7 +2157,7 @@ fn dumpBlock(out: std.fs.File, block: *const ast.Block) anyerror!void {
     try out.writeAll("}");
 }
 
-fn dumpStmt(out: std.fs.File, stmt: ast.Stmt) anyerror!void {
+fn dumpStmt(out: compat.File, stmt: ast.Stmt) anyerror!void {
     switch (stmt) {
         .let_decl => |l| {
             try out.writeAll("{\"kind\":\"let_decl\",\"name\":");
@@ -2262,7 +2263,7 @@ fn dumpStmt(out: std.fs.File, stmt: ast.Stmt) anyerror!void {
     }
 }
 
-fn dumpIfStmt(out: std.fs.File, i: *const ast.IfStmt) anyerror!void {
+fn dumpIfStmt(out: compat.File, i: *const ast.IfStmt) anyerror!void {
     try out.writeAll("{\"kind\":\"if_stmt\",\"condition\":");
     try dumpExpr(out, i.condition);
     try out.writeAll(",\"then_branch\":");
@@ -2285,7 +2286,7 @@ fn dumpIfStmt(out: std.fs.File, i: *const ast.IfStmt) anyerror!void {
     try out.writeAll("}");
 }
 
-fn dumpExpr(out: std.fs.File, expr: ast.Expr) anyerror!void {
+fn dumpExpr(out: compat.File, expr: ast.Expr) anyerror!void {
     switch (expr) {
         .literal => |lit| {
             try out.writeAll("{\"kind\":\"literal\"");
@@ -2567,7 +2568,7 @@ fn dumpExpr(out: std.fs.File, expr: ast.Expr) anyerror!void {
     }
 }
 
-fn dumpPattern(out: std.fs.File, pattern: ast.Pattern) anyerror!void {
+fn dumpPattern(out: compat.File, pattern: ast.Pattern) anyerror!void {
     switch (pattern) {
         .wildcard => {
             try out.writeAll("{\"kind\":\"wildcard\"}");
@@ -2682,7 +2683,7 @@ fn dumpPattern(out: std.fs.File, pattern: ast.Pattern) anyerror!void {
     }
 }
 
-fn dumpTypeExpr(out: std.fs.File, te: ast.TypeExpr) anyerror!void {
+fn dumpTypeExpr(out: compat.File, te: ast.TypeExpr) anyerror!void {
     switch (te) {
         .named => |n| {
             try out.writeAll("{\"kind\":\"named\",\"name\":");
@@ -2769,7 +2770,7 @@ fn dumpTypeExpr(out: std.fs.File, te: ast.TypeExpr) anyerror!void {
 }
 
 fn readSourceFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const file = try std.fs.cwd().openFile(path, .{});
+    const file = try compat.cwd().openFile(path, .{});
     defer file.close();
 
     return try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
@@ -2778,7 +2779,7 @@ fn readSourceFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 /// Try to find the standard library path relative to the compiler binary.
 fn findStdLibPath(allocator: std.mem.Allocator) ?[]const u8 {
     // 1. Check KLAR_HOME environment variable first (user override)
-    if (std.process.getEnvVarOwned(allocator, "KLAR_HOME")) |home| {
+    if (compat.getEnvVarOwned(allocator, "KLAR_HOME")) |home| {
         defer allocator.free(home);
         const home_stdlib = std.fs.path.join(allocator, &.{ home, "stdlib" }) catch return null;
         const mod_path = std.fs.path.join(allocator, &.{ home_stdlib, "mod.kl" }) catch {
@@ -2787,7 +2788,7 @@ fn findStdLibPath(allocator: std.mem.Allocator) ?[]const u8 {
         };
         defer allocator.free(mod_path);
 
-        std.fs.cwd().access(mod_path, .{}) catch {
+        compat.cwd().access(mod_path, .{}) catch {
             allocator.free(home_stdlib);
             return findStdLibPathFromExe(allocator);
         };
@@ -2801,7 +2802,7 @@ fn findStdLibPath(allocator: std.mem.Allocator) ?[]const u8 {
 fn findStdLibPathFromExe(allocator: std.mem.Allocator) ?[]const u8 {
     // Get the path to the current executable
     var exe_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const exe_path = std.fs.selfExePath(&exe_path_buf) catch return null;
+    const exe_path = compat.selfExePath(&exe_path_buf) catch return null;
 
     const exe_dir = std.fs.path.dirname(exe_path) orelse return null;
 
@@ -2824,7 +2825,7 @@ fn findStdLibPathFromExe(allocator: std.mem.Allocator) ?[]const u8 {
         };
         defer allocator.free(mod_path);
 
-        std.fs.cwd().access(mod_path, .{}) catch {
+        compat.cwd().access(mod_path, .{}) catch {
             allocator.free(full_path);
             continue;
         };
@@ -2905,12 +2906,12 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     defer checker.deinit();
 
     // Collect all modules to emit (for multi-file compilation)
-    var modules_to_emit = std.ArrayListUnmanaged(ast.Module){};
+    var modules_to_emit = std.ArrayListUnmanaged(ast.Module).empty;
     defer modules_to_emit.deinit(allocator);
 
     // Parallel list of module prefixes for namespacing non-pub functions in codegen.
     // Entry module gets null prefix (its non-pub functions keep their plain names).
-    var module_prefixes = std.ArrayListUnmanaged(?[]const u8){};
+    var module_prefixes = std.ArrayListUnmanaged(?[]const u8).empty;
     defer {
         for (module_prefixes.items) |prefix| {
             if (prefix) |p| allocator.free(p);
@@ -2919,7 +2920,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     }
 
     // Track source strings that need to be freed after codegen
-    var module_sources = std.ArrayListUnmanaged([]const u8){};
+    var module_sources = std.ArrayListUnmanaged([]const u8).empty;
     defer {
         for (module_sources.items) |src| {
             allocator.free(src);
@@ -3053,7 +3054,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
 
             // Add current working directory as a search path
             var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-            if (std.fs.cwd().realpath(".", &cwd_buf)) |cwd_path| {
+            if (compat.cwd().realpath(".", &cwd_buf)) |cwd_path| {
                 resolver.addSearchPath(cwd_path) catch {};
             } else |_| {}
 
@@ -3071,7 +3072,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             entry.state = .parsed;
 
             // Discover all imported modules (breadth-first)
-            var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo){};
+            var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo).empty;
             defer modules_to_process.deinit(allocator);
             try modules_to_process.append(allocator, entry);
 
@@ -3231,7 +3232,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         };
         defer allocator.free(ir_path_str);
 
-        const ir_file = std.fs.cwd().createFile(ir_path_str, .{}) catch |err| {
+        const ir_file = compat.cwd().createFile(ir_path_str, .{}) catch |err| {
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Failed to create IR file: {s}\n", .{@errorName(err)}) catch "Failed to create IR file\n";
             try stderr.writeAll(msg);
@@ -3575,13 +3576,13 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
 
         // Check cache directory for this hash
         const cache_dir = "build/.cache";
-        std.fs.cwd().makePath(cache_dir) catch {};
+        compat.cwd().makePath(cache_dir) catch {};
         const cached_obj_path = std.fmt.allocPrint(allocator, "{s}/{s}{s}", .{ cache_dir, hash_hex, obj_ext }) catch break :blk false;
         defer allocator.free(cached_obj_path);
 
-        if (std.fs.cwd().access(cached_obj_path, .{})) {
+        if (compat.cwd().access(cached_obj_path, .{})) {
             // Cache hit: copy cached .o to expected obj_path
-            std.fs.cwd().copyFile(cached_obj_path, std.fs.cwd(), obj_path, .{}) catch break :blk false;
+            compat.cwd().copyFile(cached_obj_path, compat.cwd(), obj_path, .{}) catch break :blk false;
             break :blk true;
         } else |_| {
             break :blk false;
@@ -3633,7 +3634,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             const cache_path = std.fmt.allocPrint(allocator, "build/.cache/{s}{s}", .{ hash_hex2, obj_ext }) catch null;
             if (cache_path) |cp| {
                 defer allocator.free(cp);
-                std.fs.cwd().copyFile(obj_path, std.fs.cwd(), cp, .{}) catch {};
+                compat.cwd().copyFile(obj_path, compat.cwd(), cp, .{}) catch {};
             }
         }
     }
@@ -3642,7 +3643,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     if (options.compile_only) {
         // Optionally rename object file to output path
         if (options.output_path) |out_path| {
-            std.fs.cwd().rename(obj_path, out_path) catch |err| {
+            compat.cwd().rename(obj_path, out_path) catch |err| {
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Failed to rename object file: {s}\n", .{@errorName(err)}) catch "Failed to rename object file\n";
                 try stderr.writeAll(msg);
@@ -3667,7 +3668,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     const exe_ext = target_platform.getExecutableExtension();
     const exe_path = options.output_path orelse blk: {
         // Create build directory if it doesn't exist
-        std.fs.cwd().makePath("build") catch |err| {
+        compat.cwd().makePath("build") catch |err| {
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Failed to create build directory: {s}\n", .{@errorName(err)}) catch "Failed to create build directory\n";
             try stderr.writeAll(msg);
@@ -3684,7 +3685,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     // Create parent directory if it doesn't exist (for explicit -o path)
     if (options.output_path != null) {
         if (std.fs.path.dirname(exe_path)) |parent_dir| {
-            std.fs.cwd().makePath(parent_dir) catch |err| {
+            compat.cwd().makePath(parent_dir) catch |err| {
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Failed to create output directory: {s}\n", .{@errorName(err)}) catch "Failed to create output directory\n";
                 try stderr.writeAll(msg);
@@ -3717,19 +3718,19 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         const msg = std.fmt.bufPrint(&buf, "Linker error: {s}\n", .{err_msg}) catch "Linker failed\n";
         try stderr.writeAll(msg);
         // Clean up object file
-        std.fs.cwd().deleteFile(obj_path) catch {};
+        compat.cwd().deleteFile(obj_path) catch {};
         return;
     };
 
     // On macOS with debug info, run dsymutil to create .dSYM bundle before deleting .o
     if (options.debug_info and builtin.os.tag == .macos) {
         const dsymutil_args = [_][]const u8{ "dsymutil", exe_path };
-        var dsymutil = std.process.Child.init(&dsymutil_args, allocator);
+        var dsymutil = compat.Child.init(&dsymutil_args, allocator);
         _ = dsymutil.spawnAndWait() catch {};
     }
 
     // Clean up object file (only on success)
-    std.fs.cwd().deleteFile(obj_path) catch {};
+    compat.cwd().deleteFile(obj_path) catch {};
 
     if (!options.quiet) {
         var buf: [512]u8 = undefined;
@@ -3744,13 +3745,13 @@ fn runNativeFile(allocator: std.mem.Allocator, path: []const u8, program_args: [
 
 fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, program_args: []const []const u8, search_paths: []const []const u8, run_ast_input_path: ?[]const u8, run_typed_ast_input_path: ?[]const u8) !void {
     // Generate a unique temp path for the executable (cross-platform)
-    const timestamp = std.time.timestamp();
+    const timestamp = compat.timestamp();
     const exe_ext = comptime if (builtin.os.tag == .windows) ".exe" else "";
     var temp_path_buf: [512]u8 = undefined;
     const temp_path = if (builtin.os.tag == .windows) blk: {
         // On Windows, use %TEMP% or %TMP% or fall back to C:\Temp
-        const temp_dir = std.process.getEnvVarOwned(allocator, "TEMP") catch
-            std.process.getEnvVarOwned(allocator, "TMP") catch
+        const temp_dir = compat.getEnvVarOwned(allocator, "TEMP") catch
+            compat.getEnvVarOwned(allocator, "TMP") catch
             null;
         defer if (temp_dir) |d| allocator.free(d);
         const dir = temp_dir orelse "C:\\Temp";
@@ -3779,68 +3780,68 @@ fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, prog
 
     // Execute the compiled binary with args.
     // On POSIX, we use fork/exec to set argv[0] to the source path while
-    // executing the temp binary. On Windows, we use std.process.Child
+    // executing the temp binary. On Windows, we use compat.Child
     // (argv[0] will be the temp binary path — minor behavioral difference).
     if (builtin.os.tag == .windows) {
-        // Windows: use std.process.Child
-        var child_argv = std.ArrayListUnmanaged([]const u8){};
+        // Windows: use compat.Child
+        var child_argv = std.ArrayListUnmanaged([]const u8).empty;
         defer child_argv.deinit(allocator);
 
         child_argv.append(allocator, temp_path) catch {
             try getStdErr().writeAll("Failed to allocate argv\n");
-            std.fs.cwd().deleteFile(temp_path) catch {};
+            compat.cwd().deleteFile(temp_path) catch {};
             return;
         };
         for (program_args) |arg| {
             child_argv.append(allocator, arg) catch {
                 try getStdErr().writeAll("Failed to allocate argv\n");
-                std.fs.cwd().deleteFile(temp_path) catch {};
+                compat.cwd().deleteFile(temp_path) catch {};
                 return;
             };
         }
 
-        var child = std.process.Child.init(child_argv.items, allocator);
+        var child = compat.Child.init(child_argv.items, allocator);
         const term = child.spawnAndWait() catch |err| {
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Failed to execute: {s}\n", .{@errorName(err)}) catch "Failed to execute\n";
             getStdErr().writeAll(msg) catch {};
-            std.fs.cwd().deleteFile(temp_path) catch {};
+            compat.cwd().deleteFile(temp_path) catch {};
             return;
         };
 
         // Clean up temp file
-        std.fs.cwd().deleteFile(temp_path) catch {};
+        compat.cwd().deleteFile(temp_path) catch {};
 
         switch (term) {
-            .Exited => |code| std.process.exit(code),
+            .Exited => |code| compat.exit(code),
             .Signal => |sig| {
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Process terminated by signal: {d}\n", .{sig}) catch "Process terminated by signal\n";
                 getStdErr().writeAll(msg) catch {};
-                std.process.exit(128 +| @as(u8, @truncate(sig)));
+                compat.exit(128 +| @as(u8, @truncate(sig)));
             },
-            else => std.process.exit(1),
+            else => compat.exit(1),
         }
     } else {
         // POSIX: use fork/exec to set argv[0] to source path
-        var argv_list = std.ArrayListUnmanaged(?[*:0]const u8){};
+        var argv_list = std.ArrayListUnmanaged(?[*:0]const u8).empty;
         defer argv_list.deinit(allocator);
 
         // Convert source path to null-terminated
         const path_z = allocator.dupeZ(u8, path) catch {
             try getStdErr().writeAll("Failed to allocate argv\n");
-            std.fs.cwd().deleteFile(temp_path) catch {};
+            compat.cwd().deleteFile(temp_path) catch {};
             return;
         };
         defer allocator.free(path_z);
         argv_list.append(allocator, path_z) catch {
             try getStdErr().writeAll("Failed to allocate argv\n");
-            std.fs.cwd().deleteFile(temp_path) catch {};
+            compat.cwd().deleteFile(temp_path) catch {};
             return;
         };
 
         // Convert user-provided arguments to null-terminated
-        var arg_bufs = std.ArrayListUnmanaged([:0]const u8){};
+        var arg_bufs = std.ArrayListUnmanaged([:0]const u8).empty;
         defer {
             for (arg_bufs.items) |buf| allocator.free(buf);
             arg_bufs.deinit(allocator);
@@ -3848,79 +3849,77 @@ fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, prog
         for (program_args) |arg| {
             const arg_z = allocator.dupeZ(u8, arg) catch {
                 try getStdErr().writeAll("Failed to allocate argv\n");
-                std.fs.cwd().deleteFile(temp_path) catch {};
+                compat.cwd().deleteFile(temp_path) catch {};
                 return;
             };
             arg_bufs.append(allocator, arg_z) catch {
                 allocator.free(arg_z);
                 try getStdErr().writeAll("Failed to allocate argv\n");
-                std.fs.cwd().deleteFile(temp_path) catch {};
+                compat.cwd().deleteFile(temp_path) catch {};
                 return;
             };
             argv_list.append(allocator, arg_z) catch {
                 try getStdErr().writeAll("Failed to allocate argv\n");
-                std.fs.cwd().deleteFile(temp_path) catch {};
+                compat.cwd().deleteFile(temp_path) catch {};
                 return;
             };
         }
         // Null terminator for argv array
         argv_list.append(allocator, null) catch {
             try getStdErr().writeAll("Failed to allocate argv\n");
-            std.fs.cwd().deleteFile(temp_path) catch {};
+            compat.cwd().deleteFile(temp_path) catch {};
             return;
         };
 
         // Convert temp_path to null-terminated for execve
         const temp_path_z = allocator.dupeZ(u8, temp_path) catch {
             try getStdErr().writeAll("Failed to allocate temp path\n");
-            std.fs.cwd().deleteFile(temp_path) catch {};
+            compat.cwd().deleteFile(temp_path) catch {};
             return;
         };
         defer allocator.free(temp_path_z);
 
         // Fork and exec
-        const pid = std.posix.fork() catch |err| {
+        const pid = compat.posixFork() catch |err| {
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Failed to fork: {s}\n", .{@errorName(err)}) catch "Failed to fork\n";
             try getStdErr().writeAll(msg);
-            std.fs.cwd().deleteFile(temp_path) catch {};
+            compat.cwd().deleteFile(temp_path) catch {};
             return;
         };
 
         if (pid == 0) {
             // Child process - exec the binary
             const argv_ptr: [*:null]const ?[*:0]const u8 = @ptrCast(argv_list.items.ptr);
-            const envp = std.c.environ;
-            // execveZ doesn't return on success - if it does, it's an error
-            std.posix.execveZ(temp_path_z, argv_ptr, envp) catch {};
-            std.posix.exit(127);
+            const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
+            compat.posixExecve(temp_path_z, argv_ptr, envp) catch {};
+            compat.exit(127);
         }
 
         // Parent process - wait for child
-        const result = std.posix.waitpid(pid, 0);
+        const status = compat.posixWaitpid(pid);
 
         // Clean up temp file
-        std.fs.cwd().deleteFile(temp_path) catch {};
+        compat.cwd().deleteFile(temp_path) catch {};
 
         // Decode the wait status using POSIX macros
-        const status = result.status;
         // WIFEXITED: (status & 0x7F) == 0
         if ((status & 0x7F) == 0) {
             // Exited normally - WEXITSTATUS: (status >> 8) & 0xFF
-            const exit_code: u8 = @truncate((status >> 8) & 0xFF);
-            std.posix.exit(exit_code);
+            const exit_code: u8 = @truncate(@as(u32, @bitCast(status >> 8)) & 0xFF);
+            compat.exit(exit_code);
         }
         // WIFSIGNALED: ((status & 0x7F) + 1) >> 1 > 0
         if (((status & 0x7F) + 1) >> 1 > 0) {
             // Killed by signal - WTERMSIG: status & 0x7F
-            const sig: u8 = @truncate(status & 0x7F);
+            const sig: u8 = @truncate(@as(u32, @bitCast(status & 0x7F)));
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Process terminated by signal: {d}\n", .{sig}) catch "Process terminated by signal\n";
             getStdErr().writeAll(msg) catch {};
-            std.posix.exit(128 +| sig);
+            compat.exit(128 +| sig);
         }
         // Unknown status
-        std.posix.exit(1);
+        compat.exit(1);
     }
 }
 
@@ -3964,7 +3963,7 @@ fn parseFile(allocator: std.mem.Allocator, path: []const u8) !void {
     try stdout.writeAll("\n");
 }
 
-fn printExpr(out: std.fs.File, source: []const u8, expr: ast.Expr, indent: usize) !void {
+fn printExpr(out: compat.File, source: []const u8, expr: ast.Expr, indent: usize) !void {
     var indent_buf: [64]u8 = undefined;
     const indent_str = indent_buf[0..@min(indent * 2, 64)];
     @memset(indent_str, ' ');
@@ -4082,7 +4081,7 @@ fn fmtCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
     // Parse flags
     var in_place = false;
     var check_only = false;
-    var targets = std.ArrayListUnmanaged([]const u8){};
+    var targets = std.ArrayListUnmanaged([]const u8).empty;
     defer targets.deinit(allocator);
 
     var i: usize = 2;
@@ -4130,7 +4129,7 @@ fn fmtCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
         // Check if target is a file or directory
         // Note: on Windows, statFile returns error.IsDir for directories
         const is_dir = blk: {
-            const stat = std.fs.cwd().statFile(target) catch |err| {
+            const stat = compat.cwd().statFile(target) catch |err| {
                 if (err == error.IsDir) break :blk true;
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Error: cannot access '{s}': {}\n", .{ target, err }) catch "Error accessing file\n";
@@ -4150,10 +4149,10 @@ fn fmtCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
     }
 
     if (check_only and had_unformatted) {
-        std.process.exit(1);
+        compat.exit(1);
     }
     if (had_error) {
-        std.process.exit(1);
+        compat.exit(1);
     }
 }
 
@@ -4197,8 +4196,8 @@ fn fmtFile(allocator: std.mem.Allocator, path: []const u8, in_place: bool, check
     if (in_place) {
         if (!std.mem.eql(u8, source, formatted)) {
             // Write to temp file then rename for atomic write
-            const dir = std.fs.cwd();
-            const nonce = std.crypto.random.int(u64);
+            const dir = compat.cwd();
+            const nonce: u64 = @intCast(compat.nanoTimestamp());
             const tmp_path = std.fmt.allocPrint(allocator, "{s}.fmt-tmp.{x}", .{ path, nonce }) catch {
                 try stderr.writeAll("Error: out of memory\n");
                 had_error.* = true;
@@ -4242,7 +4241,7 @@ fn fmtFile(allocator: std.mem.Allocator, path: []const u8, in_place: bool, check
 fn fmtDirectory(allocator: std.mem.Allocator, dir_path: []const u8, in_place: bool, check_only: bool, had_error: *bool, had_unformatted: *bool) !void {
     const stderr = getStdErr();
 
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+    var dir = compat.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Error opening directory '{s}': {}\n", .{ dir_path, err }) catch "Error opening directory\n";
         try stderr.writeAll(msg);
@@ -4306,7 +4305,7 @@ fn shouldSkipPath(path: []const u8) bool {
 
 fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckCommandOptions) !void {
     const timing_enabled = options.timing;
-    const t_start = if (timing_enabled) std.time.nanoTimestamp() else 0;
+    const t_start = if (timing_enabled) compat.nanoTimestamp() else 0;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
@@ -4385,7 +4384,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
         }
     };
 
-    const t_parsed = if (timing_enabled) std.time.nanoTimestamp() else 0;
+    const t_parsed = if (timing_enabled) compat.nanoTimestamp() else 0;
 
     // Type check — use arena for single-file, gpa for multi-module (module resolver needs gpa)
     var checker_arena_store: ?std.heap.ArenaAllocator = null;
@@ -4400,7 +4399,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
     var scope_root: ?*const checker_mod.Scope = null;
 
     // Track source strings for imported modules
-    var module_sources = std.ArrayListUnmanaged([]const u8){};
+    var module_sources = std.ArrayListUnmanaged([]const u8).empty;
     defer {
         for (module_sources.items) |src| {
             allocator.free(src);
@@ -4422,7 +4421,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
 
         // Add current working directory as a search path
         var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-        if (std.fs.cwd().realpath(".", &cwd_buf)) |cwd_path| {
+        if (compat.cwd().realpath(".", &cwd_buf)) |cwd_path| {
             resolver.addSearchPath(cwd_path) catch {};
         } else |_| {}
 
@@ -4435,7 +4434,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
         entry.state = .parsed;
 
         // Discover all imported modules (breadth-first)
-        var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo){};
+        var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo).empty;
         defer modules_to_process.deinit(allocator);
         try modules_to_process.append(allocator, entry);
 
@@ -4675,7 +4674,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
 
     // Print timing info if requested
     if (timing_enabled) {
-        const t_end = std.time.nanoTimestamp();
+        const t_end = compat.nanoTimestamp();
         const parse_ms = @as(f64, @floatFromInt(t_parsed - t_start)) / 1_000_000.0;
         const check_ms = @as(f64, @floatFromInt(t_end - t_parsed)) / 1_000_000.0;
         const total_ms = @as(f64, @floatFromInt(t_end - t_start)) / 1_000_000.0;
@@ -4828,7 +4827,7 @@ fn bindRuntimeImportsForModuleEx(
             const namespace_struct = try interp.allocator.create(values.StructValue);
             namespace_struct.* = .{
                 .type_name = namespace_name,
-                .fields = .{},
+                .fields = .empty,
             };
 
             for (dep_ast.declarations) |decl| {
@@ -4872,7 +4871,7 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
 
     // Note: on Windows, statFile returns error.IsDir for directories
     const is_dir = blk: {
-        const stat = std.fs.cwd().statFile(path) catch |err| {
+        const stat = compat.cwd().statFile(path) catch |err| {
             if (err == error.IsDir) break :blk true;
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Error accessing path '{s}': {}\n", .{ path, err }) catch "Error accessing path\n";
@@ -4924,7 +4923,7 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
         if (result.tests_failed > 0 or result.file_failed) return error.TestsFailed;
         return;
     } else {
-        var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
+        var dir = compat.cwd().openDir(path, .{ .iterate = true }) catch |err| {
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Error opening directory '{s}': {}\n", .{ path, err }) catch "Error opening directory\n";
             try stderr.writeAll(msg);
@@ -4942,7 +4941,7 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
         per_file_options.require_tests = false;
         per_file_options.emit_output = !options.json_output;
 
-        var json_file_results = std.ArrayListUnmanaged(JsonFileSummary){};
+        var json_file_results = std.ArrayListUnmanaged(JsonFileSummary).empty;
         defer {
             for (json_file_results.items) |item| {
                 allocator.free(item.path);
@@ -5214,7 +5213,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
     defer checker.deinit();
     checker.setTestMode(true);
 
-    var module_sources = std.ArrayListUnmanaged([]const u8){};
+    var module_sources = std.ArrayListUnmanaged([]const u8).empty;
     defer {
         for (module_sources.items) |src| {
             allocator.free(src);
@@ -5232,7 +5231,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
         }
 
         var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-        if (std.fs.cwd().realpath(".", &cwd_buf)) |cwd_path| {
+        if (compat.cwd().realpath(".", &cwd_buf)) |cwd_path| {
             resolver.addSearchPath(cwd_path) catch {};
         } else |_| {}
 
@@ -5246,7 +5245,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
         entry.module_ast = module;
         entry.state = .parsed;
 
-        var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo){};
+        var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo).empty;
         defer modules_to_process.deinit(allocator);
         try modules_to_process.append(allocator, entry);
 
@@ -5380,10 +5379,10 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             return error.TestsFailed;
         }
 
-        var module_interpreters = std.AutoHashMapUnmanaged(*ModuleInfo, *Interpreter){};
+        var module_interpreters = std.AutoHashMapUnmanaged(*ModuleInfo, *Interpreter).empty;
         defer module_interpreters.deinit(allocator);
 
-        var owned_interpreters = std.ArrayListUnmanaged(*Interpreter){};
+        var owned_interpreters = std.ArrayListUnmanaged(*Interpreter).empty;
         defer {
             for (owned_interpreters.items) |interp_ptr| {
                 interp_ptr.deinit();
@@ -5509,7 +5508,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
         }
         defer if (record_assertions) interp_mod.setAssertionRecorder(null);
 
-        var test_results = std.ArrayListUnmanaged(JsonTestSummary){};
+        var test_results = std.ArrayListUnmanaged(JsonTestSummary).empty;
         var test_results_transferred = false;
         defer {
             if (!test_results_transferred) {
@@ -5760,7 +5759,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
         }
         defer if (record_assertions) interp_mod.setAssertionRecorder(null);
 
-        var test_results = std.ArrayListUnmanaged(JsonTestSummary){};
+        var test_results = std.ArrayListUnmanaged(JsonTestSummary).empty;
         var test_results_transferred = false;
         defer {
             if (!test_results_transferred) {
@@ -5949,7 +5948,7 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
     defer checker.deinit();
 
     // Track source strings for imported modules
-    var module_sources = std.ArrayListUnmanaged([]const u8){};
+    var module_sources = std.ArrayListUnmanaged([]const u8).empty;
     defer {
         for (module_sources.items) |src| {
             allocator.free(src);
@@ -5971,7 +5970,7 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
 
         // Add current working directory as a search path
         var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-        if (std.fs.cwd().realpath(".", &cwd_buf)) |cwd_path| {
+        if (compat.cwd().realpath(".", &cwd_buf)) |cwd_path| {
             resolver.addSearchPath(cwd_path) catch {};
         } else |_| {}
 
@@ -5984,7 +5983,7 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
         entry.state = .parsed;
 
         // Discover all imported modules (breadth-first)
-        var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo){};
+        var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo).empty;
         defer modules_to_process.deinit(allocator);
         try modules_to_process.append(allocator, entry);
 
@@ -6115,14 +6114,14 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
             const msg = std.fmt.bufPrint(&buf, "Runtime error: {s}\n", .{@errorName(err)}) catch "Runtime error\n";
             try stderr.writeAll(msg);
         }
-        std.process.exit(1);
+        compat.exit(1);
     };
 
     // Look for main function and call it
     if (vm.globals.get("main")) |main_val| {
         if (main_val == .closure) {
             // Build full args: [path] + program_args (matching native/interpreter behavior)
-            var full_args = std.ArrayListUnmanaged([]const u8){};
+            var full_args = std.ArrayListUnmanaged([]const u8).empty;
             defer full_args.deinit(allocator);
             full_args.append(allocator, path) catch {
                 try stderr.writeAll("Failed to allocate args\n");
@@ -6145,7 +6144,7 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
                     const msg = std.fmt.bufPrint(&buf, "Runtime error in main: {s}\n", .{@errorName(err)}) catch "Runtime error in main\n";
                     try stderr.writeAll(msg);
                 }
-                std.process.exit(1);
+                compat.exit(1);
             };
         }
     }
@@ -6278,7 +6277,7 @@ fn resolveDependencies(
     const stderr = getStdErr();
     var result = DependencyResolution{
         .allocator = allocator,
-        .paths = .{},
+        .paths = .empty,
         .generated_lockfile = false,
     };
     errdefer result.deinit();
@@ -6333,7 +6332,7 @@ fn resolveDependencies(
             const dep = entry.value_ptr.*;
             // Verify the resolved path still exists
             var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-            if (std.fs.cwd().realpath(dep.resolved, &path_buf)) |resolved| {
+            if (compat.cwd().realpath(dep.resolved, &path_buf)) |resolved| {
                 try result.paths.append(allocator, try allocator.dupe(u8, resolved));
             } else |_| {
                 // Path no longer exists, re-resolve from original
@@ -6341,7 +6340,7 @@ fn resolveDependencies(
                     const abs_path = std.fs.path.join(allocator, &.{ root_dir, dep.original }) catch continue;
                     defer allocator.free(abs_path);
 
-                    if (std.fs.cwd().realpath(abs_path, &path_buf)) |resolved| {
+                    if (compat.cwd().realpath(abs_path, &path_buf)) |resolved| {
                         try result.paths.append(allocator, try allocator.dupe(u8, resolved));
                     } else |_| {
                         var buf: [512]u8 = undefined;
@@ -6368,7 +6367,7 @@ fn resolveDependencies(
 
                 // Resolve to canonical path
                 var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-                if (std.fs.cwd().realpath(abs_path, &path_buf)) |resolved| {
+                if (compat.cwd().realpath(abs_path, &path_buf)) |resolved| {
                     try result.paths.append(allocator, try allocator.dupe(u8, resolved));
 
                     // Try to get version from dependency's manifest
@@ -6413,7 +6412,7 @@ fn resolveDependenciesWithoutLock(
 ) !DependencyResolution {
     var result = DependencyResolution{
         .allocator = allocator,
-        .paths = .{},
+        .paths = .empty,
         .generated_lockfile = false,
     };
     errdefer result.deinit();
@@ -6426,7 +6425,7 @@ fn resolveDependenciesWithoutLock(
             defer allocator.free(abs_path);
 
             var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-            if (std.fs.cwd().realpath(abs_path, &path_buf)) |resolved| {
+            if (compat.cwd().realpath(abs_path, &path_buf)) |resolved| {
                 try result.paths.append(allocator, try allocator.dupe(u8, resolved));
             } else |_| {
                 try result.paths.append(allocator, try allocator.dupe(u8, abs_path));
@@ -6450,7 +6449,7 @@ fn updateLockfile(allocator: std.mem.Allocator) !void {
     defer loaded_manifest.deinit();
 
     // Delete existing lock file if it exists
-    std.fs.cwd().deleteFile("klar.lock") catch |err| switch (err) {
+    compat.cwd().deleteFile("klar.lock") catch |err| switch (err) {
         error.FileNotFound => {}, // OK, doesn't exist
         else => {
             try stderr.writeAll("Warning: could not delete existing klar.lock\n");
@@ -6474,7 +6473,7 @@ fn updateLockfile(allocator: std.mem.Allocator) !void {
 
             // Resolve to canonical path
             var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-            if (std.fs.cwd().realpath(abs_path, &path_buf)) |resolved| {
+            if (compat.cwd().realpath(abs_path, &path_buf)) |resolved| {
                 // Try to get version from dependency's manifest
                 const dep_version = getDepVersion(allocator, resolved);
                 defer if (dep_version) |v| allocator.free(v);
@@ -6567,7 +6566,7 @@ fn addPackage(allocator: std.mem.Allocator, package_spec: []const u8) !void {
     }
 
     // Get registry URL
-    const registry_url_owned = std.process.getEnvVarOwned(allocator, "KLAR_REGISTRY") catch null;
+    const registry_url_owned = compat.getEnvVarOwned(allocator, "KLAR_REGISTRY") catch null;
     defer if (registry_url_owned) |r| allocator.free(r);
     const registry_url: []const u8 = registry_url_owned orelse "http://localhost:8080";
 
@@ -6622,7 +6621,7 @@ fn addPackage(allocator: std.mem.Allocator, package_spec: []const u8) !void {
     };
     defer allocator.free(deps_dir);
 
-    std.fs.cwd().makePath(deps_dir) catch {
+    compat.cwd().makePath(deps_dir) catch {
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Error: could not create directory {s}\n", .{deps_dir}) catch "Error: could not create deps directory\n";
         try stderr.writeAll(msg);
@@ -6641,10 +6640,10 @@ fn addPackage(allocator: std.mem.Allocator, package_spec: []const u8) !void {
 
         // Ensure parent directory exists
         if (std.fs.path.dirname(full_path)) |dir| {
-            std.fs.cwd().makePath(dir) catch {};
+            compat.cwd().makePath(dir) catch {};
         }
 
-        const file = std.fs.cwd().createFile(full_path, .{}) catch continue;
+        const file = compat.cwd().createFile(full_path, .{}) catch continue;
         defer file.close();
         file.writeAll(content) catch {};
     }
@@ -6669,7 +6668,7 @@ fn addPackage(allocator: std.mem.Allocator, package_spec: []const u8) !void {
 /// Reads the existing JSON, finds the dependencies section, and appends the new entry.
 fn updateManifestAddDep(allocator: std.mem.Allocator, name: []const u8, version_str: []const u8) !void {
     // Read the raw klar.json
-    const file = try std.fs.cwd().openFile("klar.json", .{});
+    const file = try compat.cwd().openFile("klar.json", .{});
     defer file.close();
     const content = try file.readToEndAlloc(allocator, 1024 * 1024);
     defer allocator.free(content);
@@ -6682,9 +6681,9 @@ fn updateManifestAddDep(allocator: std.mem.Allocator, name: []const u8, version_
     if (root != .object) return error.InvalidJson;
 
     // Rebuild the JSON manually with the new dependency added
-    var output = std.ArrayListUnmanaged(u8){};
+    var output = std.ArrayListUnmanaged(u8).empty;
     defer output.deinit(allocator);
-    const writer = output.writer(allocator);
+    const writer = compat.listWriter(&output, allocator);
 
     try writer.writeAll("{\n");
 
@@ -6744,7 +6743,7 @@ fn updateManifestAddDep(allocator: std.mem.Allocator, name: []const u8, version_
 
     try writer.writeAll("\n}\n");
 
-    const out_file = try std.fs.cwd().createFile("klar.json", .{});
+    const out_file = try compat.cwd().createFile("klar.json", .{});
     defer out_file.close();
     try out_file.writeAll(output.items);
 }
@@ -6823,7 +6822,7 @@ fn updateLockfileAddDep(
 
     // Resolve to absolute path
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const resolved = std.fs.cwd().realpath(resolved_path, &path_buf) catch resolved_path;
+    const resolved = compat.cwd().realpath(resolved_path, &path_buf) catch resolved_path;
 
     try lf.addDependency(name, .{
         .source = .registry,
@@ -6844,19 +6843,19 @@ fn cleanCommand(allocator: std.mem.Allocator) !void {
     var removed: u32 = 0;
 
     // Remove build/ directory (compiled executables and Kira object files)
-    if (std.fs.cwd().openDir("build", .{})) |_| {
-        std.fs.cwd().deleteTree("build") catch {
+    if (compat.cwd().openDir("build", .{})) |_| {
+        compat.cwd().deleteTree("build") catch {
             stderr.writeAll("Warning: could not remove build/\n") catch {};
         };
         removed += 1;
     } else |_| {}
 
     // Remove generated Kira interop files from deps/ (kira_*.kl only)
-    if (std.fs.cwd().openDir("deps", .{ .iterate = true })) |*dir_handle| {
+    if (compat.cwd().openDir("deps", .{ .iterate = true })) |*dir_handle| {
         var dir = dir_handle.*;
         defer dir.close();
         var iter = dir.iterate();
-        var kira_files = std.ArrayListUnmanaged([]const u8){};
+        var kira_files = std.ArrayListUnmanaged([]const u8).empty;
         defer {
             for (kira_files.items) |name| {
                 std.heap.page_allocator.free(name);
@@ -6916,12 +6915,12 @@ fn publishPackageCommand(allocator: std.mem.Allocator) !void {
     }
 
     // Collect source files
-    var file_paths = std.ArrayListUnmanaged([]const u8){};
+    var file_paths = std.ArrayListUnmanaged([]const u8).empty;
     defer {
         for (file_paths.items) |p| allocator.free(p);
         file_paths.deinit(allocator);
     }
-    var file_contents = std.ArrayListUnmanaged([]const u8){};
+    var file_contents = std.ArrayListUnmanaged([]const u8).empty;
     defer {
         for (file_contents.items) |c| allocator.free(c);
         file_contents.deinit(allocator);
@@ -6929,7 +6928,7 @@ fn publishPackageCommand(allocator: std.mem.Allocator) !void {
 
     // Always include klar.json
     {
-        const klar_json = std.fs.cwd().openFile("klar.json", .{}) catch {
+        const klar_json = compat.cwd().openFile("klar.json", .{}) catch {
             try stderr.writeAll("Error: could not read klar.json\n");
             return;
         };
@@ -6979,7 +6978,7 @@ fn publishPackageCommand(allocator: std.mem.Allocator) !void {
     defer allocator.free(archive_json);
 
     // Get registry URL
-    const registry_url_owned = std.process.getEnvVarOwned(allocator, "KLAR_REGISTRY") catch null;
+    const registry_url_owned = compat.getEnvVarOwned(allocator, "KLAR_REGISTRY") catch null;
     defer if (registry_url_owned) |r| allocator.free(r);
     const registry_url: []const u8 = registry_url_owned orelse "http://localhost:8080";
 
@@ -7005,7 +7004,7 @@ fn collectSourceFiles(
     paths: *std.ArrayListUnmanaged([]const u8),
     contents: *std.ArrayListUnmanaged([]const u8),
 ) !void {
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
+    var dir = compat.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
     defer dir.close();
 
     var walker = try dir.walk(allocator);
@@ -7039,7 +7038,7 @@ fn docCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const stderr = getStdErr();
 
     // Parse arguments: klar doc [path...] [-o output_dir]
-    var paths = std.ArrayListUnmanaged([]const u8){};
+    var paths = std.ArrayListUnmanaged([]const u8).empty;
     defer paths.deinit(allocator);
     var output_dir: []const u8 = "docs/api";
 
@@ -7061,11 +7060,11 @@ fn docCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
     // If no paths given, try stdlib/ and src/ directories, or manifest entry
     if (paths.items.len == 0) {
         // Auto-discover: look for stdlib/ and src/ directories
-        if (std.fs.cwd().access("stdlib", .{})) |_| {
+        if (compat.cwd().access("stdlib", .{})) |_| {
             try collectKlFiles(allocator, "stdlib", &paths);
         } else |_| {}
 
-        if (std.fs.cwd().access("src", .{})) |_| {
+        if (compat.cwd().access("src", .{})) |_| {
             try collectKlFiles(allocator, "src", &paths);
         } else |_| {}
     }
@@ -7076,14 +7075,14 @@ fn docCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
     }
 
     // Extract documentation from each file
-    var modules = std.ArrayListUnmanaged(doc_gen.DocModule){};
+    var modules = std.ArrayListUnmanaged(doc_gen.DocModule).empty;
     defer modules.deinit(allocator);
 
     for (paths.items) |path| {
         // Check if path is a directory or file
-        const stat = std.fs.cwd().statFile(path) catch continue;
+        const stat = compat.cwd().statFile(path) catch continue;
         if (stat.kind == .directory) {
-            var dir_files = std.ArrayListUnmanaged([]const u8){};
+            var dir_files = std.ArrayListUnmanaged([]const u8).empty;
             defer {
                 for (dir_files.items) |p| allocator.free(p);
                 dir_files.deinit(allocator);
@@ -7103,7 +7102,7 @@ fn docCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
     }
 
     // Create output directory
-    std.fs.cwd().makePath(output_dir) catch {
+    compat.cwd().makePath(output_dir) catch {
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Error: could not create output directory: {s}\n", .{output_dir}) catch "Error: could not create output directory\n";
         try stderr.writeAll(msg);
@@ -7117,7 +7116,7 @@ fn docCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const index_path = try std.fmt.allocPrint(allocator, "{s}/index.html", .{output_dir});
     defer allocator.free(index_path);
 
-    const index_file = try std.fs.cwd().createFile(index_path, .{});
+    const index_file = try compat.cwd().createFile(index_path, .{});
     defer index_file.close();
     try index_file.writeAll(index_html);
 
@@ -7130,7 +7129,7 @@ fn docCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
         const module_path = try std.fmt.allocPrint(allocator, "{s}/{s}.html", .{ output_dir, module.name });
         defer allocator.free(module_path);
 
-        const module_file = try std.fs.cwd().createFile(module_path, .{});
+        const module_file = try compat.cwd().createFile(module_path, .{});
         defer module_file.close();
         try module_file.writeAll(html);
         doc_count += 1;
@@ -7143,7 +7142,7 @@ fn docCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
 /// Read a .kl file and extract its documentation, adding to modules list.
 fn processDocFile(allocator: std.mem.Allocator, path: []const u8, modules: *std.ArrayListUnmanaged(doc_gen.DocModule)) !void {
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    const file = compat.cwd().openFile(path, .{}) catch return;
     defer file.close();
     const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return;
     defer allocator.free(source);
@@ -7163,7 +7162,7 @@ fn processDocFile(allocator: std.mem.Allocator, path: []const u8, modules: *std.
 
 /// Collect all .kl files from a directory recursively.
 fn collectKlFiles(allocator: std.mem.Allocator, dir_path: []const u8, out: *std.ArrayListUnmanaged([]const u8)) !void {
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
+    var dir = compat.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
     defer dir.close();
 
     var walker = try dir.walk(allocator);
@@ -7182,7 +7181,7 @@ fn collectKlFiles(allocator: std.mem.Allocator, dir_path: []const u8, out: *std.
 fn initProject(allocator: std.mem.Allocator, name_arg: ?[]const u8, is_lib: bool) !void {
     const stdout = getStdOut();
     const stderr = getStdErr();
-    const cwd = std.fs.cwd();
+    const cwd = compat.cwd();
 
     // Determine project name: use argument, or current directory name
     const project_name = if (name_arg) |n| n else blk: {

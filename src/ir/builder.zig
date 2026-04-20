@@ -49,7 +49,7 @@ pub const Builder = struct {
         std.debug.assert(param_names.len == param_types.len);
 
         // Create parameters with SSA values
-        var params = std.ArrayListUnmanaged(Param){};
+        var params = std.ArrayListUnmanaged(Param).empty;
         errdefer params.deinit(self.allocator);
 
         for (param_names, param_types, 0..) |pname, pty, i| {

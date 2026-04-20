@@ -144,7 +144,7 @@ fn processEscapes(allocator: Allocator, content: []const u8) ![]const u8 {
         return content;
     }
 
-    var result = std.ArrayListUnmanaged(u8){};
+    var result = std.ArrayListUnmanaged(u8).empty;
     var i: usize = 0;
     while (i < content.len) {
         if (content[i] == '\\' and i + 1 < content.len) {
@@ -246,7 +246,7 @@ pub const Parser = struct {
             .source = source,
             .current = undefined,
             .previous = undefined,
-            .errors = .{},
+            .errors = .empty,
         };
         // Prime the parser with the first token
         parser.advance();
@@ -661,7 +661,7 @@ pub const Parser = struct {
     }
 
     fn parseInterpolatedString(self: *Parser, content: []const u8, span: ast.Span) ParseError!ast.Expr {
-        var parts = std.ArrayListUnmanaged(ast.InterpolatedPart){};
+        var parts = std.ArrayListUnmanaged(ast.InterpolatedPart).empty;
         var pos: usize = 0;
 
         while (pos < content.len) {
@@ -815,7 +815,7 @@ pub const Parser = struct {
             self.advance(); // consume '#'
             try self.consume(.l_bracket, "expected '[' after '#' in type arguments");
 
-            var type_args = std.ArrayListUnmanaged(ast.TypeExpr){};
+            var type_args = std.ArrayListUnmanaged(ast.TypeExpr).empty;
             while (!self.check(.r_bracket) and !self.check(.eof)) {
                 const type_arg = try self.parseType();
                 try type_args.append(self.allocator, type_arg);
@@ -876,7 +876,7 @@ pub const Parser = struct {
         const variant_name = try self.consumeIdentifier();
 
         // Check for payload: (expr, ...) or ()
-        var payload = std.ArrayListUnmanaged(ast.Expr){};
+        var payload = std.ArrayListUnmanaged(ast.Expr).empty;
         if (self.match(.l_paren)) {
             if (!self.check(.r_paren)) {
                 while (true) {
@@ -902,7 +902,7 @@ pub const Parser = struct {
     fn parseStructLiteralWithType(self: *Parser, type_expr: ast.TypeExpr, start_span: ast.Span) ParseError!ast.Expr {
         self.advance(); // consume '{'
 
-        var fields = std.ArrayListUnmanaged(ast.StructFieldInit){};
+        var fields = std.ArrayListUnmanaged(ast.StructFieldInit).empty;
         var spread: ?ast.Expr = null;
 
         while (!self.check(.r_brace) and !self.check(.eof)) {
@@ -979,7 +979,7 @@ pub const Parser = struct {
 
         // Tuple with multiple elements
         if (self.match(.comma)) {
-            var elements = std.ArrayListUnmanaged(ast.Expr){};
+            var elements = std.ArrayListUnmanaged(ast.Expr).empty;
             try elements.append(self.allocator, first);
 
             while (!self.check(.r_paren) and !self.check(.eof)) {
@@ -1015,7 +1015,7 @@ pub const Parser = struct {
         self.no_struct_literal = false;
         defer self.no_struct_literal = saved_no_struct;
 
-        var elements = std.ArrayListUnmanaged(ast.Expr){};
+        var elements = std.ArrayListUnmanaged(ast.Expr).empty;
 
         while (!self.check(.r_bracket) and !self.check(.eof)) {
             try elements.append(self.allocator, try self.parseExpression());
@@ -1061,7 +1061,7 @@ pub const Parser = struct {
         // Parse argument list
         try self.consume(.l_paren, "expected '(' after builtin name");
 
-        var args = std.ArrayListUnmanaged(ast.BuiltinArg){};
+        var args = std.ArrayListUnmanaged(ast.BuiltinArg).empty;
 
         // @fn_ptr always expects an expression (function value), not a type
         const always_expr = std.mem.eql(u8, name, "fn_ptr");
@@ -1202,7 +1202,7 @@ pub const Parser = struct {
         const start_span = self.spanFromToken(self.current);
         try self.consume(.l_brace, "expected '{'");
 
-        var statements = std.ArrayListUnmanaged(ast.Stmt){};
+        var statements = std.ArrayListUnmanaged(ast.Stmt).empty;
         var final_expr: ?ast.Expr = null;
 
         while (!self.check(.r_brace) and !self.check(.eof)) {
@@ -1307,7 +1307,7 @@ pub const Parser = struct {
 
         try self.consume(.l_brace, "expected '{' after match subject");
 
-        var arms = std.ArrayListUnmanaged(ast.MatchArmStmt){};
+        var arms = std.ArrayListUnmanaged(ast.MatchArmStmt).empty;
 
         while (!self.check(.r_brace) and !self.check(.eof)) {
             while (self.match(.newline)) {}
@@ -1355,7 +1355,7 @@ pub const Parser = struct {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume '|'
 
-        var params = std.ArrayListUnmanaged(ast.ClosureParam){};
+        var params = std.ArrayListUnmanaged(ast.ClosureParam).empty;
 
         if (!self.check(.pipe)) {
             while (true) {
@@ -1495,7 +1495,7 @@ pub const Parser = struct {
         self.no_struct_literal = false;
         defer self.no_struct_literal = saved_no_struct;
 
-        var args = std.ArrayListUnmanaged(ast.Expr){};
+        var args = std.ArrayListUnmanaged(ast.Expr).empty;
 
         if (!self.check(.r_paren)) {
             while (true) {
@@ -1547,7 +1547,7 @@ pub const Parser = struct {
         self.advance(); // consume '#'
         try self.consume(.l_bracket, "expected '[' after '#' in type arguments");
 
-        var type_args = std.ArrayListUnmanaged(ast.TypeExpr){};
+        var type_args = std.ArrayListUnmanaged(ast.TypeExpr).empty;
         if (!self.check(.r_bracket)) {
             while (true) {
                 try type_args.append(self.allocator, try self.parseType());
@@ -1618,7 +1618,7 @@ pub const Parser = struct {
         if (self.check(.hash)) {
             self.advance(); // consume '#'
             try self.consume(.l_bracket, "expected '[' after '#' in type arguments");
-            var type_args = std.ArrayListUnmanaged(ast.TypeExpr){};
+            var type_args = std.ArrayListUnmanaged(ast.TypeExpr).empty;
             if (!self.check(.r_bracket)) {
                 while (true) {
                     try type_args.append(self.allocator, try self.parseType());
@@ -1690,7 +1690,7 @@ pub const Parser = struct {
     fn parseMethodCall(self: *Parser, object: ast.Expr, method_name: []const u8, type_args: ?[]const ast.TypeExpr) ParseError!ast.Expr {
         self.advance(); // consume '('
 
-        var args = std.ArrayListUnmanaged(ast.Expr){};
+        var args = std.ArrayListUnmanaged(ast.Expr).empty;
 
         if (!self.check(.r_paren)) {
             while (true) {
@@ -2069,7 +2069,7 @@ pub const Parser = struct {
             self.advance(); // consume '#'
             try self.consume(.l_bracket, "expected '[' after '#' in type arguments");
 
-            var type_args = std.ArrayListUnmanaged(ast.TypeExpr){};
+            var type_args = std.ArrayListUnmanaged(ast.TypeExpr).empty;
             while (!self.check(.r_bracket) and !self.check(.eof)) {
                 const type_arg = try self.parseType();
                 try type_args.append(self.allocator, type_arg);
@@ -2198,7 +2198,7 @@ pub const Parser = struct {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume '('
 
-        var elements = std.ArrayListUnmanaged(ast.Pattern){};
+        var elements = std.ArrayListUnmanaged(ast.Pattern).empty;
 
         if (!self.check(.r_paren)) {
             while (true) {
@@ -2280,7 +2280,7 @@ pub const Parser = struct {
 
         // Tuple type: (T1, T2, ...)
         if (self.match(.l_paren)) {
-            var elements = std.ArrayListUnmanaged(ast.TypeExpr){};
+            var elements = std.ArrayListUnmanaged(ast.TypeExpr).empty;
 
             if (!self.check(.r_paren)) {
                 while (true) {
@@ -2305,7 +2305,7 @@ pub const Parser = struct {
             self.advance(); // consume fn
             try self.consume(.l_paren, "expected '(' after 'extern fn'");
 
-            var params = std.ArrayListUnmanaged(ast.TypeExpr){};
+            var params = std.ArrayListUnmanaged(ast.TypeExpr).empty;
             if (!self.check(.r_paren)) {
                 while (true) {
                     try params.append(self.allocator, try self.parseType());
@@ -2329,7 +2329,7 @@ pub const Parser = struct {
         if (self.match(.fn_)) {
             try self.consume(.l_paren, "expected '(' after fn");
 
-            var params = std.ArrayListUnmanaged(ast.TypeExpr){};
+            var params = std.ArrayListUnmanaged(ast.TypeExpr).empty;
             if (!self.check(.r_paren)) {
                 while (true) {
                     try params.append(self.allocator, try self.parseType());
@@ -2385,7 +2385,7 @@ pub const Parser = struct {
             if (self.check(.hash) and self.peekNext().kind == .l_bracket) {
                 self.advance(); // consume '#'
                 self.advance(); // consume '['
-                var args = std.ArrayListUnmanaged(ast.TypeExpr){};
+                var args = std.ArrayListUnmanaged(ast.TypeExpr).empty;
 
                 while (true) {
                     try args.append(self.allocator, try self.parseType());
@@ -2636,7 +2636,7 @@ pub const Parser = struct {
 
     /// Parse zero or more stacked meta annotations before a declaration.
     fn parseMetaAnnotations(self: *Parser) ParseError![]const ast.MetaAnnotation {
-        var annotations = std.ArrayListUnmanaged(ast.MetaAnnotation){};
+        var annotations = std.ArrayListUnmanaged(ast.MetaAnnotation).empty;
         while (self.check(.meta)) {
             try annotations.append(self.allocator, try self.parseOneMetaAnnotation());
         }
@@ -2747,7 +2747,7 @@ pub const Parser = struct {
     fn parseMetaBlock(self: *Parser, meta_span: ast.Span) ParseError!*ast.MetaBlock {
         try self.consume(.l_brace, "expected '{' after meta block annotation name");
 
-        var entries = std.ArrayListUnmanaged(ast.MetaKeyValue){};
+        var entries = std.ArrayListUnmanaged(ast.MetaKeyValue).empty;
 
         while (!self.check(.r_brace) and self.current.kind != .eof) {
             // Parse key (identifier)
@@ -2764,7 +2764,7 @@ pub const Parser = struct {
             // Parse value: string literal or string list
             const value: ast.MetaValue = if (self.check(.l_bracket)) blk: {
                 self.advance(); // consume '['
-                var items = std.ArrayListUnmanaged([]const u8){};
+                var items = std.ArrayListUnmanaged([]const u8).empty;
                 if (!self.check(.r_bracket)) {
                     // First item
                     if (self.current.kind != .string_literal) {
@@ -2828,7 +2828,7 @@ pub const Parser = struct {
     fn parseMetaRelated(self: *Parser, meta_span: ast.Span) ParseError!*ast.MetaRelated {
         try self.consume(.l_paren, "expected '(' after 'related'");
 
-        var paths = std.ArrayListUnmanaged(ast.MetaPath){};
+        var paths = std.ArrayListUnmanaged(ast.MetaPath).empty;
         var description: ?[]const u8 = null;
 
         // First token must be a path, not a description
@@ -2868,7 +2868,7 @@ pub const Parser = struct {
 
     /// Parse a scoped path: identifier (:: identifier)*
     fn parseMetaPath(self: *Parser) ParseError!ast.MetaPath {
-        var segments = std.ArrayListUnmanaged([]const u8){};
+        var segments = std.ArrayListUnmanaged([]const u8).empty;
         const start_span = self.spanFromToken(self.current);
 
         if (self.current.kind != .identifier) {
@@ -2911,7 +2911,7 @@ pub const Parser = struct {
         try self.consume(.l_brace, "expected '{' after group name");
 
         // Parse nested meta annotations
-        var annotations = std.ArrayListUnmanaged(ast.MetaAnnotation){};
+        var annotations = std.ArrayListUnmanaged(ast.MetaAnnotation).empty;
         while (self.check(.meta)) {
             try annotations.append(self.allocator, try self.parseOneMetaAnnotation());
         }
@@ -2944,7 +2944,7 @@ pub const Parser = struct {
         // Parse parameter list
         try self.consume(.l_paren, "expected '(' after meta define name");
 
-        var params = std.ArrayListUnmanaged(ast.MetaDefineParam){};
+        var params = std.ArrayListUnmanaged(ast.MetaDefineParam).empty;
         if (!self.check(.r_paren)) {
             try params.append(self.allocator, try self.parseMetaDefineParam());
             while (self.match(.comma)) {
@@ -3023,7 +3023,7 @@ pub const Parser = struct {
             break :blk .path_type;
         } else if (self.current.kind == .string_literal) blk: {
             // Parse string union: "a" | "b" | "c"
-            var values = std.ArrayListUnmanaged([]const u8){};
+            var values = std.ArrayListUnmanaged([]const u8).empty;
             const first_text = self.tokenText(self.current);
             const first_content = if (first_text.len >= 2) first_text[1 .. first_text.len - 1] else first_text;
             const first_processed = processEscapes(self.allocator, first_content) catch return ParseError.OutOfMemory;
@@ -3060,7 +3060,7 @@ pub const Parser = struct {
     fn parseMetaCustom(self: *Parser, name: []const u8, meta_span: ast.Span) ParseError!*ast.MetaCustom {
         try self.consume(.l_paren, "expected '(' after custom meta annotation name");
 
-        var args = std.ArrayListUnmanaged(ast.MetaCustomArg){};
+        var args = std.ArrayListUnmanaged(ast.MetaCustomArg).empty;
         if (!self.check(.r_paren)) {
             try args.append(self.allocator, try self.parseMetaCustomArg());
             while (self.match(.comma)) {
@@ -3089,7 +3089,7 @@ pub const Parser = struct {
             return .{ .string = processed };
         } else if (self.current.kind == .identifier) {
             // Parse scoped path: ident::ident::ident
-            var segments = std.ArrayListUnmanaged([]const u8){};
+            var segments = std.ArrayListUnmanaged([]const u8).empty;
             const path_start_span = self.spanFromToken(self.current);
             var path_end_span = path_start_span;
             try segments.append(self.allocator, self.tokenText(self.current));
@@ -3144,7 +3144,7 @@ pub const Parser = struct {
         } else if (self.match(.eq)) {
             // Single-expression function: fn foo() -> i32 = 42
             const expr = try self.parseExpression();
-            const stmts = std.ArrayListUnmanaged(ast.Stmt){};
+            const stmts = std.ArrayListUnmanaged(ast.Stmt).empty;
             body = try self.create(ast.Block, .{
                 .statements = try self.dupeSlice(ast.Stmt, stmts.items),
                 .final_expr = expr,
@@ -3196,14 +3196,14 @@ pub const Parser = struct {
         self.advance(); // consume '#'
         self.advance(); // consume '[' (confirmed by peekNext)
 
-        var params = std.ArrayListUnmanaged(ast.TypeParam){};
+        var params = std.ArrayListUnmanaged(ast.TypeParam).empty;
 
         while (!self.check(.r_bracket) and !self.check(.eof)) {
             const param_span = self.spanFromToken(self.current);
             const param_name = try self.consumeIdentifier();
 
             // Parse optional bounds: T: Trait + OtherTrait
-            var bounds = std.ArrayListUnmanaged(ast.TypeExpr){};
+            var bounds = std.ArrayListUnmanaged(ast.TypeExpr).empty;
             if (self.match(.colon)) {
                 while (true) {
                     try bounds.append(self.allocator, try self.parseType());
@@ -3225,7 +3225,7 @@ pub const Parser = struct {
     }
 
     fn parseFunctionParams(self: *Parser) ParseError![]const ast.FunctionParam {
-        var params = std.ArrayListUnmanaged(ast.FunctionParam){};
+        var params = std.ArrayListUnmanaged(ast.FunctionParam).empty;
 
         if (self.check(.r_paren)) {
             return &[_]ast.FunctionParam{};
@@ -3272,7 +3272,7 @@ pub const Parser = struct {
             return null;
         }
 
-        var constraints = std.ArrayListUnmanaged(ast.WhereConstraint){};
+        var constraints = std.ArrayListUnmanaged(ast.WhereConstraint).empty;
 
         while (true) {
             const constraint_span = self.spanFromToken(self.current);
@@ -3280,7 +3280,7 @@ pub const Parser = struct {
 
             try self.consume(.colon, "expected ':' after type parameter in where clause");
 
-            var bounds = std.ArrayListUnmanaged(ast.TypeExpr){};
+            var bounds = std.ArrayListUnmanaged(ast.TypeExpr).empty;
             while (true) {
                 try bounds.append(self.allocator, try self.parseType());
                 if (!self.match(.plus)) break;
@@ -3319,7 +3319,7 @@ pub const Parser = struct {
         }
 
         // Parse optional trait implementations: struct Foo: Trait1 + Trait2
-        var traits = std.ArrayListUnmanaged(ast.TypeExpr){};
+        var traits = std.ArrayListUnmanaged(ast.TypeExpr).empty;
         if (self.match(.colon)) {
             if (is_extern) {
                 try self.reportError("extern structs cannot implement traits");
@@ -3334,7 +3334,7 @@ pub const Parser = struct {
         try self.consume(.l_brace, "expected '{' after struct name");
 
         // Parse fields
-        var fields = std.ArrayListUnmanaged(ast.StructField){};
+        var fields = std.ArrayListUnmanaged(ast.StructField).empty;
         while (!self.check(.r_brace) and !self.check(.eof)) {
             // Skip newlines
             while (self.match(.newline)) {}
@@ -3413,7 +3413,7 @@ pub const Parser = struct {
         try self.consume(.l_brace, "expected '{' after enum name");
 
         // Parse variants
-        var variants = std.ArrayListUnmanaged(ast.EnumVariant){};
+        var variants = std.ArrayListUnmanaged(ast.EnumVariant).empty;
         while (!self.check(.r_brace) and !self.check(.eof)) {
             while (self.match(.newline)) {}
             if (self.check(.r_brace)) break;
@@ -3440,7 +3440,7 @@ pub const Parser = struct {
                     return ParseError.UnexpectedToken;
                 }
                 // Tuple payload: Variant(T1, T2)
-                var tuple_types = std.ArrayListUnmanaged(ast.TypeExpr){};
+                var tuple_types = std.ArrayListUnmanaged(ast.TypeExpr).empty;
                 if (!self.check(.r_paren)) {
                     while (true) {
                         try tuple_types.append(self.allocator, try self.parseType());
@@ -3455,7 +3455,7 @@ pub const Parser = struct {
                     return ParseError.UnexpectedToken;
                 }
                 // Struct payload: Variant { field: T }
-                var struct_fields = std.ArrayListUnmanaged(ast.StructField){};
+                var struct_fields = std.ArrayListUnmanaged(ast.StructField).empty;
                 while (!self.check(.r_brace) and !self.check(.eof)) {
                     while (self.match(.newline)) {}
                     if (self.check(.r_brace)) break;
@@ -3547,7 +3547,7 @@ pub const Parser = struct {
         const type_params = try self.parseTypeParams();
 
         // Parse optional super traits: trait A: B + C
-        var super_traits = std.ArrayListUnmanaged(ast.TypeExpr){};
+        var super_traits = std.ArrayListUnmanaged(ast.TypeExpr).empty;
         if (self.match(.colon)) {
             // Parse first super trait
             const first_trait = try self.parseType();
@@ -3563,8 +3563,8 @@ pub const Parser = struct {
         try self.consume(.l_brace, "expected '{' after trait name");
 
         // Parse associated types and method signatures
-        var associated_types = std.ArrayListUnmanaged(ast.AssociatedTypeDecl){};
-        var methods = std.ArrayListUnmanaged(ast.FunctionDecl){};
+        var associated_types = std.ArrayListUnmanaged(ast.AssociatedTypeDecl).empty;
+        var methods = std.ArrayListUnmanaged(ast.FunctionDecl).empty;
         while (!self.check(.r_brace) and !self.check(.eof)) {
             while (self.match(.newline)) {}
             if (self.check(.r_brace)) break;
@@ -3625,7 +3625,7 @@ pub const Parser = struct {
         const assoc_name = try self.consumeIdentifier();
 
         // Parse optional bounds: type Item: Clone + Hash
-        var bounds = std.ArrayListUnmanaged(ast.TypeExpr){};
+        var bounds = std.ArrayListUnmanaged(ast.TypeExpr).empty;
         if (self.match(.colon)) {
             const first_bound = try self.parseType();
             try bounds.append(self.allocator, first_bound);
@@ -3674,8 +3674,8 @@ pub const Parser = struct {
         try self.consume(.l_brace, "expected '{' after impl");
 
         // Parse associated type bindings and methods
-        var associated_types = std.ArrayListUnmanaged(ast.AssociatedTypeBinding){};
-        var methods = std.ArrayListUnmanaged(ast.FunctionDecl){};
+        var associated_types = std.ArrayListUnmanaged(ast.AssociatedTypeBinding).empty;
+        var methods = std.ArrayListUnmanaged(ast.FunctionDecl).empty;
         while (!self.check(.r_brace) and !self.check(.eof)) {
             while (self.match(.newline)) {}
             if (self.check(.r_brace)) break;
@@ -3814,7 +3814,7 @@ pub const Parser = struct {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume '{'
 
-        var functions = std.ArrayListUnmanaged(*ast.FunctionDecl){};
+        var functions = std.ArrayListUnmanaged(*ast.FunctionDecl).empty;
 
         while (!self.check(.r_brace) and !self.check(.eof)) {
             // Skip newlines
@@ -3901,7 +3901,7 @@ pub const Parser = struct {
     };
 
     fn parseExternFnParams(self: *Parser) ParseError!ExternFnParamsResult {
-        var params = std.ArrayListUnmanaged(ast.FunctionParam){};
+        var params = std.ArrayListUnmanaged(ast.FunctionParam).empty;
         var is_variadic = false;
 
         if (self.check(.r_paren)) {
@@ -3994,7 +3994,7 @@ pub const Parser = struct {
         self.advance(); // consume 'import'
 
         // Parse module path: std.collections.List
-        var path = std.ArrayListUnmanaged([]const u8){};
+        var path = std.ArrayListUnmanaged([]const u8).empty;
         try path.append(self.allocator, try self.consumeIdentifier());
 
         while (self.match(.dot)) {
@@ -4011,7 +4011,7 @@ pub const Parser = struct {
 
             // Check for specific items: import path.{ Item1, Item2 }
             if (self.match(.l_brace)) {
-                var items = std.ArrayListUnmanaged(ast.ImportItem){};
+                var items = std.ArrayListUnmanaged(ast.ImportItem).empty;
 
                 while (!self.check(.r_brace) and !self.check(.eof)) {
                     while (self.match(.newline)) {}
@@ -4072,7 +4072,7 @@ pub const Parser = struct {
         self.advance(); // consume 'module'
 
         // Parse module path: module name.subname
-        var path = std.ArrayListUnmanaged([]const u8){};
+        var path = std.ArrayListUnmanaged([]const u8).empty;
         try path.append(self.allocator, try self.consumeIdentifier());
 
         while (self.match(.dot)) {
@@ -4096,9 +4096,9 @@ pub const Parser = struct {
     /// Returns a partial AST and records diagnostics in `errors`.
     pub fn parseModuleRecovering(self: *Parser) ParseError!ast.Module {
         var module_decl: ?ast.ModuleDecl = null;
-        var imports = std.ArrayListUnmanaged(ast.ImportDecl){};
-        var declarations = std.ArrayListUnmanaged(ast.Decl){};
-        var file_meta = std.ArrayListUnmanaged(ast.MetaAnnotation){};
+        var imports = std.ArrayListUnmanaged(ast.ImportDecl).empty;
+        var declarations = std.ArrayListUnmanaged(ast.Decl).empty;
+        var file_meta = std.ArrayListUnmanaged(ast.MetaAnnotation).empty;
 
         // Skip leading newlines
         while (self.match(.newline)) {}

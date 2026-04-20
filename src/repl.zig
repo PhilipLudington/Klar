@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat.zig");
 const version = @import("version.zig");
 const Allocator = std.mem.Allocator;
 const Lexer = @import("lexer.zig").Lexer;
@@ -15,7 +16,7 @@ const Value = values.Value;
 const builtin = @import("builtin");
 
 // Cross-platform IO helpers
-fn getStdIn() std.fs.File {
+fn getStdIn() compat.File {
     if (comptime builtin.os.tag == .windows) {
         return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_INPUT_HANDLE) orelse
             @panic("failed to get stdin handle") };
@@ -24,7 +25,7 @@ fn getStdIn() std.fs.File {
     }
 }
 
-fn getStdOut() std.fs.File {
+fn getStdOut() compat.File {
     if (comptime builtin.os.tag == .windows) {
         return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) orelse
             @panic("failed to get stdout handle") };
@@ -33,7 +34,7 @@ fn getStdOut() std.fs.File {
     }
 }
 
-fn getStdErr() std.fs.File {
+fn getStdErr() compat.File {
     if (comptime builtin.os.tag == .windows) {
         return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) orelse
             @panic("failed to get stderr handle") };
@@ -43,7 +44,7 @@ fn getStdErr() std.fs.File {
 }
 
 /// Read a line from a file, returning null on EOF
-fn readLine(file: std.fs.File, buffer: []u8) !?[]const u8 {
+fn readLine(file: compat.File, buffer: []u8) !?[]const u8 {
     var len: usize = 0;
     while (len < buffer.len) {
         var byte: [1]u8 = undefined;
@@ -118,8 +119,8 @@ pub const Repl = struct {
             .arena = arena,
             .interpreter = interpreter,
             .type_checker = type_checker,
-            .bindings = .{},
-            .source_strings = .{},
+            .bindings = .empty,
+            .source_strings = .empty,
         };
     }
 
@@ -568,7 +569,7 @@ pub const Repl = struct {
 
     /// Load and execute a file
     fn loadFile(self: *Repl, path: []const u8) !void {
-        const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+        const file = compat.cwd().openFile(path, .{}) catch |err| {
             var buf: [256]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Error opening '{s}': {s}\n", .{ path, @errorName(err) }) catch "Error opening file\n";
             try getStdErr().writeAll(msg);
@@ -676,7 +677,7 @@ pub const Repl = struct {
         _ = self;
         // QuitRepl is not an error, it's a normal exit
         if (err == error.QuitRepl) {
-            std.process.exit(0);
+            compat.exit(0);
         }
 
         const stderr = getStdErr();

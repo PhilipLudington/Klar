@@ -24,7 +24,7 @@ pub const Disassembler = struct {
     pub fn init(allocator: Allocator) Self {
         return .{
             .allocator = allocator,
-            .output = .{},
+            .output = .empty,
             .indent_level = 0,
         };
     }
@@ -312,7 +312,7 @@ fn formatConstantRef(index: usize, constant: Constant, buf: []u8) []const u8 {
 
 /// Disassemble a function to stdout.
 pub fn disassembleToStdout(function: *const Function) !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

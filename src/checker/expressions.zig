@@ -684,7 +684,7 @@ fn checkClosure(tc: anytype, closure: *ast.Closure) Type {
         // Note: captures are extracted before this defer runs
     }
 
-    var param_types: std.ArrayListUnmanaged(Type) = .{};
+    var param_types: std.ArrayListUnmanaged(Type) = .empty;
     defer param_types.deinit(tc.allocator);
 
     for (closure.params) |param| {
@@ -718,7 +718,7 @@ fn checkClosure(tc: anytype, closure: *ast.Closure) Type {
     // part of the AST and is used during code generation. The memory will
     // be freed when the allocator is cleaned up (arena-style).
     if (tc.closure_captures.count() > 0) {
-        var captures = std.ArrayListUnmanaged(ast.CapturedVar){};
+        var captures = std.ArrayListUnmanaged(ast.CapturedVar).empty;
         var iter = tc.closure_captures.iterator();
         while (iter.next()) |entry| {
             captures.append(tc.allocator, .{
@@ -835,7 +835,7 @@ fn checkTupleLiteral(tc: anytype, tup: *ast.TupleLiteral) Type {
 }
 
 fn checkTupleLiteralWithHint(tc: anytype, tup: *ast.TupleLiteral, hint: ?Type) Type {
-    var elem_types: std.ArrayListUnmanaged(Type) = .{};
+    var elem_types: std.ArrayListUnmanaged(Type) = .empty;
     defer elem_types.deinit(tc.allocator);
 
     // Extract expected element types from hint if it's a tuple with matching arity
@@ -1035,7 +1035,7 @@ pub fn checkEnumLiteral(tc: anytype, lit: *ast.EnumLiteral) Type {
                 var mono_iter2 = tc.monomorphized_structs.valueIterator();
                 while (mono_iter2.next()) |mono| {
                     if (std.mem.eql(u8, mono.mangled_name, struct_type.name)) {
-                        var substitutions = std.AutoHashMapUnmanaged(u32, Type){};
+                        var substitutions = std.AutoHashMapUnmanaged(u32, Type).empty;
                         defer substitutions.deinit(tc.allocator);
 
                         for (struct_method.impl_type_params, 0..) |type_param, i| {
@@ -1122,7 +1122,7 @@ pub fn checkEnumLiteral(tc: anytype, lit: *ast.EnumLiteral) Type {
         // Extract type arguments from the resolved enum type
         if (lit.enum_type == .generic_apply) {
             const generic = lit.enum_type.generic_apply;
-            var type_args = std.ArrayListUnmanaged(Type){};
+            var type_args = std.ArrayListUnmanaged(Type).empty;
             defer type_args.deinit(tc.allocator);
 
             for (generic.args) |arg| {
@@ -1195,7 +1195,7 @@ pub fn checkField(tc: anytype, fld: *ast.Field) Type {
                 for (s.fields) |field| {
                     if (std.mem.eql(u8, field.name, fld.field_name)) {
                         // Build substitution map from struct's type params to applied args
-                        var substitutions = std.AutoHashMapUnmanaged(u32, Type){};
+                        var substitutions = std.AutoHashMapUnmanaged(u32, Type).empty;
                         defer substitutions.deinit(tc.allocator);
 
                         // Map each struct type param to corresponding applied arg

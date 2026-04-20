@@ -347,7 +347,7 @@ pub const ObjStruct = struct {
     pub fn createGC(gc: *GC, type_name: []const u8) !*ObjStruct {
         const obj = try gc.allocObject(ObjStruct, .struct_);
         obj.type_name = type_name;
-        obj.fields = .{};
+        obj.fields = .empty;
         return obj;
     }
 
@@ -357,7 +357,7 @@ pub const ObjStruct = struct {
         obj.* = .{
             .header = ObjHeader.init(.struct_),
             .type_name = type_name,
-            .fields = .{},
+            .fields = .empty,
         };
         return obj;
     }
@@ -768,13 +768,25 @@ pub const ErrorContext = struct {
 
     /// Format error message to buffer.
     pub fn format(self: *const ErrorContext, buf: []u8) []const u8 {
-        var writer = std.io.fixedBufferStream(buf);
-        self.writeTo(writer.writer().any()) catch return "Error formatting error";
-        return buf[0..writer.pos];
+        var fbs = BufWriter{ .buf = buf };
+        self.writeTo(&fbs) catch return "Error formatting error";
+        return buf[0..fbs.pos];
     }
 
-    /// Write formatted error to a writer.
-    pub fn writeTo(self: *const ErrorContext, writer: std.io.AnyWriter) !void {
+    /// Minimal fixed-buffer writer used for error formatting.
+    pub const BufWriter = struct {
+        buf: []u8,
+        pos: usize = 0,
+
+        pub fn print(self: *BufWriter, comptime fmt: []const u8, args: anytype) !void {
+            const remaining = self.buf[self.pos..];
+            const written = std.fmt.bufPrint(remaining, fmt, args) catch return error.NoSpaceLeft;
+            self.pos += written.len;
+        }
+    };
+
+    /// Write formatted error to a buffer writer.
+    pub fn writeTo(self: *const ErrorContext, writer: *BufWriter) !void {
         // Write main error
         try writer.print("Runtime error: {s}\n", .{@errorName(self.err)});
         try writer.print("  at {s}:{d}\n", .{ self.location.function_name, self.location.line });

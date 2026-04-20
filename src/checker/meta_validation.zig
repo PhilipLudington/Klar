@@ -727,7 +727,7 @@ const JoinedPath = struct {
 fn joinMetaPath(allocator: std.mem.Allocator, segments: []const []const u8) JoinedPath {
     if (segments.len == 0) return .{ .slice = "?", .owned = null, .allocator = allocator };
     if (segments.len == 1) return .{ .slice = segments[0], .owned = null, .allocator = allocator };
-    var list = std.ArrayListUnmanaged(u8){};
+    var list = std.ArrayListUnmanaged(u8).empty;
     for (segments, 0..) |seg, i| {
         if (i > 0) list.appendSlice(allocator, "::") catch {
             list.deinit(allocator);

@@ -43,7 +43,7 @@ pub fn evaluateComptimeCall(tc: anytype, call: *ast.Call, func_decl: *ast.Functi
     }
 
     // First, check that all arguments are compile-time known
-    var arg_values = std.ArrayListUnmanaged(Value){};
+    var arg_values = std.ArrayListUnmanaged(Value).empty;
     defer arg_values.deinit(tc.allocator);
 
     for (call.args) |arg| {
@@ -160,7 +160,7 @@ pub fn registerComptimeFunctionsInInterpreter(tc: anytype, interp: *Interpreter)
             const func_val = tc.allocator.create(values.FunctionValue) catch continue;
 
             // Convert params
-            var params = std.ArrayListUnmanaged(values.FunctionValue.FunctionParam){};
+            var params = std.ArrayListUnmanaged(values.FunctionValue.FunctionParam).empty;
             for (func_decl.params) |param| {
                 params.append(tc.allocator, .{ .name = param.name }) catch continue;
             }
@@ -194,7 +194,7 @@ pub fn evaluateComptimeCallBuiltin(tc: anytype, bc: *ast.BuiltinCall, func_decl:
     }
 
     // First, check that all arguments are compile-time known
-    var arg_values = std.ArrayListUnmanaged(Value){};
+    var arg_values = std.ArrayListUnmanaged(Value).empty;
     defer arg_values.deinit(tc.allocator);
 
     for (bc.args) |arg| {
@@ -370,7 +370,7 @@ pub fn evaluateComptimeExpr(tc: anytype, expr: ast.Expr) ?Value {
         },
         .array_literal => |arr| {
             // Evaluate each element at compile time
-            var elements = std.ArrayListUnmanaged(Value){};
+            var elements = std.ArrayListUnmanaged(Value).empty;
             for (arr.elements) |elem| {
                 const val = evaluateComptimeExpr(tc, elem) orelse return null;
                 elements.append(tc.allocator, val) catch return null;
@@ -474,7 +474,7 @@ pub fn valueToComptimeValue(tc: anytype, value: Value, span: ast.Span) ?Comptime
         .void_ => .{ .void_ = {} },
         .struct_ => |sv| blk: {
             // Convert struct value to comptime struct
-            var comptime_fields = std.StringArrayHashMapUnmanaged(ComptimeValue){};
+            var comptime_fields = std.StringArrayHashMapUnmanaged(ComptimeValue).empty;
             var iter = sv.fields.iterator();
             while (iter.next()) |entry| {
                 // Recursively convert field value
@@ -509,7 +509,7 @@ pub fn valueToComptimeValue(tc: anytype, value: Value, span: ast.Span) ?Comptime
             }
 
             // Recursively convert all elements
-            var comptime_elements = std.ArrayListUnmanaged(ComptimeValue){};
+            var comptime_elements = std.ArrayListUnmanaged(ComptimeValue).empty;
             for (arr.elements) |elem| {
                 const elem_comptime = valueToComptimeValue(tc, elem, span) orelse {
                     comptime_elements.deinit(tc.allocator);
@@ -576,7 +576,7 @@ pub fn comptimeValueToInterpreterValue(tc: anytype, cv: ComptimeValue) Value {
             };
             sv.* = .{
                 .type_name = cs.type_name,
-                .fields = .{},
+                .fields = .empty,
             };
             // Convert each field
             var iter = cs.fields.iterator();
@@ -588,7 +588,7 @@ pub fn comptimeValueToInterpreterValue(tc: anytype, cv: ComptimeValue) Value {
         },
         .array => |arr| blk: {
             // Convert comptime array back to interpreter array value (heap-allocated)
-            var elements = std.ArrayListUnmanaged(Value){};
+            var elements = std.ArrayListUnmanaged(Value).empty;
             for (arr.elements) |elem| {
                 const elem_value = comptimeValueToInterpreterValue(tc, elem);
                 elements.append(tc.allocator, elem_value) catch {

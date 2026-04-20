@@ -4,6 +4,7 @@
 //! Registry URL is read from KLAR_REGISTRY env var (default: http://localhost:8080).
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 
 /// Registry-specific errors.
@@ -65,7 +66,7 @@ pub const PackageArchive = struct {
 
 /// Get the registry URL from KLAR_REGISTRY env var or use default.
 pub fn getRegistryUrl(allocator: Allocator) []const u8 {
-    return std.process.getEnvVarOwned(allocator, "KLAR_REGISTRY") catch {
+    return compat.getEnvVarOwned(allocator, "KLAR_REGISTRY") catch {
         return "http://localhost:8080";
     };
 }
@@ -108,19 +109,78 @@ fn parseUrl(url: []const u8) RegistryError!UrlComponents {
     return .{ .host = host, .port = port, .path = path };
 }
 
+const SocketStream = struct {
+    fd: c_int,
+
+    pub fn close(self: SocketStream) void {
+        _ = std.c.close(self.fd);
+    }
+
+    pub fn writeAll(self: SocketStream, bytes: []const u8) !void {
+        var index: usize = 0;
+        while (index < bytes.len) {
+            const rc = std.c.write(self.fd, bytes.ptr + index, bytes.len - index);
+            if (rc < 0) return RegistryError.ConnectionFailed;
+            index += @intCast(rc);
+        }
+    }
+
+    pub fn read(self: SocketStream, buffer: []u8) !usize {
+        const rc = std.c.read(self.fd, buffer.ptr, buffer.len);
+        if (rc < 0) return RegistryError.ConnectionFailed;
+        return @intCast(rc);
+    }
+};
+
+fn tcpConnect(allocator: Allocator, host: []const u8, port: u16) !SocketStream {
+    _ = allocator;
+    // Resolve host via getaddrinfo.
+    var host_buf: [256]u8 = undefined;
+    if (host.len >= host_buf.len) return RegistryError.ConnectionFailed;
+    @memcpy(host_buf[0..host.len], host);
+    host_buf[host.len] = 0;
+    const host_z: [*:0]const u8 = @ptrCast(&host_buf[0]);
+
+    var port_buf: [8]u8 = undefined;
+    const port_str = std.fmt.bufPrint(&port_buf, "{d}", .{port}) catch return RegistryError.ConnectionFailed;
+    if (port_str.len >= port_buf.len) return RegistryError.ConnectionFailed;
+    port_buf[port_str.len] = 0;
+    const port_z: [*:0]const u8 = @ptrCast(&port_buf[0]);
+
+    var hints: std.c.addrinfo = std.mem.zeroes(std.c.addrinfo);
+    hints.family = std.c.AF.INET;
+    hints.socktype = std.c.SOCK.STREAM;
+
+    var result: ?*std.c.addrinfo = null;
+    const rc = std.c.getaddrinfo(host_z, port_z, &hints, &result);
+    if (@intFromEnum(rc) != 0 or result == null) return RegistryError.ConnectionFailed;
+    const info = result.?;
+    defer std.c.freeaddrinfo(info);
+    const sock = std.c.socket(@intCast(info.family), @intCast(info.socktype), @intCast(info.protocol));
+    if (sock < 0) return RegistryError.ConnectionFailed;
+    errdefer _ = std.c.close(sock);
+
+    const addr: *const std.c.sockaddr = info.addr orelse return RegistryError.ConnectionFailed;
+    if (std.c.connect(sock, addr, info.addrlen) != 0) {
+        return RegistryError.ConnectionFailed;
+    }
+
+    return SocketStream{ .fd = sock };
+}
+
 /// Make an HTTP GET request and return the response.
 pub fn httpGet(allocator: Allocator, url: []const u8) !HttpResponse {
     const components = try parseUrl(url);
 
-    const stream = std.net.tcpConnectToHost(allocator, components.host, components.port) catch {
+    const stream = tcpConnect(allocator, components.host, components.port) catch {
         return RegistryError.ConnectionFailed;
     };
     defer stream.close();
 
     // Build request
-    var request_buf = std.ArrayListUnmanaged(u8){};
+    var request_buf = std.ArrayListUnmanaged(u8).empty;
     defer request_buf.deinit(allocator);
-    const writer = request_buf.writer(allocator);
+    const writer = compat.listWriter(&request_buf, allocator);
 
     try writer.print("GET {s} HTTP/1.1\r\nHost: {s}\r\nConnection: close\r\n\r\n", .{ components.path, components.host });
 
@@ -134,15 +194,15 @@ pub fn httpGet(allocator: Allocator, url: []const u8) !HttpResponse {
 pub fn httpPost(allocator: Allocator, url: []const u8, body: []const u8) !HttpResponse {
     const components = try parseUrl(url);
 
-    const stream = std.net.tcpConnectToHost(allocator, components.host, components.port) catch {
+    const stream = tcpConnect(allocator, components.host, components.port) catch {
         return RegistryError.ConnectionFailed;
     };
     defer stream.close();
 
     // Build request
-    var request_buf = std.ArrayListUnmanaged(u8){};
+    var request_buf = std.ArrayListUnmanaged(u8).empty;
     defer request_buf.deinit(allocator);
-    const writer = request_buf.writer(allocator);
+    const writer = compat.listWriter(&request_buf, allocator);
 
     try writer.print("POST {s} HTTP/1.1\r\nHost: {s}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{ components.path, components.host, body.len });
     try writer.writeAll(body);
@@ -154,8 +214,8 @@ pub fn httpPost(allocator: Allocator, url: []const u8, body: []const u8) !HttpRe
 }
 
 /// Read and parse an HTTP response from a stream.
-fn readHttpResponse(allocator: Allocator, stream: std.net.Stream) !HttpResponse {
-    var response_buf = std.ArrayListUnmanaged(u8){};
+fn readHttpResponse(allocator: Allocator, stream: SocketStream) !HttpResponse {
+    var response_buf = std.ArrayListUnmanaged(u8).empty;
     defer response_buf.deinit(allocator);
 
     // Read until connection closes or Content-Length is satisfied
@@ -253,7 +313,7 @@ pub fn fetchPackageMetadata(allocator: Allocator, registry_url: []const u8, name
     };
     errdefer allocator.free(latest);
 
-    var versions = std.ArrayListUnmanaged([]const u8){};
+    var versions = std.ArrayListUnmanaged([]const u8).empty;
     errdefer {
         for (versions.items) |v| allocator.free(v);
         versions.deinit(allocator);
@@ -315,13 +375,13 @@ pub fn parsePackageArchive(allocator: Allocator, json_data: []const u8) !Package
     const files_val = root.object.get("files") orelse return RegistryError.InvalidResponse;
     if (files_val != .object) return RegistryError.InvalidResponse;
 
-    var paths = std.ArrayListUnmanaged([]const u8){};
+    var paths = std.ArrayListUnmanaged([]const u8).empty;
     errdefer {
         for (paths.items) |p| allocator.free(p);
         paths.deinit(allocator);
     }
 
-    var contents = std.ArrayListUnmanaged([]const u8){};
+    var contents = std.ArrayListUnmanaged([]const u8).empty;
     errdefer {
         for (contents.items) |c| allocator.free(c);
         contents.deinit(allocator);
@@ -366,9 +426,9 @@ pub fn buildArchiveJson(
     file_paths: []const []const u8,
     file_contents: []const []const u8,
 ) ![]const u8 {
-    var buffer = std.ArrayListUnmanaged(u8){};
+    var buffer = std.ArrayListUnmanaged(u8).empty;
     errdefer buffer.deinit(allocator);
-    const writer = buffer.writer(allocator);
+    const writer = compat.listWriter(&buffer, allocator);
 
     try writer.writeAll("{\"name\":\"");
     try writeJsonEscaped(writer, name);

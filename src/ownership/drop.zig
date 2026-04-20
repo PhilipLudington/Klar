@@ -61,7 +61,7 @@ pub const DropInfo = struct {
 
     pub fn init() DropInfo {
         return .{
-            .drops = .{},
+            .drops = .empty,
             .node_id = 0,
         };
     }
@@ -111,7 +111,7 @@ pub const DropInserter = struct {
 
         fn init(_: Allocator, kind: OwnershipScope.Kind, depth: u32) ScopeInfo {
             return .{
-                .variables = std.ArrayListUnmanaged(VarInfo){},
+                .variables = std.ArrayListUnmanaged(VarInfo).empty,
                 .kind = kind,
                 .depth = depth,
             };
@@ -141,8 +141,8 @@ pub const DropInserter = struct {
     pub fn init(allocator: Allocator, ownership_checker: *OwnershipChecker) DropInserter {
         return .{
             .allocator = allocator,
-            .drop_map = .{},
-            .scope_stack = .{},
+            .drop_map = .empty,
+            .scope_stack = .empty,
             .arena = std.heap.ArenaAllocator.init(allocator),
             .ownership_checker = ownership_checker,
         };
@@ -183,7 +183,7 @@ pub const DropInserter = struct {
 
     /// Get all drop points (for debugging).
     pub fn getAllDrops(self: *DropInserter, allocator: Allocator) ![]DropPoint {
-        var result = std.ArrayListUnmanaged(DropPoint){};
+        var result = std.ArrayListUnmanaged(DropPoint).empty;
         var it = self.drop_map.iterator();
         while (it.next()) |entry| {
             for (entry.value_ptr.drops.items) |drop| {

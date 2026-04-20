@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat.zig");
 const Allocator = std.mem.Allocator;
 const ast = @import("ast.zig");
 const types = @import("types.zig");
@@ -391,7 +392,7 @@ pub const Environment = struct {
     pub fn init(allocator: Allocator, parent: ?*Environment) Environment {
         return .{
             .allocator = allocator,
-            .values = .{},
+            .values = .empty,
             .parent = parent,
         };
     }
@@ -578,7 +579,7 @@ pub const ValueBuilder = struct {
         const s = try self.allocator.create(StructValue);
         s.* = .{
             .type_name = type_name,
-            .fields = .{},
+            .fields = .empty,
         };
         return s;
     }
@@ -752,9 +753,9 @@ pub fn formatValue(writer: anytype, value: Value) !void {
 }
 
 pub fn valueToString(allocator: Allocator, value: Value) ![]u8 {
-    var list: std.ArrayListUnmanaged(u8) = .{};
+    var list: std.ArrayListUnmanaged(u8) = .empty;
     errdefer list.deinit(allocator);
-    try formatValue(list.writer(allocator), value);
+    try formatValue(compat.listWriter(&list, allocator), value);
     return list.toOwnedSlice(allocator);
 }
 

@@ -4,6 +4,7 @@
 //! Output format is similar to LLVM IR but with Klar-specific constructs.
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const inst = @import("inst.zig");
 
@@ -474,19 +475,19 @@ pub fn printType(writer: anytype, ty: IrType) !void {
 
 /// Print a module to a string.
 pub fn moduleToString(allocator: Allocator, module: *const Module) ![]u8 {
-    var list: std.ArrayListUnmanaged(u8) = .{};
+    var list: std.ArrayListUnmanaged(u8) = .empty;
     errdefer list.deinit(allocator);
 
-    try printModule(list.writer(allocator), module);
+    try printModule(compat.listWriter(&list, allocator), module);
     return list.toOwnedSlice(allocator);
 }
 
 /// Print a function to a string.
 pub fn functionToString(allocator: Allocator, func: *const Function) ![]u8 {
-    var list: std.ArrayListUnmanaged(u8) = .{};
+    var list: std.ArrayListUnmanaged(u8) = .empty;
     errdefer list.deinit(allocator);
 
-    try printFunction(list.writer(allocator), func);
+    try printFunction(compat.listWriter(&list, allocator), func);
     return list.toOwnedSlice(allocator);
 }
 
@@ -573,8 +574,24 @@ test "Print type formatting" {
     const testing = std.testing;
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const writer = fbs.writer();
+    var pos: usize = 0;
+    const FbsWriter = struct {
+        buf: []u8,
+        pos: *usize,
+        pub fn writeAll(self: @This(), bytes: []const u8) !void {
+            @memcpy(self.buf[self.pos.*..][0..bytes.len], bytes);
+            self.pos.* += bytes.len;
+        }
+        pub fn print(self: @This(), comptime fmt: []const u8, args: anytype) !void {
+            const written = try std.fmt.bufPrint(self.buf[self.pos.*..], fmt, args);
+            self.pos.* += written.len;
+        }
+        pub fn writeByte(self: @This(), b: u8) !void {
+            self.buf[self.pos.*] = b;
+            self.pos.* += 1;
+        }
+    };
+    const writer = FbsWriter{ .buf = &buf, .pos = &pos };
 
     try printType(writer, .i32_);
     try writer.writeAll(" ");
@@ -582,6 +599,5 @@ test "Print type formatting" {
     try writer.writeAll(" ");
     try printType(writer, .bool_);
 
-    const output = fbs.getWritten();
-    try testing.expectEqualStrings("i32 f64 bool", output);
+    try testing.expectEqualStrings("i32 f64 bool", buf[0..pos]);
 }

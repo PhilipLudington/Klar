@@ -97,9 +97,9 @@ pub const Chunk = struct {
     pub fn init(allocator: Allocator) Chunk {
         return .{
             .allocator = allocator,
-            .code = .{},
-            .constants = .{},
-            .lines = .{},
+            .code = .empty,
+            .constants = .empty,
+            .lines = .empty,
         };
     }
 

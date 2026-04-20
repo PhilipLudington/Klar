@@ -4,6 +4,7 @@
 //! topological ordering for compilation.
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const Allocator = std.mem.Allocator;
 const ast = @import("ast.zig");
 const types = @import("types.zig");
@@ -49,8 +50,8 @@ pub const ModuleInfo = struct {
             .source = null,
             .module_ast = null,
             .state = .discovered,
-            .dependencies = .{},
-            .exports = .{},
+            .dependencies = .empty,
+            .exports = .empty,
             .is_entry = false,
         };
         return info;
@@ -141,11 +142,11 @@ pub const ModuleResolver = struct {
     pub fn init(allocator: Allocator) ModuleResolver {
         return .{
             .allocator = allocator,
-            .modules = .{},
-            .search_paths = .{},
+            .modules = .empty,
+            .search_paths = .empty,
             .std_lib_path = null,
             .entry_module = null,
-            .errors = .{},
+            .errors = .empty,
             .arena = std.heap.ArenaAllocator.init(allocator),
         };
     }
@@ -360,7 +361,7 @@ pub const ModuleResolver = struct {
 
         // Build the file path
         // First, build the directory portion (all but last segment)
-        var components = std.ArrayListUnmanaged([]const u8){};
+        var components = std.ArrayListUnmanaged([]const u8).empty;
         defer components.deinit(arena);
 
         try components.append(arena, base_path);
@@ -405,7 +406,7 @@ pub const ModuleResolver = struct {
             return try self.arena.allocator().dupe(u8, path);
         }
 
-        const cwd = std.fs.cwd();
+        const cwd = compat.cwd();
         const abs = try cwd.realpathAlloc(self.arena.allocator(), path);
         return abs;
     }
@@ -413,9 +414,9 @@ pub const ModuleResolver = struct {
     /// Get modules in topological order for compilation.
     /// Earlier modules have no dependencies on later ones.
     pub fn getCompilationOrder(self: *ModuleResolver) ![]const *ModuleInfo {
-        var order = std.ArrayListUnmanaged(*ModuleInfo){};
-        var visited = std.StringHashMapUnmanaged(void){};
-        var in_stack = std.StringHashMapUnmanaged(void){};
+        var order = std.ArrayListUnmanaged(*ModuleInfo).empty;
+        var visited = std.StringHashMapUnmanaged(void).empty;
+        var in_stack = std.StringHashMapUnmanaged(void).empty;
 
         defer visited.deinit(self.allocator);
         defer in_stack.deinit(self.allocator);
@@ -465,9 +466,9 @@ pub const ModuleResolver = struct {
     /// Detect if there are any circular imports.
     /// Returns the cycle path if found, null otherwise.
     pub fn detectCycle(self: *ModuleResolver) !?[]*ModuleInfo {
-        var visited = std.StringHashMapUnmanaged(void){};
-        var in_stack = std.StringHashMapUnmanaged(void){};
-        var stack = std.ArrayListUnmanaged(*ModuleInfo){};
+        var visited = std.StringHashMapUnmanaged(void).empty;
+        var in_stack = std.StringHashMapUnmanaged(void).empty;
+        var stack = std.ArrayListUnmanaged(*ModuleInfo).empty;
 
         defer visited.deinit(self.allocator);
         defer in_stack.deinit(self.allocator);
@@ -523,7 +524,7 @@ pub const ModuleResolver = struct {
 
 /// Check if a file exists.
 fn fileExists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+    compat.cwd().access(path, .{}) catch return false;
     return true;
 }
 

@@ -1,5 +1,6 @@
 const std = @import("std");
 const zig_builtin = @import("builtin");
+const compat = @import("compat.zig");
 const Allocator = std.mem.Allocator;
 const ast = @import("ast.zig");
 const types = @import("types.zig");
@@ -13,7 +14,7 @@ const RuntimeError = values.RuntimeError;
 const ValueBuilder = values.ValueBuilder;
 
 // Cross-platform IO helpers
-fn getStdOut() std.fs.File {
+fn getStdOut() compat.File {
     if (comptime zig_builtin.os.tag == .windows) {
         return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) orelse
             @panic("failed to get stdout handle") };
@@ -22,7 +23,7 @@ fn getStdOut() std.fs.File {
     }
 }
 
-fn getStdIn() std.fs.File {
+fn getStdIn() compat.File {
     if (comptime zig_builtin.os.tag == .windows) {
         return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_INPUT_HANDLE) orelse
             @panic("failed to get stdin handle") };
@@ -31,7 +32,7 @@ fn getStdIn() std.fs.File {
     }
 }
 
-fn getStdErr() std.fs.File {
+fn getStdErr() compat.File {
     if (comptime zig_builtin.os.tag == .windows) {
         return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) orelse
             @panic("failed to get stderr handle") };
@@ -49,7 +50,7 @@ pub const AssertionRecord = struct {
 
 pub const AssertionRecorder = struct {
     allocator: Allocator,
-    records: std.ArrayListUnmanaged(AssertionRecord) = .{},
+    records: std.ArrayListUnmanaged(AssertionRecord) = .empty,
 
     pub fn init(allocator: Allocator) AssertionRecorder {
         return .{ .allocator = allocator };
@@ -154,9 +155,9 @@ pub const Interpreter = struct {
             .break_value = null,
             .is_breaking = false,
             .is_continuing = false,
-            .output = .{},
-            .allocated_functions = .{},
-            .type_methods = .{},
+            .output = .empty,
+            .allocated_functions = .empty,
+            .type_methods = .empty,
             .executor = async_executor.CooperativeExecutor.init(allocator),
             .next_future_task_id = 1,
             .last_error_message = null,
@@ -528,7 +529,7 @@ pub const Interpreter = struct {
 
     fn evalInterpolatedString(self: *Interpreter, interp: *ast.InterpolatedString) RuntimeError!Value {
         // Build the result string by concatenating parts
-        var result = std.ArrayListUnmanaged(u8){};
+        var result = std.ArrayListUnmanaged(u8).empty;
         const arena_alloc = self.stringAllocator();
 
         for (interp.parts) |part| {
@@ -999,7 +1000,7 @@ pub const Interpreter = struct {
         const callee = try self.evaluate(call.callee);
 
         // Evaluate arguments
-        var args = std.ArrayListUnmanaged(Value){};
+        var args = std.ArrayListUnmanaged(Value).empty;
         defer args.deinit(self.allocator);
 
         for (call.args) |arg| {
@@ -1157,7 +1158,7 @@ pub const Interpreter = struct {
         const object = try self.evaluate(method.object);
 
         // Evaluate arguments
-        var args = std.ArrayListUnmanaged(Value){};
+        var args = std.ArrayListUnmanaged(Value).empty;
         defer args.deinit(self.allocator);
         for (method.args) |arg| {
             const value = try self.evaluate(arg);
@@ -1252,7 +1253,7 @@ pub const Interpreter = struct {
             if (std.mem.eql(u8, method.method_name, "chars")) {
                 // Return array of characters (use runtime arena for auto-cleanup)
                 const alloc = self.runtimeAllocator();
-                var chars = std.ArrayListUnmanaged(Value){};
+                var chars = std.ArrayListUnmanaged(Value).empty;
                 var i: usize = 0;
                 while (i < str.len) {
                     const cp_len = std.unicode.utf8ByteSequenceLength(str[i]) catch 1;
@@ -1271,7 +1272,7 @@ pub const Interpreter = struct {
             if (std.mem.eql(u8, method.method_name, "bytes")) {
                 // Return array of bytes (use runtime arena for auto-cleanup)
                 const alloc = self.runtimeAllocator();
-                var bytes = std.ArrayListUnmanaged(Value){};
+                var bytes = std.ArrayListUnmanaged(Value).empty;
                 bytes.ensureTotalCapacity(alloc, str.len) catch return RuntimeError.OutOfMemory;
                 for (str) |b| {
                     bytes.appendAssumeCapacity(self.builder.int(@intCast(b), .u8_));
@@ -1542,7 +1543,7 @@ pub const Interpreter = struct {
             }
 
             if (std.mem.eql(u8, method.method_name, "display_chain")) {
-                var result = std.ArrayListUnmanaged(u8){};
+                var result = std.ArrayListUnmanaged(u8).empty;
                 errdefer result.deinit(self.allocator);
 
                 result.appendSlice(self.allocator, "Error: ") catch return RuntimeError.OutOfMemory;
@@ -1597,7 +1598,7 @@ pub const Interpreter = struct {
             if (self.type_methods.get(object.struct_.type_name)) |methods| {
                 if (methods.get(method.method_name)) |func_val| {
                     // Prepend self (the struct) to the args
-                    var full_args = std.ArrayListUnmanaged(Value){};
+                    var full_args = std.ArrayListUnmanaged(Value).empty;
                     defer full_args.deinit(self.allocator);
                     full_args.append(self.allocator, object) catch return RuntimeError.OutOfMemory;
                     full_args.appendSlice(self.allocator, args.items) catch return RuntimeError.OutOfMemory;
@@ -1715,7 +1716,7 @@ pub const Interpreter = struct {
 
         const size: usize = @intCast(adjusted_size);
 
-        var elements = std.ArrayListUnmanaged(Value){};
+        var elements = std.ArrayListUnmanaged(Value).empty;
         elements.ensureTotalCapacity(self.allocator, size) catch return RuntimeError.OutOfMemory;
 
         var i: i64 = start;
@@ -1736,7 +1737,7 @@ pub const Interpreter = struct {
                     else => break :blk "anonymous",
                 }
             } else "anonymous",
-            .fields = .{},
+            .fields = .empty,
         };
 
         for (lit.fields) |field| {
@@ -1767,7 +1768,7 @@ pub const Interpreter = struct {
             payload_val = try self.evaluate(lit.payload[0]);
         } else if (lit.payload.len > 1) {
             // Multi-field payload: wrap in tuple via builder (arena-allocated)
-            var elements = std.ArrayListUnmanaged(Value){};
+            var elements = std.ArrayListUnmanaged(Value).empty;
             elements.ensureTotalCapacity(self.allocator, lit.payload.len) catch
                 return RuntimeError.OutOfMemory;
             for (lit.payload) |elem| {
@@ -1784,7 +1785,7 @@ pub const Interpreter = struct {
     }
 
     fn evalArrayLiteral(self: *Interpreter, arr: *ast.ArrayLiteral) RuntimeError!Value {
-        var elements = std.ArrayListUnmanaged(Value){};
+        var elements = std.ArrayListUnmanaged(Value).empty;
         elements.ensureTotalCapacity(self.allocator, arr.elements.len) catch return RuntimeError.OutOfMemory;
 
         for (arr.elements) |elem| {
@@ -1796,7 +1797,7 @@ pub const Interpreter = struct {
     }
 
     fn evalTupleLiteral(self: *Interpreter, tup: *ast.TupleLiteral) RuntimeError!Value {
-        var elements = std.ArrayListUnmanaged(Value){};
+        var elements = std.ArrayListUnmanaged(Value).empty;
         elements.ensureTotalCapacity(self.allocator, tup.elements.len) catch return RuntimeError.OutOfMemory;
 
         for (tup.elements) |elem| {
@@ -2243,7 +2244,7 @@ pub const Interpreter = struct {
         const gop = self.type_methods.getOrPut(self.allocator, type_name) catch
             return RuntimeError.OutOfMemory;
         if (!gop.found_existing) {
-            gop.value_ptr.* = .{};
+            gop.value_ptr.* = .empty;
         }
 
         // Reuse existing type namespace struct if present, to avoid orphaning allocations
@@ -2255,7 +2256,7 @@ pub const Interpreter = struct {
                 return RuntimeError.OutOfMemory;
             s.* = .{
                 .type_name = type_name,
-                .fields = .{},
+                .fields = .empty,
             };
             break :blk s;
         };
@@ -2271,7 +2272,7 @@ pub const Interpreter = struct {
                 return RuntimeError.OutOfMemory;
             errdefer self.allocator.destroy(func_val);
 
-            var params = std.ArrayListUnmanaged(values.FunctionValue.FunctionParam){};
+            var params = std.ArrayListUnmanaged(values.FunctionValue.FunctionParam).empty;
             for (method.params) |param| {
                 params.append(self.allocator, .{ .name = param.name }) catch {
                     params.deinit(self.allocator);
@@ -2319,7 +2320,7 @@ pub const Interpreter = struct {
             errdefer self.allocator.destroy(func_val);
 
             // Convert params
-            var params = std.ArrayListUnmanaged(values.FunctionValue.FunctionParam){};
+            var params = std.ArrayListUnmanaged(values.FunctionValue.FunctionParam).empty;
             for (func.params) |param| {
                 params.append(self.allocator, .{ .name = param.name }) catch return RuntimeError.OutOfMemory;
             }
@@ -2406,7 +2407,7 @@ pub const Interpreter = struct {
             if (self.global_env.get(builtin.name)) |func_val| {
                 if (func_val == .function) {
                     // Evaluate arguments
-                    var args = std.ArrayListUnmanaged(Value){};
+                    var args = std.ArrayListUnmanaged(Value).empty;
                     defer args.deinit(self.allocator);
 
                     for (builtin.args) |arg| {
@@ -2556,7 +2557,7 @@ pub const Interpreter = struct {
 
         // Create the array with repeated values (use runtime arena for auto-cleanup)
         const alloc = self.runtimeAllocator();
-        var elements = std.ArrayListUnmanaged(Value){};
+        var elements = std.ArrayListUnmanaged(Value).empty;
         elements.ensureTotalCapacity(alloc, count) catch return RuntimeError.OutOfMemory;
         for (0..count) |_| {
             elements.appendAssumeCapacity(value);
@@ -2614,7 +2615,7 @@ fn builtinReadline(allocator: Allocator, args: []const Value) RuntimeError!Value
     const stdin = getStdIn();
 
     // Read line byte-by-byte using Zig 0.15 API
-    var result = std.ArrayListUnmanaged(u8){};
+    var result = std.ArrayListUnmanaged(u8).empty;
     errdefer result.deinit(allocator);
 
     const max_line_size: usize = 4096;
@@ -3001,7 +3002,7 @@ fn builtinStubProcessRun(allocator: Allocator, _: []const Value) RuntimeError!Va
 
 fn builtinTimestampNow(_: Allocator, args: []const Value) RuntimeError!Value {
     if (args.len != 0) return RuntimeError.InvalidOperation;
-    const now: i64 = std.time.timestamp();
+    const now: i64 = compat.timestamp();
     return .{ .int = .{ .value = now, .type_ = .i64_ } };
 }
 

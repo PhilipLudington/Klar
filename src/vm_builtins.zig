@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const compat = @import("compat.zig");
 const Allocator = std.mem.Allocator;
 const vm_value = @import("vm_value.zig");
 const Value = vm_value.Value;
@@ -136,7 +137,7 @@ fn nativeReadline(allocator: Allocator, args: []const Value) RuntimeError!Value 
     const stdin = getStdIn();
 
     // Read line byte-by-byte using Zig 0.15 API
-    var result = std.ArrayListUnmanaged(u8){};
+    var result = std.ArrayListUnmanaged(u8).empty;
     defer result.deinit(allocator);
 
     const max_line_size: usize = 4096;
@@ -443,7 +444,7 @@ fn debugValueToString(allocator: Allocator, value: Value, depth: usize) RuntimeE
         .bool_ => |b| if (b) "true" else "false",
         .char_ => |c| blk: {
             // Format as 'c' with proper escaping
-            var buf = std.ArrayListUnmanaged(u8){};
+            var buf = std.ArrayListUnmanaged(u8).empty;
             errdefer buf.deinit(allocator);
             buf.append(allocator, '\'') catch return RuntimeError.OutOfMemory;
 
@@ -458,7 +459,7 @@ fn debugValueToString(allocator: Allocator, value: Value, depth: usize) RuntimeE
         .void_ => "void",
         .string => |s| blk: {
             // Format as "string" with quotes
-            var buf = std.ArrayListUnmanaged(u8){};
+            var buf = std.ArrayListUnmanaged(u8).empty;
             errdefer buf.deinit(allocator);
             buf.append(allocator, '"') catch return RuntimeError.OutOfMemory;
 
@@ -478,7 +479,7 @@ fn debugValueToString(allocator: Allocator, value: Value, depth: usize) RuntimeE
             break :blk buf.toOwnedSlice(allocator) catch return RuntimeError.OutOfMemory;
         },
         .array => |a| blk: {
-            var buf = std.ArrayListUnmanaged(u8){};
+            var buf = std.ArrayListUnmanaged(u8).empty;
             errdefer buf.deinit(allocator);
             buf.append(allocator, '[') catch return RuntimeError.OutOfMemory;
 
@@ -495,7 +496,7 @@ fn debugValueToString(allocator: Allocator, value: Value, depth: usize) RuntimeE
             break :blk buf.toOwnedSlice(allocator) catch return RuntimeError.OutOfMemory;
         },
         .tuple => |t| blk: {
-            var buf = std.ArrayListUnmanaged(u8){};
+            var buf = std.ArrayListUnmanaged(u8).empty;
             errdefer buf.deinit(allocator);
             buf.append(allocator, '(') catch return RuntimeError.OutOfMemory;
 
@@ -512,7 +513,7 @@ fn debugValueToString(allocator: Allocator, value: Value, depth: usize) RuntimeE
             break :blk buf.toOwnedSlice(allocator) catch return RuntimeError.OutOfMemory;
         },
         .struct_ => |s| blk: {
-            var buf = std.ArrayListUnmanaged(u8){};
+            var buf = std.ArrayListUnmanaged(u8).empty;
             errdefer buf.deinit(allocator);
 
             // Start with type name
@@ -678,7 +679,7 @@ fn nativeEnvSet(allocator: Allocator, args: []const Value) RuntimeError!Value {
 }
 
 fn nativeTimestampNow(_: Allocator, _: []const Value) RuntimeError!Value {
-    const now: i64 = std.time.timestamp();
+    const now: i64 = compat.timestamp();
     return Value.fromInt(now);
 }
 
@@ -831,7 +832,7 @@ fn valueToString(allocator: Allocator, value: Value) RuntimeError![]const u8 {
 // Helper Functions
 // ============================================================================
 
-fn getStdOut() std.fs.File {
+fn getStdOut() compat.File {
     if (comptime builtin.os.tag == .windows) {
         return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) orelse
             @panic("failed to get stdout handle") };
@@ -840,7 +841,7 @@ fn getStdOut() std.fs.File {
     }
 }
 
-fn getStdIn() std.fs.File {
+fn getStdIn() compat.File {
     if (comptime builtin.os.tag == .windows) {
         return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_INPUT_HANDLE) orelse
             @panic("failed to get stdin handle") };
@@ -849,7 +850,7 @@ fn getStdIn() std.fs.File {
     }
 }
 
-fn getStdErr() std.fs.File {
+fn getStdErr() compat.File {
     if (comptime builtin.os.tag == .windows) {
         return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) orelse
             @panic("failed to get stderr handle") };

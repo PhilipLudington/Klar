@@ -6,6 +6,7 @@
 //! returns the paths needed for linking and module resolution.
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const manifest = @import("../pkg/manifest.zig");
 const kira_manifest = @import("kira_manifest.zig");
@@ -62,18 +63,18 @@ pub fn buildKiraDependencies(
 ) KiraBuildError!KiraBuildResult {
     var result = KiraBuildResult{
         .allocator = allocator,
-        .extra_objects = .{},
-        .search_paths = .{},
-        .allocated_strings = .{},
+        .extra_objects = .empty,
+        .search_paths = .empty,
+        .allocated_strings = .empty,
     };
 
     // Ensure build directory exists
-    std.fs.cwd().makePath(build_dir) catch return KiraBuildError.OutOfMemory;
+    compat.cwd().makePath(build_dir) catch return KiraBuildError.OutOfMemory;
 
     // Ensure deps directory exists for generated .kl files
     const deps_dir = std.fmt.allocPrint(allocator, "{s}/deps", .{project_root}) catch return KiraBuildError.OutOfMemory;
     result.allocated_strings.append(allocator, deps_dir) catch return KiraBuildError.OutOfMemory;
-    std.fs.cwd().makePath(deps_dir) catch return KiraBuildError.OutOfMemory;
+    compat.cwd().makePath(deps_dir) catch return KiraBuildError.OutOfMemory;
 
     // Add deps directory as search path for module resolution
     result.search_paths.append(allocator, deps_dir) catch return KiraBuildError.OutOfMemory;
@@ -126,7 +127,7 @@ fn buildSingleKiraDependency(
     result.allocated_strings.append(allocator, abs_kira_dir) catch return KiraBuildError.OutOfMemory;
 
     // Verify the directory exists
-    std.fs.cwd().access(abs_kira_dir, .{}) catch {
+    compat.cwd().access(abs_kira_dir, .{}) catch {
         printError(stderr, "Error: Kira dependency '{s}' path not found: {s}\n", .{ dep_name, abs_kira_dir });
         return KiraBuildError.DependencyPathNotFound;
     };
@@ -191,7 +192,7 @@ fn findKiraEntry(allocator: Allocator, kira_dir: []const u8, dep_name: []const u
 
     for (candidates) |candidate| {
         const path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ kira_dir, candidate });
-        if (std.fs.cwd().access(path, .{})) |_| {
+        if (compat.cwd().access(path, .{})) |_| {
             return path;
         } else |_| {
             allocator.free(path);
@@ -200,7 +201,7 @@ fn findKiraEntry(allocator: Allocator, kira_dir: []const u8, dep_name: []const u
 
     // Try <dep_name>.ki
     const dep_path = try std.fmt.allocPrint(allocator, "{s}/{s}.ki", .{ kira_dir, dep_name });
-    if (std.fs.cwd().access(dep_path, .{})) |_| {
+    if (compat.cwd().access(dep_path, .{})) |_| {
         return dep_path;
     } else |_| {
         allocator.free(dep_path);
@@ -211,8 +212,8 @@ fn findKiraEntry(allocator: Allocator, kira_dir: []const u8, dep_name: []const u
 
 /// Check if a target file needs rebuilding based on source file modification time.
 fn needsRebuild(source: []const u8, target_file: []const u8) bool {
-    const source_stat = std.fs.cwd().statFile(source) catch return true;
-    const target_stat = std.fs.cwd().statFile(target_file) catch return true;
+    const source_stat = compat.cwd().statFile(source) catch return true;
+    const target_stat = compat.cwd().statFile(target_file) catch return true;
 
     // Rebuild if source is newer than target
     return source_stat.mtime > target_stat.mtime;
@@ -222,7 +223,7 @@ fn needsRebuild(source: []const u8, target_file: []const u8) bool {
 fn runKiraBuild(allocator: Allocator, entry_file: []const u8, stderr: anytype) KiraBuildError!void {
     const argv = [_][]const u8{ "kira", "build", "--lib", entry_file };
 
-    var child = std.process.Child.init(&argv, allocator);
+    var child = compat.Child.init(&argv, allocator);
     child.stderr_behavior = .Inherit;
     child.stdout_behavior = .Inherit;
 
@@ -256,12 +257,12 @@ fn runKiraBuild(allocator: Allocator, entry_file: []const u8, stderr: anytype) K
 
 /// Compile a C file to an object file using the system C compiler.
 fn compileCToObject(allocator: Allocator, c_file: []const u8, obj_file: []const u8, stderr: anytype) KiraBuildError!void {
-    const cc_owned = if (@import("builtin").os.tag == .windows) null else (std.process.getEnvVarOwned(allocator, "CC") catch null);
+    const cc_owned = if (@import("builtin").os.tag == .windows) null else (compat.getEnvVarOwned(allocator, "CC") catch null);
     defer if (cc_owned) |owned| allocator.free(owned);
     const cc: []const u8 = cc_owned orelse if (@import("builtin").os.tag == .windows) "cl.exe" else "cc";
     const argv = [_][]const u8{ cc, "-c", "-o", obj_file, c_file };
 
-    var child = std.process.Child.init(&argv, allocator);
+    var child = compat.Child.init(&argv, allocator);
     child.stderr_behavior = .Inherit;
     child.stdout_behavior = .Inherit;
 
@@ -297,7 +298,7 @@ fn compileCToObject(allocator: Allocator, c_file: []const u8, obj_file: []const 
 /// Uses the in-process manifest parser (same as the `import-kira` CLI command).
 fn runImportKira(allocator: Allocator, json_file: []const u8, kl_file: []const u8, dep_name: []const u8, stderr: anytype) KiraBuildError!void {
     // Use the in-process manifest parser and code generator
-    const json_data = std.fs.cwd().readFileAlloc(allocator, json_file, 1024 * 1024) catch {
+    const json_data = compat.cwd().readFileAlloc(allocator, json_file, 1024 * 1024) catch {
         printError(stderr, "Error: Failed to read Kira manifest: {s}\n", .{json_file});
         return KiraBuildError.ImportKiraFailed;
     };
@@ -316,7 +317,7 @@ fn runImportKira(allocator: Allocator, json_file: []const u8, kl_file: []const u
     defer allocator.free(generated);
 
     // Write to output file
-    var file = std.fs.cwd().createFile(kl_file, .{}) catch {
+    var file = compat.cwd().createFile(kl_file, .{}) catch {
         printError(stderr, "Error: Failed to write generated file: {s}\n", .{kl_file});
         return KiraBuildError.ImportKiraFailed;
     };

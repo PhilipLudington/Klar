@@ -23,7 +23,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const fs = std.fs;
+const fs = @import("../compat.zig");
 
 /// Error types for manifest operations.
 pub const ManifestError = error{
@@ -306,7 +306,7 @@ pub fn parseManifest(allocator: Allocator, content: []const u8, root_dir: []cons
     };
 
     // Authors (optional)
-    var authors = std.ArrayListUnmanaged([]const u8){};
+    var authors = std.ArrayListUnmanaged([]const u8).empty;
     if (pkg.get("authors")) |authors_value| {
         if (authors_value == .array) {
             for (authors_value.array.items) |item| {
@@ -336,7 +336,7 @@ pub fn parseManifest(allocator: Allocator, content: []const u8, root_dir: []cons
     } else null;
 
     // Parse dependencies
-    var deps = std.StringHashMapUnmanaged(Dependency){};
+    var deps = std.StringHashMapUnmanaged(Dependency).empty;
     if (root.object.get("dependencies")) |deps_value| {
         if (deps_value == .object) {
             var it = deps_value.object.iterator();
@@ -349,7 +349,7 @@ pub fn parseManifest(allocator: Allocator, content: []const u8, root_dir: []cons
     }
 
     // Parse dev-dependencies
-    var dev_deps = std.StringHashMapUnmanaged(Dependency){};
+    var dev_deps = std.StringHashMapUnmanaged(Dependency).empty;
     if (root.object.get("dev-dependencies")) |deps_value| {
         if (deps_value == .object) {
             var it = deps_value.object.iterator();
@@ -362,7 +362,7 @@ pub fn parseManifest(allocator: Allocator, content: []const u8, root_dir: []cons
     }
 
     // Parse kira-dependencies
-    var kira_deps = std.StringHashMapUnmanaged(KiraDependency){};
+    var kira_deps = std.StringHashMapUnmanaged(KiraDependency).empty;
     if (root.object.get("kira-dependencies")) |deps_value| {
         if (deps_value == .object) {
             var it = deps_value.object.iterator();
@@ -455,8 +455,9 @@ fn parseKiraDependency(allocator: Allocator, value: std.json.Value) !KiraDepende
 
 /// Generate a default manifest for a new project.
 pub fn generateDefault(allocator: Allocator, name: []const u8, is_lib: bool) ![]const u8 {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    const writer = buffer.writer(allocator);
+    var buffer = std.ArrayListUnmanaged(u8).empty;
+    const compat = @import("../compat.zig");
+    const writer = compat.listWriter(&buffer, allocator);
 
     const entry = if (is_lib) "src/lib.kl" else "src/main.kl";
 

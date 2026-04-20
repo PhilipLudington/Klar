@@ -90,7 +90,7 @@ pub const VariableState = struct {
             .state = .owned,
             .decl_span = decl_span,
             .move_span = null,
-            .borrows = .{},
+            .borrows = .empty,
             .is_copy = is_copy,
             .ty = ty,
             .name = name,
@@ -244,7 +244,7 @@ pub const OwnershipScope = struct {
     pub fn init(allocator: Allocator, parent: ?*OwnershipScope, kind: Kind) OwnershipScope {
         const depth = if (parent) |p| p.depth + 1 else 0;
         return .{
-            .variables = .{},
+            .variables = .empty,
             .parent = parent,
             .depth = depth,
             .kind = kind,
@@ -287,7 +287,7 @@ pub const OwnershipScope = struct {
     /// Get all variables that need to be dropped when this scope exits.
     /// Returns variables that are still owned (not moved) and not Copy types.
     pub fn getDroppableVariables(self: *OwnershipScope, allocator: Allocator) ![]const []const u8 {
-        var result = std.ArrayListUnmanaged([]const u8){};
+        var result = std.ArrayListUnmanaged([]const u8).empty;
         // Check if the map has been initialized before iterating
         if (self.variables.capacity() > 0) {
             var it = self.variables.iterator();

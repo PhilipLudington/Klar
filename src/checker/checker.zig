@@ -167,7 +167,7 @@ pub const Scope = struct {
 
     pub fn init(allocator: Allocator, parent: ?*Scope, kind: Kind) Scope {
         return .{
-            .symbols = .{},
+            .symbols = .empty,
             .parent = parent,
             .kind = kind,
             .allocator = allocator,
@@ -448,65 +448,65 @@ pub const TypeChecker = struct {
             .allocator = allocator,
             .type_builder = TypeBuilder.init(allocator),
             .type_env = TypeEnv.init(allocator),
-            .errors = .{},
+            .errors = .empty,
             .global_scope = global_scope,
             .current_scope = global_scope,
             .current_return_type = null,
             .closure_scope = null,
-            .closure_captures = .{},
-            .type_param_scopes = .{},
-            .monomorphized_functions = .{},
-            .generic_functions = .{},
-            .async_function_names = .{},
-            .call_resolutions = .{},
-            .monomorphized_structs = .{},
-            .monomorphized_enums = .{},
-            .generic_enum_types = .{},
-            .generic_struct_types = .{},
-            .struct_methods = .{},
-            .monomorphized_methods = .{},
-            .trait_registry = .{},
-            .trait_types = .{},
-            .extern_types = .{},
-            .trait_impls = .{},
-            .type_var_slices = .{},
-            .substituted_type_slices = .{},
-            .trait_method_calls = .{},
+            .closure_captures = .empty,
+            .type_param_scopes = .empty,
+            .monomorphized_functions = .empty,
+            .generic_functions = .empty,
+            .async_function_names = .empty,
+            .call_resolutions = .empty,
+            .monomorphized_structs = .empty,
+            .monomorphized_enums = .empty,
+            .generic_enum_types = .empty,
+            .generic_struct_types = .empty,
+            .struct_methods = .empty,
+            .monomorphized_methods = .empty,
+            .trait_registry = .empty,
+            .trait_types = .empty,
+            .extern_types = .empty,
+            .trait_impls = .empty,
+            .type_var_slices = .empty,
+            .substituted_type_slices = .empty,
+            .trait_method_calls = .empty,
             .current_trait_type = null,
             .current_impl_type = null,
-            .module_registry = .{},
+            .module_registry = .empty,
             .current_module = null,
             .module_resolver_ref = null,
-            .module_scopes = .{},
+            .module_scopes = .empty,
             .skip_missing_modules = false,
             .skip_existing_imports = false,
-            .module_scope_map = .{},
-            .comptime_strings = .{},
-            .comptime_bools = .{},
-            .comptime_ints = .{},
-            .comptime_repeats = .{},
-            .comptime_values = .{},
-            .comptime_functions = .{},
-            .comptime_call_values = .{},
-            .comptime_builtin_values = .{},
-            .constant_values = .{},
+            .module_scope_map = .empty,
+            .comptime_strings = .empty,
+            .comptime_bools = .empty,
+            .comptime_ints = .empty,
+            .comptime_repeats = .empty,
+            .comptime_values = .empty,
+            .comptime_functions = .empty,
+            .comptime_call_values = .empty,
+            .comptime_builtin_values = .empty,
+            .constant_values = .empty,
             .comptime_interpreter = null,
             .comptime_depth = 0,
             .checking_comptime_function_body = false,
-            .error_conversions = .{},
+            .error_conversions = .empty,
             .expected_type = null,
             .in_unsafe_context = false,
             .current_async_context = false,
-            .debug_call_types = .{},
+            .debug_call_types = .empty,
             .check_test_decls = false,
-            .deprecated_functions = .{},
-            .meta_group_names = .{},
+            .deprecated_functions = .empty,
+            .meta_group_names = .empty,
             .error_count = 0,
             .warning_count = 0,
             .in_pure_function = false,
             .pure_function_span = null,
-            .pure_functions = .{},
-            .meta_definitions = .{},
+            .pure_functions = .empty,
+            .meta_definitions = .empty,
             .lenient_custom_meta = false,
         };
         checker.initBuiltins() catch @panic("Failed to initialize builtin types");
@@ -2434,7 +2434,7 @@ pub const TypeChecker = struct {
         const file_write_key = try std.fmt.allocPrint(self.allocator, "File:Write", .{});
         const file_write_result = try self.trait_impls.getOrPut(self.allocator, file_write_key);
         if (!file_write_result.found_existing) {
-            file_write_result.value_ptr.* = .{};
+            file_write_result.value_ptr.* = .empty;
         }
         try file_write_result.value_ptr.append(self.allocator, .{
             .trait_name = "Write",
@@ -2448,7 +2448,7 @@ pub const TypeChecker = struct {
         const file_read_key = try std.fmt.allocPrint(self.allocator, "File:Read", .{});
         const file_read_result = try self.trait_impls.getOrPut(self.allocator, file_read_key);
         if (!file_read_result.found_existing) {
-            file_read_result.value_ptr.* = .{};
+            file_read_result.value_ptr.* = .empty;
         }
         try file_read_result.value_ptr.append(self.allocator, .{
             .trait_name = "Read",
@@ -2462,7 +2462,7 @@ pub const TypeChecker = struct {
         const stdout_write_key = try std.fmt.allocPrint(self.allocator, "Stdout:Write", .{});
         const stdout_write_result = try self.trait_impls.getOrPut(self.allocator, stdout_write_key);
         if (!stdout_write_result.found_existing) {
-            stdout_write_result.value_ptr.* = .{};
+            stdout_write_result.value_ptr.* = .empty;
         }
         try stdout_write_result.value_ptr.append(self.allocator, .{
             .trait_name = "Write",
@@ -2476,7 +2476,7 @@ pub const TypeChecker = struct {
         const stderr_write_key = try std.fmt.allocPrint(self.allocator, "Stderr:Write", .{});
         const stderr_write_result = try self.trait_impls.getOrPut(self.allocator, stderr_write_key);
         if (!stderr_write_result.found_existing) {
-            stderr_write_result.value_ptr.* = .{};
+            stderr_write_result.value_ptr.* = .empty;
         }
         try stderr_write_result.value_ptr.append(self.allocator, .{
             .trait_name = "Write",
@@ -2490,7 +2490,7 @@ pub const TypeChecker = struct {
         const stdin_read_key = try std.fmt.allocPrint(self.allocator, "Stdin:Read", .{});
         const stdin_read_result = try self.trait_impls.getOrPut(self.allocator, stdin_read_key);
         if (!stdin_read_result.found_existing) {
-            stdin_read_result.value_ptr.* = .{};
+            stdin_read_result.value_ptr.* = .empty;
         }
         try stdin_read_result.value_ptr.append(self.allocator, .{
             .trait_name = "Read",
@@ -2712,13 +2712,13 @@ pub const TypeChecker = struct {
     /// Push a new type parameter scope and register the given type parameters.
     /// Returns the TypeVar types for each parameter, in order.
     pub fn pushTypeParams(self: *TypeChecker, type_params: []const ast.TypeParam) ![]const types.TypeVar {
-        var scope = std.StringHashMapUnmanaged(types.TypeVar){};
-        var type_vars = std.ArrayListUnmanaged(types.TypeVar){};
+        var scope = std.StringHashMapUnmanaged(types.TypeVar).empty;
+        var type_vars = std.ArrayListUnmanaged(types.TypeVar).empty;
         defer type_vars.deinit(self.allocator);
 
         for (type_params) |param| {
             // Resolve trait bounds
-            var bounds = std.ArrayListUnmanaged(*types.TraitType){};
+            var bounds = std.ArrayListUnmanaged(*types.TraitType).empty;
             defer bounds.deinit(self.allocator);
 
             for (param.bounds) |bound_expr| {
@@ -2770,7 +2770,7 @@ pub const TypeChecker = struct {
     /// Generate a mangled name for a monomorphized function.
     /// E.g., "identity" with [i32] becomes "identity$i32"
     fn mangleFunctionName(self: *TypeChecker, base_name: []const u8, type_args: []const Type) ![]const u8 {
-        var buffer = std.ArrayListUnmanaged(u8){};
+        var buffer = std.ArrayListUnmanaged(u8).empty;
         defer buffer.deinit(self.allocator);
 
         try buffer.appendSlice(self.allocator, base_name);
@@ -2930,7 +2930,7 @@ pub const TypeChecker = struct {
         }
 
         // Create substitution map from type params to concrete types
-        var substitutions = std.AutoHashMapUnmanaged(u32, Type){};
+        var substitutions = std.AutoHashMapUnmanaged(u32, Type).empty;
         defer substitutions.deinit(self.allocator);
 
         for (original_struct.type_params, 0..) |type_param, i| {
@@ -2950,7 +2950,7 @@ pub const TypeChecker = struct {
         }
 
         // Create new struct type with substituted field types
-        var concrete_fields = std.ArrayListUnmanaged(types.StructField){};
+        var concrete_fields = std.ArrayListUnmanaged(types.StructField).empty;
         defer concrete_fields.deinit(self.allocator);
 
         for (original_struct.fields) |field| {
@@ -2987,7 +2987,7 @@ pub const TypeChecker = struct {
     /// Generate a mangled name for a struct instantiation.
     /// E.g., "Pair" with [i32, string] -> "Pair$i32$string"
     fn mangleStructName(self: *TypeChecker, struct_name: []const u8, type_args: []const Type) ![]const u8 {
-        var result = std.ArrayListUnmanaged(u8){};
+        var result = std.ArrayListUnmanaged(u8).empty;
         errdefer result.deinit(self.allocator);
 
         try result.appendSlice(self.allocator, struct_name);
@@ -3018,7 +3018,7 @@ pub const TypeChecker = struct {
         }
 
         // Create substitution map from type params to concrete types
-        var substitutions = std.AutoHashMapUnmanaged(u32, Type){};
+        var substitutions = std.AutoHashMapUnmanaged(u32, Type).empty;
         defer substitutions.deinit(self.allocator);
 
         for (original_enum.type_params, 0..) |type_param, i| {
@@ -3028,14 +3028,14 @@ pub const TypeChecker = struct {
         }
 
         // Create new enum type with substituted variant payloads
-        var concrete_variants = std.ArrayListUnmanaged(types.EnumVariant){};
+        var concrete_variants = std.ArrayListUnmanaged(types.EnumVariant).empty;
         defer concrete_variants.deinit(self.allocator);
 
         for (original_enum.variants) |variant| {
             const concrete_payload: ?types.VariantPayload = if (variant.payload) |payload| blk: {
                 break :blk switch (payload) {
                     .tuple => |tuple_types| tup: {
-                        var new_types = std.ArrayListUnmanaged(Type){};
+                        var new_types = std.ArrayListUnmanaged(Type).empty;
                         defer new_types.deinit(self.allocator);
                         for (tuple_types) |t| {
                             const concrete_type = try self.substituteTypeParams(t, substitutions);
@@ -3044,7 +3044,7 @@ pub const TypeChecker = struct {
                         break :tup .{ .tuple = try self.allocator.dupe(Type, new_types.items) };
                     },
                     .struct_ => |struct_fields| str: {
-                        var new_fields = std.ArrayListUnmanaged(types.StructField){};
+                        var new_fields = std.ArrayListUnmanaged(types.StructField).empty;
                         defer new_fields.deinit(self.allocator);
                         for (struct_fields) |f| {
                             const concrete_type = try self.substituteTypeParams(f.type_, substitutions);
@@ -3618,7 +3618,7 @@ pub const TypeChecker = struct {
         cursor_offset: usize,
         root_scope: *const Scope,
     ) ?Type {
-        var local_symbols = std.ArrayListUnmanaged(Symbol){};
+        var local_symbols = std.ArrayListUnmanaged(Symbol).empty;
         defer local_symbols.deinit(self.allocator);
         self.collectLocalSymbolsAtCursor(module, cursor_offset, &local_symbols) catch {};
 
@@ -3668,14 +3668,14 @@ pub const TypeChecker = struct {
         cursor_offset: usize,
         root_scope: *const Scope,
     ) ![]ScopeEntry {
-        var local_symbols = std.ArrayListUnmanaged(Symbol){};
+        var local_symbols = std.ArrayListUnmanaged(Symbol).empty;
         defer local_symbols.deinit(self.allocator);
         try self.collectLocalSymbolsAtCursor(module, cursor_offset, &local_symbols);
 
-        var entries = std.ArrayListUnmanaged(ScopeEntry){};
+        var entries = std.ArrayListUnmanaged(ScopeEntry).empty;
         errdefer entries.deinit(self.allocator);
 
-        var seen = std.StringHashMapUnmanaged(void){};
+        var seen = std.StringHashMapUnmanaged(void).empty;
         defer seen.deinit(self.allocator);
 
         // Prefer innermost local binding when names shadow.
@@ -4169,7 +4169,7 @@ pub const TypeChecker = struct {
 
         if (is_generic) {
             // Type inference for generic function calls
-            var substitutions = std.AutoHashMapUnmanaged(u32, Type){};
+            var substitutions = std.AutoHashMapUnmanaged(u32, Type).empty;
             defer substitutions.deinit(self.allocator);
 
             // First pass: check all argument types and try to infer type variables
@@ -4208,7 +4208,7 @@ pub const TypeChecker = struct {
                     const func_name = call.callee.identifier.name;
 
                     // Collect inferred type arguments in order
-                    var type_args = std.ArrayListUnmanaged(Type){};
+                    var type_args = std.ArrayListUnmanaged(Type).empty;
                     defer type_args.deinit(self.allocator);
 
                     // Collect all inferred types from the substitution map
@@ -4433,7 +4433,7 @@ pub const TypeChecker = struct {
                     while (mono_iter.next()) |mono| {
                         if (std.mem.eql(u8, mono.mangled_name, struct_type.name)) {
                             // Build substitution map from impl type params to concrete types
-                            var substitutions = std.AutoHashMapUnmanaged(u32, Type){};
+                            var substitutions = std.AutoHashMapUnmanaged(u32, Type).empty;
                             defer substitutions.deinit(self.allocator);
 
                             // Map method's impl type params to the struct's concrete type args
@@ -4505,7 +4505,7 @@ pub const TypeChecker = struct {
                     var enum_iter = self.monomorphized_enums.valueIterator();
                     while (enum_iter.next()) |mono| {
                         if (std.mem.eql(u8, mono.mangled_name, enum_type.name)) {
-                            var substitutions = std.AutoHashMapUnmanaged(u32, Type){};
+                            var substitutions = std.AutoHashMapUnmanaged(u32, Type).empty;
                             defer substitutions.deinit(self.allocator);
 
                             for (enum_method.impl_type_params, 0..) |type_param, i| {
@@ -4927,7 +4927,7 @@ pub const TypeChecker = struct {
         defer self.allocator.free(canonical);
 
         var symbols = ModuleSymbols{
-            .symbols = .{},
+            .symbols = .empty,
             .module_info = mod,
         };
 
@@ -5060,7 +5060,7 @@ pub const TypeChecker = struct {
     /// Process a single import declaration.
     fn processImport(self: *TypeChecker, import_decl: ast.ImportDecl) !void {
         // Build canonical name for the imported module
-        var canonical_buf = std.ArrayListUnmanaged(u8){};
+        var canonical_buf = std.ArrayListUnmanaged(u8).empty;
         defer canonical_buf.deinit(self.allocator);
 
         for (import_decl.path, 0..) |segment, i| {
@@ -5269,7 +5269,7 @@ pub const TypeChecker = struct {
                     defer if (has_type_params) self.popTypeParams();
 
                     // Register function but don't check body yet
-                    var param_types: std.ArrayListUnmanaged(Type) = .{};
+                    var param_types: std.ArrayListUnmanaged(Type) = .empty;
                     defer param_types.deinit(self.allocator);
 
                     // Build comptime parameter bitmask
@@ -5602,7 +5602,7 @@ pub const TypeChecker = struct {
                     defer if (has_type_params) self.popTypeParams();
 
                     // Register function but don't check body yet
-                    var param_types: std.ArrayListUnmanaged(Type) = .{};
+                    var param_types: std.ArrayListUnmanaged(Type) = .empty;
                     defer param_types.deinit(self.allocator);
 
                     // Build comptime parameter bitmask

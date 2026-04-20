@@ -56,7 +56,7 @@ pub fn lookupStructMethod(tc: anytype, struct_name: []const u8, method_name: []c
 /// Record a monomorphized method instance for a generic struct.
 pub fn recordMethodMonomorphization(tc: anytype, struct_type: *types.StructType, method: StructMethod) !void {
     // Create mangled method name first for O(1) hash lookup: Pair$i32$string_get_first
-    var mangled_name_buf = std.ArrayListUnmanaged(u8){};
+    var mangled_name_buf = std.ArrayListUnmanaged(u8).empty;
     errdefer mangled_name_buf.deinit(tc.allocator);
     try mangled_name_buf.appendSlice(tc.allocator, struct_type.name);
     try mangled_name_buf.append(tc.allocator, '_');
@@ -80,7 +80,7 @@ pub fn recordMethodMonomorphization(tc: anytype, struct_type: *types.StructType,
     }
 
     // Substitute type params in the method's function type
-    var substitutions = std.AutoHashMapUnmanaged(u32, Type){};
+    var substitutions = std.AutoHashMapUnmanaged(u32, Type).empty;
     defer substitutions.deinit(tc.allocator);
 
     for (method.impl_type_params, 0..) |type_param, i| {

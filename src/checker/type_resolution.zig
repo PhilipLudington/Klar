@@ -53,7 +53,7 @@ pub fn substituteTypeParams(tc: anytype, typ: Type, substitutions: std.AutoHashM
         // Tuple - substitute all element types
         .tuple => |tup| {
             var changed = false;
-            var new_elements = std.ArrayListUnmanaged(Type){};
+            var new_elements = std.ArrayListUnmanaged(Type).empty;
             defer new_elements.deinit(tc.allocator);
 
             for (tup.elements) |elem| {
@@ -86,7 +86,7 @@ pub fn substituteTypeParams(tc: anytype, typ: Type, substitutions: std.AutoHashM
         // Function - substitute param and return types
         .function => |func| {
             var changed = false;
-            var new_params = std.ArrayListUnmanaged(Type){};
+            var new_params = std.ArrayListUnmanaged(Type).empty;
             defer new_params.deinit(tc.allocator);
 
             for (func.params) |param_type| {
@@ -116,7 +116,7 @@ pub fn substituteTypeParams(tc: anytype, typ: Type, substitutions: std.AutoHashM
             const new_base = try substituteTypeParams(tc, app.base, substitutions);
             var changed = !app.base.eql(new_base);
 
-            var new_args = std.ArrayListUnmanaged(Type){};
+            var new_args = std.ArrayListUnmanaged(Type).empty;
             defer new_args.deinit(tc.allocator);
 
             for (app.args) |arg| {
@@ -289,7 +289,7 @@ pub fn substituteTypeParams(tc: anytype, typ: Type, substitutions: std.AutoHashM
         // Extern fn - substitute param and return types
         .extern_fn => |ef| {
             var changed = false;
-            var new_params = std.ArrayListUnmanaged(Type){};
+            var new_params = std.ArrayListUnmanaged(Type).empty;
             defer new_params.deinit(tc.allocator);
 
             for (ef.params) |param| {
@@ -691,7 +691,7 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
             return try tc.type_builder.sliceType(elem_type);
         },
         .tuple => |t| {
-            var elem_types: std.ArrayListUnmanaged(Type) = .{};
+            var elem_types: std.ArrayListUnmanaged(Type) = .empty;
             defer elem_types.deinit(tc.allocator);
             for (t.elements) |elem| {
                 try elem_types.append(tc.allocator, try resolveTypeExpr(tc, elem));
@@ -708,7 +708,7 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
             return try tc.type_builder.resultType(ok_type, err_type);
         },
         .function => |f| {
-            var param_types: std.ArrayListUnmanaged(Type) = .{};
+            var param_types: std.ArrayListUnmanaged(Type) = .empty;
             defer param_types.deinit(tc.allocator);
             for (f.params) |param| {
                 try param_types.append(tc.allocator, try resolveTypeExpr(tc, param));
@@ -717,7 +717,7 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
             return try tc.type_builder.functionType(param_types.items, ret_type);
         },
         .extern_function => |ef| {
-            var param_types: std.ArrayListUnmanaged(Type) = .{};
+            var param_types: std.ArrayListUnmanaged(Type) = .empty;
             defer param_types.deinit(tc.allocator);
             for (ef.params) |param| {
                 try param_types.append(tc.allocator, try resolveTypeExpr(tc, param));
@@ -955,7 +955,7 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
 
             // Generic user-defined type
             const base = try resolveTypeExpr(tc, g.base);
-            var args: std.ArrayListUnmanaged(Type) = .{};
+            var args: std.ArrayListUnmanaged(Type) = .empty;
             defer args.deinit(tc.allocator);
             for (g.args) |arg| {
                 try args.append(tc.allocator, try resolveTypeExpr(tc, arg));

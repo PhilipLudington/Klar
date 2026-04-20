@@ -71,9 +71,9 @@ pub const Lowerer = struct {
         return .{
             .allocator = allocator,
             .builder = Builder.init(allocator, module),
-            .named_values = .{},
-            .scope_stack = .{},
-            .loop_stack = .{},
+            .named_values = .empty,
+            .scope_stack = .empty,
+            .loop_stack = .empty,
         };
     }
 
@@ -116,9 +116,9 @@ pub const Lowerer = struct {
     /// Declare a function (create signature without body).
     fn declareFunction(self: *Lowerer, func: *ast.FunctionDecl) LowerError!void {
         // Build parameter types
-        var param_names = std.ArrayListUnmanaged([]const u8){};
+        var param_names = std.ArrayListUnmanaged([]const u8).empty;
         defer param_names.deinit(self.allocator);
-        var param_types = std.ArrayListUnmanaged(IrType){};
+        var param_types = std.ArrayListUnmanaged(IrType).empty;
         defer param_types.deinit(self.allocator);
 
         for (func.params) |param| {
@@ -151,9 +151,9 @@ pub const Lowerer = struct {
     /// Lower a function with a body.
     fn lowerFunction(self: *Lowerer, func: *ast.FunctionDecl) LowerError!void {
         // Build parameter info
-        var param_names = std.ArrayListUnmanaged([]const u8){};
+        var param_names = std.ArrayListUnmanaged([]const u8).empty;
         defer param_names.deinit(self.allocator);
-        var param_types = std.ArrayListUnmanaged(IrType){};
+        var param_types = std.ArrayListUnmanaged(IrType).empty;
         defer param_types.deinit(self.allocator);
 
         for (func.params) |param| {
@@ -573,12 +573,12 @@ pub const Lowerer = struct {
                 return self.builder.constBool(v) catch
                     return LowerError.OutOfMemory;
             },
-            .char => |_| {
+            .char => {
                 // TODO: Handle char properly
                 return self.builder.constI32(0) catch
                     return LowerError.OutOfMemory;
             },
-            .string => |_| {
+            .string => {
                 // TODO: Handle strings
                 return self.builder.constI32(0) catch
                     return LowerError.OutOfMemory;
@@ -713,7 +713,7 @@ pub const Lowerer = struct {
         };
 
         // Evaluate arguments
-        var args = std.ArrayListUnmanaged(Value){};
+        var args = std.ArrayListUnmanaged(Value).empty;
         defer args.deinit(self.allocator);
 
         for (call.args) |arg| {
@@ -842,7 +842,7 @@ pub const Lowerer = struct {
 
     fn pushScope(self: *Lowerer) LowerError!void {
         self.scope_stack.append(self.allocator, .{
-            .variables = .{},
+            .variables = .empty,
         }) catch return LowerError.OutOfMemory;
     }
 

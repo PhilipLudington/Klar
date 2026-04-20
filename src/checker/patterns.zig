@@ -200,7 +200,7 @@ fn checkVariantPattern(tc: anytype, v: *ast.VariantPattern, expected_type: Type)
     if (v.type_expr) |type_expr| {
         if (type_expr == .generic_apply and enum_def.type_params.len > 0) {
             const generic = type_expr.generic_apply;
-            var type_args = std.ArrayListUnmanaged(Type){};
+            var type_args = std.ArrayListUnmanaged(Type).empty;
             defer type_args.deinit(tc.allocator);
 
             for (generic.args) |arg| {

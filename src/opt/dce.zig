@@ -99,7 +99,7 @@ fn removeUnreachableBlocks(allocator: Allocator, func: *ir.Function) !usize {
     var reachable = std.AutoHashMap(ir.BlockId, void).init(allocator);
     defer reachable.deinit();
 
-    var worklist = std.ArrayListUnmanaged(ir.BlockId){};
+    var worklist = std.ArrayListUnmanaged(ir.BlockId).empty;
     defer worklist.deinit(allocator);
 
     // Start with entry block

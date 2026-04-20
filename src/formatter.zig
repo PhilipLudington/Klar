@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const compat = @import("compat.zig");
 const Allocator = std.mem.Allocator;
 const ast = @import("ast.zig");
 const Span = ast.Span;
@@ -32,7 +33,7 @@ pub const Comment = struct {
 /// Extract all comments from raw source text.
 /// Returns a sorted list of Comment structs.
 pub fn extractComments(allocator: Allocator, source: []const u8) ![]Comment {
-    var comments = std.ArrayListUnmanaged(Comment){};
+    var comments = std.ArrayListUnmanaged(Comment).empty;
     errdefer comments.deinit(allocator);
 
     var i: usize = 0;
@@ -160,7 +161,7 @@ pub const Formatter = struct {
             .allocator = allocator,
             .source = source,
             .comments = comments,
-            .output = .{},
+            .output = .empty,
             .indent_level = 0,
             .comment_cursor = 0,
             .config = config,
@@ -1097,7 +1098,7 @@ pub const Formatter = struct {
             .expr_stmt => |e| try self.formatExprStmt(e),
             .return_stmt => |r| try self.formatReturnStmt(r),
             .break_stmt => |b| try self.formatBreakStmt(b),
-            .continue_stmt => |_| try self.formatContinueStmt(),
+            .continue_stmt => try self.formatContinueStmt(),
             .for_loop => |f| try self.formatForLoop(f),
             .while_loop => |w| try self.formatWhileLoop(w),
             .loop_stmt => |l| try self.formatLoopStmt(l),
@@ -1875,7 +1876,7 @@ pub fn format(allocator: Allocator, source: []const u8) ![]u8 {
 
     const module = parser.parseModule() catch {
         // Write parse error details to stderr before returning
-        const stderr: std.fs.File = if (comptime builtin.os.tag == .windows)
+        const stderr: compat.File = if (comptime builtin.os.tag == .windows)
             .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) orelse
                 @panic("failed to get stderr handle") }
         else

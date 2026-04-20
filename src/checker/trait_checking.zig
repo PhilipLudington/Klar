@@ -22,7 +22,7 @@ pub fn makeTraitImplKey(tc: anytype, type_name: []const u8, trait_name: []const 
 /// Format: "TypeName:TraitName[TypeArg1,TypeArg2,...]"
 pub fn makeGenericTraitImplKey(tc: anytype, type_name: []const u8, trait_name: []const u8, type_args: []const Type) []const u8 {
     // Build the type args string
-    var args_buf = std.ArrayListUnmanaged(u8){};
+    var args_buf = std.ArrayListUnmanaged(u8).empty;
     defer args_buf.deinit(tc.allocator);
 
     args_buf.append(tc.allocator, '[') catch {};

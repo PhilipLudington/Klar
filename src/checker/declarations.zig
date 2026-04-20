@@ -63,7 +63,7 @@ fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
     defer if (has_type_params) tc.popTypeParams();
 
     // Build function type
-    var param_types: std.ArrayListUnmanaged(Type) = .{};
+    var param_types: std.ArrayListUnmanaged(Type) = .empty;
     defer param_types.deinit(tc.allocator);
 
     // Build comptime parameter bitmask
@@ -220,7 +220,7 @@ fn checkStruct(tc: anytype, struct_decl: *ast.StructDecl) void {
     }
     defer if (has_type_params) tc.popTypeParams();
 
-    var fields: std.ArrayListUnmanaged(types.StructField) = .{};
+    var fields: std.ArrayListUnmanaged(types.StructField) = .empty;
     defer fields.deinit(tc.allocator);
 
     for (struct_decl.fields) |field| {
@@ -297,7 +297,7 @@ fn checkExternBlock(tc: anytype, block: *ast.ExternBlock) void {
 
 fn checkExternFunction(tc: anytype, func: *ast.FunctionDecl) void {
     // Build function type from parameters
-    var param_types: std.ArrayListUnmanaged(Type) = .{};
+    var param_types: std.ArrayListUnmanaged(Type) = .empty;
     defer param_types.deinit(tc.allocator);
 
     for (func.params) |param| {
@@ -396,7 +396,7 @@ fn checkEnum(tc: anytype, enum_decl: *ast.EnumDecl) void {
     }) catch {};
 
     // NOW resolve variant types (enum name is in scope for self-references)
-    var variants: std.ArrayListUnmanaged(types.EnumVariant) = .{};
+    var variants: std.ArrayListUnmanaged(types.EnumVariant) = .empty;
     defer variants.deinit(tc.allocator);
 
     for (enum_decl.variants) |variant| {
@@ -426,7 +426,7 @@ fn checkEnum(tc: anytype, enum_decl: *ast.EnumDecl) void {
         const payload: ?types.VariantPayload = if (variant.payload) |p| blk: {
             break :blk switch (p) {
                 .tuple => |tuple_types| tup: {
-                    var resolved_types: std.ArrayListUnmanaged(Type) = .{};
+                    var resolved_types: std.ArrayListUnmanaged(Type) = .empty;
                     defer resolved_types.deinit(tc.allocator);
                     for (tuple_types) |t| {
                         resolved_types.append(tc.allocator, tc.resolveTypeExpr(t) catch tc.type_builder.unknownType()) catch {};
@@ -434,7 +434,7 @@ fn checkEnum(tc: anytype, enum_decl: *ast.EnumDecl) void {
                     break :tup .{ .tuple = resolved_types.toOwnedSlice(tc.allocator) catch &.{} };
                 },
                 .struct_ => |struct_fields| str: {
-                    var resolved_fields: std.ArrayListUnmanaged(types.StructField) = .{};
+                    var resolved_fields: std.ArrayListUnmanaged(types.StructField) = .empty;
                     defer resolved_fields.deinit(tc.allocator);
                     for (struct_fields) |f| {
                         resolved_fields.append(tc.allocator, .{
@@ -477,7 +477,7 @@ fn checkTrait(tc: anytype, trait_decl: *ast.TraitDecl) void {
     defer if (has_type_params) tc.popTypeParams();
 
     // Resolve super traits (trait inheritance)
-    var super_trait_list: std.ArrayListUnmanaged(*types.TraitType) = .{};
+    var super_trait_list: std.ArrayListUnmanaged(*types.TraitType) = .empty;
     defer super_trait_list.deinit(tc.allocator);
 
     for (trait_decl.super_traits) |super_trait_expr| {
@@ -498,12 +498,12 @@ fn checkTrait(tc: anytype, trait_decl: *ast.TraitDecl) void {
     }
 
     // Build associated types list
-    var associated_types: std.ArrayListUnmanaged(types.AssociatedType) = .{};
+    var associated_types: std.ArrayListUnmanaged(types.AssociatedType) = .empty;
     defer associated_types.deinit(tc.allocator);
 
     for (trait_decl.associated_types) |assoc| {
         // Resolve bounds for the associated type
-        var bounds: std.ArrayListUnmanaged(*types.TraitType) = .{};
+        var bounds: std.ArrayListUnmanaged(*types.TraitType) = .empty;
         defer bounds.deinit(tc.allocator);
 
         for (assoc.bounds) |bound_expr| {
@@ -543,7 +543,7 @@ fn checkTrait(tc: anytype, trait_decl: *ast.TraitDecl) void {
     defer tc.current_trait_type = prev_trait;
 
     // Build methods list (now Self.Item can be resolved)
-    var methods: std.ArrayListUnmanaged(types.TraitMethod) = .{};
+    var methods: std.ArrayListUnmanaged(types.TraitMethod) = .empty;
     defer methods.deinit(tc.allocator);
 
     for (trait_decl.methods) |method| {
@@ -553,7 +553,7 @@ fn checkTrait(tc: anytype, trait_decl: *ast.TraitDecl) void {
         }
 
         // Build parameter types for signature
-        var sig_params: std.ArrayListUnmanaged(Type) = .{};
+        var sig_params: std.ArrayListUnmanaged(Type) = .empty;
         defer sig_params.deinit(tc.allocator);
 
         for (method.params) |param| {
@@ -663,7 +663,7 @@ fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
             };
 
             // Resolve type arguments
-            var resolved_args = std.ArrayListUnmanaged(Type){};
+            var resolved_args = std.ArrayListUnmanaged(Type).empty;
             for (generic_apply.args) |arg_expr| {
                 const arg_type = tc.resolveTypeExpr(arg_expr) catch continue;
                 resolved_args.append(tc.allocator, arg_type) catch {};
@@ -705,7 +705,7 @@ fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
     }
 
     // Process associated type bindings from the impl block
-    var assoc_bindings: std.ArrayListUnmanaged(AssociatedTypeBinding) = .{};
+    var assoc_bindings: std.ArrayListUnmanaged(AssociatedTypeBinding) = .empty;
     defer assoc_bindings.deinit(tc.allocator);
 
     for (impl_decl.associated_types) |binding| {
@@ -775,7 +775,7 @@ fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
         }
 
         // Build the method's function type
-        var param_types: std.ArrayListUnmanaged(Type) = .{};
+        var param_types: std.ArrayListUnmanaged(Type) = .empty;
         defer param_types.deinit(tc.allocator);
 
         // Include all parameters (including self) in the function type
@@ -812,7 +812,7 @@ fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
         // Register the method in the struct_methods registry
         const result = tc.struct_methods.getOrPut(tc.allocator, struct_name) catch continue;
         if (!result.found_existing) {
-            result.value_ptr.* = .{};
+            result.value_ptr.* = .empty;
         }
 
         // Check for duplicate method
@@ -928,7 +928,7 @@ fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
             tc.makeTraitImplKey(struct_name, trait_type.name);
         const impl_result = tc.trait_impls.getOrPut(tc.allocator, impl_key) catch return;
         if (!impl_result.found_existing) {
-            impl_result.value_ptr.* = .{};
+            impl_result.value_ptr.* = .empty;
         }
 
         impl_result.value_ptr.append(tc.allocator, .{
