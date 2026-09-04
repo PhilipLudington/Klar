@@ -304,3 +304,75 @@ the same unchecked-allocation pattern the new ones copied (Fixture 4 P3/P4/P7/P1
 **Found by:** `/qa-review` calibration run over `20a5a3e` (Fixture 4), 2026-09-03 — Opus
 shard-A generalist, PRE-EXISTING `[correctness]`; call shape verified at HEAD, behaviour
 not. Fix if confirmed: branch to `Err` when `ftell < 0` and when `malloc` returns NULL.
+
+---
+
+## [ ] Bug 13: `fcntl` is declared non-variadic — on arm64 macOS the flags argument is read from the wrong place, so `FD_CLOEXEC` and `O_NONBLOCK` are silently not set
+
+**Status:** Open
+
+**Description:** `getOrDeclareFcntl` (`src/codegen/emit.zig:29236-29239` at HEAD;
+`:27249-27252` in `20a5a3e`) declares `int fcntl(int, int, ...)` as a fixed three-argument
+function — `LLVMFunctionType(i32, &param_types, 3, 0)`, the trailing `0` meaning
+"not variadic" — while the file's own convention for variadic libc calls passes `1`
+(`emit.zig:1142`, `13973`). On arm64 Apple platforms the anonymous arguments of a variadic
+callee are passed on the stack, not in registers, so a call compiled through the
+non-variadic prototype puts the third argument in `x2` and libSystem's `fcntl` wrapper
+reads its `va_arg` from the stack: `F_SETFD, FD_CLOEXEC` (`emitProcessSpawn`, claim H3)
+and `F_SETFL, flags | O_NONBLOCK` (`emitTcpSetNonblocking`) receive whatever happens to be
+there. `F_GETFL` (no third argument) is unaffected. x86_64 and Linux arm64 pass the first
+few variadic args in registers, so the mismatch is invisible there — which is why the
+tests pass on CI and the symptom would show only on Apple Silicon, as a child that
+inherits pipe fds it should not, or a socket that stays blocking.
+
+**Steps to reproduce:**
+1. On an Apple Silicon Mac, native-build a program that calls `tcp_listen`, then
+   `tcp_set_nonblocking(stream, true)` on an accepted stream, then `tcp_read` with no
+   data pending.
+2. Run it.
+
+**Expected:** `tcp_read` returns immediately with `Err(WouldBlock)` / an `EAGAIN`-shaped
+error — the socket is non-blocking.
+
+**Actual:** To be measured — expected to block, because the `F_SETFL` flags word is
+garbage (or the call fails with `EINVAL`).
+
+**Found by:** `/qa-review` calibration run over `20a5a3e` (Fixture 4, scripted run 2),
+2026-09-03 — Opus shard-A generalist, HIGH `[correctness]`. The declaration and the
+convention it breaks are verified by reading at both commits; the ABI consequence is
+Apple's documented arm64 rule (variadic arguments always on the stack), not yet executed.
+Fix: declare `fcntl` variadic (`…, 3, 1`) like the file's other variadic libc
+declarations, and add a native test that sets `O_NONBLOCK` and reads an idle socket.
+
+---
+
+## [ ] Bug 14: `src/codegen/builtins.zig` is dead code — nothing imports it, and the builtin name list now exists in four places
+
+**Status:** Open
+
+**Description:** Every `@import("builtins.zig")` in the tree resolves to
+`src/checker/builtins.zig` (`src/checker/checker.zig:22`, `src/checker/mod.zig:32`);
+`src/codegen/builtins.zig`, with its `BuiltinName` constants and `isBuiltin`, is imported
+by no file (`git grep '@import("[^"]*builtins\.zig")' HEAD -- src`). Native codegen
+dispatches on string literals directly (`emit.zig`, the `std.mem.eql(u8, name, "…")`
+chain), so a builtin has to be spelled in the checker's list, the interpreter's
+registration, the VM's table, the emitter's dispatch chain — and, uselessly, in this file.
+The `e7b54e7` (Fixture 3) and `20a5a3e` (Fixture 4) commits both extended it, and both
+PLAN.md entries count that as a deliverable. A name that is added to three of the four
+live places and not the fourth type-checks and then fails at runtime in one backend
+(Bug 7's `parse_int` shape).
+
+**Steps to reproduce:**
+1. `git grep -n 'codegen/builtins' -- src build.zig` and
+   `git grep -n '@import("builtins.zig")' -- src`.
+2. Delete `src/codegen/builtins.zig` and run `./run-build.sh`.
+
+**Expected:** Either the build breaks (the file is load-bearing) or the file is removed
+and one list is the source for the others.
+
+**Actual:** The build is unaffected; the file is maintained by hand for nothing.
+
+**Found by:** `/qa-review` calibration run over `e7b54e7` (Fixture 3, scripted),
+2026-09-03 — Opus shard-B generalist, HIGH `[duplication]`; verified with `git grep` at
+`e7b54e7` and at HEAD. Fix: delete the file, or make `emit.zig`'s dispatch and the
+checker's table read one shared list.
