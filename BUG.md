@@ -1514,3 +1514,40 @@ backend, and executed; only the tree-walking interpreter refuses, and only at ru
 running the four commands above on the installed compiler. Fix: check `sym.mutable` in the
 binary-assign path (the symbol carries it — `expressions.zig:315` reads it for references), or
 route `=` to the statement node that already checks it.
+
+---
+
+## [ ] Bug 64: HTTP stdlib computes `Content-Length` and body bounds from codepoint `len()`, not bytes — any non-ASCII body is sent short and parsed truncated
+
+**Status:** Open
+
+**Description:** On the native backend `string.len()` counts UTF-8 codepoints
+(`klar_string_char_len`) and `byte_len()` counts bytes, while `slice()` is byte-indexed and
+`tcp_write` sends `strlen` bytes. `stdlib/http_client.kl:196` and `stdlib/http_server.kl:281`
+write `Content-Length: ` + `body.len()`, so every request or response with a multibyte
+character declares fewer bytes than it sends; the peer reads a truncated body or treats the
+tail as the start of the next message. On the receiving side both files extract the body with
+`data.slice(body_start + 4, data.len())` — a byte start paired with a codepoint end — so a
+non-ASCII body is cut mid-sequence, and `find_str_in`'s `0..s.len()` search window stops
+short of `\r\n\r\n` when a header value is non-ASCII. The client's Content-Length early return
+(`http_client.kl:245`) compares `response_data.len()` (codepoints) to a byte count and never
+fires for such bodies.
+
+**Steps to reproduce:**
+1. `fn main() -> i32 { let s: string = "a€b"  println(s.len().to_string().as_str())  println(s.byte_len().to_string().as_str())  println("[" + s.slice(1, s.len()) + "]")  return 0 }` — `klar build` and run.
+2. Serve `http_ok("héllo")` from `http_server.kl` and fetch it with `curl -v`.
+
+**Expected:** `3`, `5`, `[€b]`; curl receives `Content-Length: 6` and the body `héllo`.
+
+**Actual:** (Klar 0.5.0, 2026-09-06, step 1 run) `3`, `5`, and `[` + one broken byte + `]` —
+`slice(1, s.len())` returns bytes 1..3 of a 5-byte string. Step 2 was not run: by the code at
+`http_server.kl:281` the header is `Content-Length: 5` for the 6-byte body `héllo` (`len()` = 5
+per step 1), and what the client does with a short declaration is the client's business — the
+wire is wrong either way.
+
+**Found by:** `/qa-review` fixture-4 calibration runs (`fable+low`, 2026-09-05 23:58 and
+2026-09-06 00:06; also the `fable+sev` run of 2026-09-05 22:59), each filing it CRITICAL
+independently; verified 2026-09-06 by running step 1 on the installed compiler and by reading
+both stdlib files at HEAD. Fix: `byte_len()` for `Content-Length` and for every `slice` end bound
+in both files (and `find_byte_in` / `find_str_in`'s search limit); a `len()`-as-byte-bound lint
+would have caught all of them.

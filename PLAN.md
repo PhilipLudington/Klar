@@ -37,6 +37,10 @@ in user programs first, then checker/contract correctness, then tooling, then de
 - [ ] Bug 63 — `let x = 1; x = 2` passes `klar check` and compiles natively (`src/checker/expressions.zig:392`
       never reads `sym.mutable`; the statement-level check at `statements.zig:78` is unreachable).
       Check mutability in the binary-assign path; failing test first. (qa-audit 2026-09-05)
+- [ ] Bug 64 — HTTP stdlib uses codepoint `len()` where bytes are meant: `Content-Length`
+      (`stdlib/http_client.kl:196`, `http_server.kl:281`), `slice(…, data.len())` body bounds, and
+      `find_str_in`'s search limit. `byte_len()` at each site; a module test with a non-ASCII body
+      first. (qa-review calibration 2026-09-06)
 - [ ] Bug 34 — codegen `getTypeSize` sizes `char` as 1 byte and omits padding; enum payload
       stores overlap (`src/codegen/emit.zig:38333`, `:38342`). (qa-audit 2026-09-04)
 - [ ] Bug 48 — REPL resets the AST arena every line while function bodies point into it
