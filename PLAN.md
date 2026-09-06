@@ -29,6 +29,14 @@ in user programs first, then checker/contract correctness, then tooling, then de
       is tagged `usize` (`:2818`, `:1177`). One branch. (qa-audit 2026-09-04)
 - [ ] Bug 21 — interpreter `checkedAdd/Sub/Mul` overflow i128 before their own check
       (`src/interpreter.zig:786`); `@addWithOverflow`. (qa-audit 2026-09-04)
+- [ ] Bugs 60 + 61 + 62 — VM pattern matching is unimplemented but runs: `op_match_variant`
+      always pushes true (`src/vm.zig:966`), `op_is_type` emitted with no operand while the VM
+      reads two bytes (`src/compiler.zig:966`, `src/vm.zig:882`), or-pattern success jump never
+      patched (`src/compiler.zig:1503`). One branch: implement variant/type matching in the VM
+      or refuse them at compile time; patch every `end` jump. (qa-audit 2026-09-05)
+- [ ] Bug 63 — `let x = 1; x = 2` passes `klar check` and compiles natively (`src/checker/expressions.zig:392`
+      never reads `sym.mutable`; the statement-level check at `statements.zig:78` is unreachable).
+      Check mutability in the binary-assign path; failing test first. (qa-audit 2026-09-05)
 - [ ] Bug 34 — codegen `getTypeSize` sizes `char` as 1 byte and omits padding; enum payload
       stores overlap (`src/codegen/emit.zig:38333`, `:38342`). (qa-audit 2026-09-04)
 - [ ] Bug 48 — REPL resets the AST arena every line while function bodies point into it

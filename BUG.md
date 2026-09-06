@@ -1412,3 +1412,105 @@ so the `.ir` file silently omits imported functions.
 **Found by:** `/qa-audit --calibrate klar-e7b54e7`, 2026-09-04 — driver territory, HIGH
 `[error-handling]`; verified by reading at both commits. Fix: the same error branch in both
 loops.
+
+---
+
+## [ ] Bug 60: VM `op_match_variant` always matches — the first enum arm wins
+
+**Status:** Open
+
+**Description:** `src/vm.zig:966` at HEAD (`:960` at `e7b54e7`) reads the variant-name
+constant, discards it (`_ = variant_name; // TODO: Implement variant matching`) and pushes
+`Value.true_val` unconditionally. Any `match` over an enum value under the bytecode VM takes
+its first variant arm regardless of the value; the interpreter and native backends match
+correctly.
+
+**Steps to reproduce:**
+1. `enum Color { Red, Green }` and `match c { Green => println("green"), Red => println("red") }` with `c = Color.Red`.
+2. `klar run --vm prog.kl`.
+
+**Expected:** `red`.
+
+**Actual:** `green` (first arm).
+
+**Found by:** `/qa-audit --calibrate klar-e7b54e7`, 2026-09-05 — backends territory, CRITICAL
+`[correctness]`; verified by reading in the export and at HEAD `97ba34f`. Fix: compare the
+peeked value's variant tag/name with the constant and push the result; until then the VM
+should refuse `match` on enums rather than return a wrong arm.
+
+---
+
+## [ ] Bug 61: `op_is_type` is emitted with no operand while the VM reads two bytes
+
+**Status:** Open
+
+**Description:** `src/compiler.zig:966` lowers the `is` operator to a bare `op_is_type`
+(`// TODO: needs type operand`) with no operand bytes, but `src/bytecode.zig:497` declares the
+opcode with 2 operand bytes and `src/vm.zig:882` at HEAD (`:876` at `e7b54e7`) does
+`_ = self.readU16()`. The two bytes consumed as the "operand" are the next instruction's
+opcode and first operand, so the bytecode stream desynchronises after every `is` expression.
+
+**Steps to reproduce:**
+1. Any program with `x is T` under the VM, followed by at least one more instruction.
+2. `klar run --vm prog.kl`.
+
+**Expected:** `is` evaluates to a boolean and execution continues.
+
+**Actual:** The instruction after `is` is skipped or misdecoded; behaviour depends on the
+following bytes (wrong result, `unreachable`, or a crash).
+
+**Found by:** `/qa-audit --calibrate klar-e7b54e7`, 2026-09-05 — backends territory, CRITICAL
+`[correctness]`; verified by reading in the export and at HEAD. Fix: emit the type-constant
+index as the u16 operand in the compiler (and implement the check in the VM), or declare the
+opcode with 0 operand bytes and reject `is` under the VM until it is implemented.
+
+---
+
+## [ ] Bug 62: or-pattern success jump is never patched — a matching alternative jumps to the `0xffff` placeholder
+
+**Status:** Open
+
+**Description:** In `compilePatternTest` for `.or_` patterns (`src/compiler.zig:1501-1507` at
+HEAD and at `e7b54e7`), each alternative emits `op_true` then `const end = try
+self.emitJump(.op_jump, line)`, but only `next` is patched; `end` is discarded (`_ = end;`).
+A successful alternative therefore executes `op_jump` with the unpatched `0xffff` placeholder
+offset, jumping past the end of the chunk.
+
+**Steps to reproduce:**
+1. `match n { 1 | 2 => println("small"), _ => println("other") }` with `n = 1`.
+2. `klar run --vm prog.kl`.
+
+**Expected:** `small`.
+
+**Actual:** The jump target is `0xffff`; the VM runs off the chunk (crash or `unreachable`).
+
+**Found by:** `/qa-audit --calibrate klar-e7b54e7`, 2026-09-05 — backends territory, CRITICAL
+`[correctness]`; verified by reading in the export and at HEAD. Fix: collect the `end` jumps
+per alternative and patch them all after the final `op_false`.
+
+---
+
+## [ ] Bug 63: Assignment to an immutable `let` binding passes `klar check` and compiles natively
+
+**Status:** Open
+
+**Description:** The checker's assignment path (`src/checker/expressions.zig:392` at HEAD, `:356`
+at `e7b54e7`) runs only `isAssignable`, which is true for every identifier, index, field and
+deref; it never consults the binding's mutability. The one site that does (`statements.zig:78`)
+handles an `assign` statement node the parser never produces, because `=` is lowered as an infix
+binary operator. Result: `let x = 1; x = 2` is accepted at check time, compiled by the native
+backend, and executed; only the tree-walking interpreter refuses, and only at runtime.
+
+**Steps to reproduce:**
+1. `fn main() -> i32 { let x: i32 = 1  x = 2  return x }`
+2. `klar check prog.kl` · `klar build prog.kl && ./build/prog; echo $?` · `klar run --vm prog.kl; echo $?` · `klar run --interpret prog.kl`
+
+**Expected:** `klar check` reports "cannot assign to immutable binding `x`" and every backend refuses.
+
+**Actual:** (Klar 0.5.0, 2026-09-05) `check`: "All checks passed". `build`: succeeds; the native binary exits **2** (the mutated value). `--vm`: exits 0. `--interpret`: "Runtime error in main: ImmutableAssignment" (exit 1) — the only backend that notices, and at runtime.
+
+**Found by:** `/qa-audit --calibrate klar-e7b54e7`, 2026-09-05 — checker territory, CRITICAL
+`[correctness]`, found independently by two runs; verified by reading at both commits and by
+running the four commands above on the installed compiler. Fix: check `sym.mutable` in the
+binary-assign path (the symbol carries it — `expressions.zig:315` reads it for references), or
+route `=` to the statement node that already checks it.
