@@ -19,6 +19,31 @@ phase tasks. Bug fixes follow `~/.claude/rules/bug-format.md` § Fixing a bug: t
 test is committed first and seen failing, then the fix. Order: wrong results and crashes
 in user programs first, then checker/contract correctness, then tooling, then debt.
 
+**CI (blocks every PR: the workflow has been red since 2026-04-20)**
+- [ ] CI — baseline the stale workflow: change only Zig 0.15.2 → 0.16.0 (all four jobs) and
+      add `workflow_dispatch`; leave runners, LLVM and action versions as they are. Record
+      every job's result and the runner image each one reports. Each failure that is not the
+      workflow itself (a real Linux, macOS or Windows test failure) becomes a BUG.md entry and
+      is fixed before the upgrade line. Done when every job is green on the old
+      infrastructure. Red since 2026-04-20; blocks PR 43. (Philip, 2026-09-26)
+- [ ] CI — upgrade runners and actions: `ubuntu-latest` → `ubuntu-26.04`, `ubuntu-24.04-arm` →
+      `ubuntu-26.04-arm`, `macos-latest` → the image the baseline run reported;
+      `actions/checkout` v4 → v7, `actions/setup-python` v5 → v7, `actions/cache` v4 → v6; add
+      `.github/dependabot.yml` (package-ecosystem `github-actions`, schedule monthly, one
+      `groups:` entry matching `*` so every action bump arrives as a single PR,
+      `open-pull-requests-limit: 1`) so action majors and the Node-20 stragglers
+      (`mlugg/setup-zig`, `ilammy/msvc-dev-cmd`) arrive as PRs; `/today` lists open Dependabot
+      PRs on its board (installed `~/.claude` e4b4d07). Done when every job is green.
+      (Philip, 2026-09-26)
+- [ ] CI — one LLVM version on every build: 21. Today the builds use 17 on Linux and macOS CI
+      (`apt llvm-17`, `brew llvm@17`), 18.1.8 on Windows CI (vovkos), and 21.1.8 locally
+      (Homebrew `llvm`, which `build.zig` `detectLLVMPrefix` finds first). Move Linux to
+      `llvm-21-dev` (packaged on Ubuntu 26.04), macOS to `brew install llvm@21`, and Windows
+      to vovkos `llvm-21.1.1-windows-amd64-msvc17-msvcrt.7z`, changing its `actions/cache` key
+      and the `LLVM_PREFIX`/PATH lines with it. Done when every job is green on 21 and
+      `CLAUDE.md` names 21 as the supported LLVM. Why: a codegen difference that shows up on
+      only one platform today could come from LLVM rather than Klar. (Philip, 2026-09-26)
+
 **Crashes and wrong results in running programs**
 - [ ] Bugs 15 + 16 + 17 — GC: unrooted half-built objects (`src/gc.zig:183`), unmarked async
       payloads (`gc.zig:374`), string methods popping the receiver before `createGC`
