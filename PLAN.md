@@ -204,6 +204,13 @@ fix lands with a failing test and stays fixed.
       and fail on any output difference; seed it with the Bug 18/19/20/41/42 triggers.
 - [ ] Expose stress-GC (`stress_gc = true`) through a runner flag and run the VM suite under
       it once in `run-tests.sh`; seed `test/vm/` with the Bug 15/16/17 triggers.
+- [ ] Extend the stress-GC seeds past the stack roots the Bugs 15–17 tests cover. Add three
+      programs: (1) a string in a global and a closure capturing a local string, first as
+      an open upvalue and then closed, each allocating again before it is read back; (2)
+      `op_array` → `op_array_push`, `op_tuple`, `op_struct`, `op_some` and `op_closure` with
+      a captured upvalue, each result checked; (3) an async function that returns an array,
+      a collection before `await`, then indexing the awaited array (Bug 16 end to end).
+      (found: qa-review 2026-09-26, Bugs 15/16)
 - [ ] Measure Bug 49 at HEAD (`klar build broken.kl; echo $?`) and Bug 45's `env_get` return
       type; update both entries.
 - [ ] Run the Bug 7/9/10/11/12 repros from their entries; close or open each.
