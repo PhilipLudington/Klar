@@ -57,12 +57,16 @@ fn buildTrimProgram(func: *Function) !void {
     try func.chunk.writeOp(.op_return, 1);
 }
 
-/// `"g" + "h"` computed and discarded, then `return 1` — "gh" is garbage
-/// from the moment `op_pop` runs.
+/// `"g" + "h"` computed and discarded, then one more allocation (the first
+/// push of the constant "k"), then `return 1`. "gh" is garbage from the moment
+/// `op_pop` runs, and the "k" allocation is the one whose collection must find
+/// it dead.
 fn buildGarbageProgram(func: *Function) !void {
     try func.chunk.writeConstant(.{ .string = "g" }, 1);
     try func.chunk.writeConstant(.{ .string = "h" }, 1);
     try func.chunk.writeOp(.op_concat, 1);
+    try func.chunk.writeOp(.op_pop, 1);
+    try func.chunk.writeConstant(.{ .string = "k" }, 1);
     try func.chunk.writeOp(.op_pop, 1);
     try func.chunk.writeConstant(.{ .int = 1 }, 1);
     try func.chunk.writeOp(.op_return, 1);
