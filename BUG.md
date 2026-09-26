@@ -383,6 +383,8 @@ checker's table read one shared list.
 
 **Status:** Open
 
+**System:** VM GC reachability — when `src/gc.zig` collects (`allocObject`/`allocBytes`) and what it marks (`markRoots`/`markValue`), against every `createGC` caller in `src/vm.zig`, `src/vm_value.zig`, `src/vm_builtins.zig`
+
 **Description:** `GC.allocObject` (`src/gc.zig:183`) links the new object into the sweep
 list and returns it; nothing roots it. Every `createGC` then calls `allocBytes` for the
 payload (`vm_value.zig` `ObjArray.createGC`, `ObjString.createGC`, `gc.zig:250`), and
@@ -411,6 +413,8 @@ initialised it (or allocate the payload first).
 
 **Status:** Open
 
+**System:** VM GC reachability — when `src/gc.zig` collects (`allocObject`/`allocBytes`) and what it marks (`markRoots`/`markValue`), against every `createGC` caller in `src/vm.zig`, `src/vm_value.zig`, `src/vm_builtins.zig`
+
 **Description:** `op_return` from an async function stores the result in a heap `*Value`
 (`src/vm.zig:593` at HEAD, `:587` at `e7b54e7`) and wraps it in a Future. `GC.markValue`
 (`src/gc.zig:374`) lists `.future` with `.int, .float, .bool_, .char_, .void_` and marks
@@ -433,6 +437,8 @@ CRITICAL `[correctness]`; verified by reading at `e7b54e7` and at HEAD `949fc4c`
 ## [ ] Bug 17: VM — `trim`/`slice`/`substring` pop the receiver, then allocate from a slice borrowed out of it
 
 **Status:** Open
+
+**System:** VM GC reachability — when `src/gc.zig` collects (`allocObject`/`allocBytes`) and what it marks (`markRoots`/`markValue`), against every `createGC` caller in `src/vm.zig`, `src/vm_value.zig`, `src/vm_builtins.zig`
 
 **Description:** In `invokeStringMethod` (`src/vm.zig:1485` trim, `:1537` slice, `:1575`
 substring at HEAD; `:1477/:1531/:1569` at `e7b54e7`) the receiver is popped, then a
@@ -1521,6 +1527,8 @@ route `=` to the statement node that already checks it.
 
 **Status:** Open
 
+**System:** HTTP stdlib message framing — `Content-Length` and body bounds in `stdlib/http_client.kl` (`http_request`, `parse_http_response`) and `stdlib/http_server.kl`
+
 **Description:** On the native backend `string.len()` counts UTF-8 codepoints
 (`klar_string_char_len`) and `byte_len()` counts bytes, while `slice()` is byte-indexed and
 `tcp_write` sends `strlen` bytes. `stdlib/http_client.kl:196` and `stdlib/http_server.kl:281`
@@ -1551,6 +1559,41 @@ independently; verified 2026-09-06 by running step 1 on the installed compiler a
 both stdlib files at HEAD. Fix: `byte_len()` for `Content-Length` and for every `slice` end bound
 in both files (and `find_byte_in` / `find_str_in`'s search limit); a `len()`-as-byte-bound lint
 would have caught all of them.
+
+---
+
+## [ ] Bug 65: `http_request` returns a truncated body as `Ok` when the read ends before `Content-Length`
+
+**Status:** Open
+
+**System:** HTTP stdlib message framing — `Content-Length` and body bounds in `stdlib/http_client.kl` (`http_request`, `parse_http_response`) and `stdlib/http_server.kl`
+
+**Deferred:** rides the Bug 64 Next Up line, which `/continue-plan` rule 4 collects by System — alone it is none of the three Next Up kinds (no crash, no Phase 0 deliverable waits on it)
+
+**Description:** `http_request` (`stdlib/http_client.kl`) returns
+`parse_http_response(response_data)` on three paths without comparing the body it has to the
+`Content-Length` header: a `tcp_read` error after some data has arrived (`:217`), a clean close
+by the peer before every declared byte arrived (`:225`), and the 1000-read loop cap running out
+(`:263`). `parse_http_response` never checks the body length against the header either, so the
+caller gets the parsed status (200) and a cut-off body with nothing marking it incomplete.
+
+**Steps to reproduce:**
+1. Serve a response with `Content-Length: 100` and close the socket after 50 body bytes (or
+   reset it mid-body).
+2. Call `http_get` on it and print the status, `body.len()` and whether the result is `Ok`.
+
+**Expected:** `Err` (or an explicit incomplete flag) when fewer than `Content-Length` body bytes
+arrived.
+
+**Actual:** (by reading HEAD `a8dfecd`, 2026-09-26; not run) `Ok` with status 200 and a 50-byte
+body. Also reached by a download larger than 1000 reads' worth when `recv` returns one MSS at a
+time (about 1.4 MB).
+
+**Found by:** `~/.claude` QA calibration, Fixture 4 label pass
+(`~/.claude/qa-reviews/Klar/fixture-4/20260922-202009/report.md` row 125), verified 2026-09-22 by
+reading `20a5a3e:stdlib/http_client.kl` (`:213-217`, `:257-260`) and HEAD; filed through
+`.claude/inbox/` and re-read at HEAD 2026-09-26. Present since Phase 6 (`20a5a3e`). Distinct
+from Bug 64 (byte vs codepoint length) and from the server's single `tcp_read`.
 
 ---
 
