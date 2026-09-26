@@ -379,9 +379,9 @@ checker's table read one shared list.
 
 ---
 
-## [ ] Bug 15: GC — `allocObject` returns an unrooted object, so the caller's next `allocBytes` can collect and free it half-built
+## [x] Bug 15: GC — `allocObject` returns an unrooted object, so the caller's next `allocBytes` can collect and free it half-built
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** VM GC reachability — when `src/gc.zig` collects (`allocObject`/`allocBytes`) and what it marks (`markRoots`/`markValue`), against every `createGC` caller in `src/vm.zig`, `src/vm_value.zig`, `src/vm_builtins.zig`
 
@@ -407,11 +407,22 @@ CRITICAL `[resources]`; verified by reading at `e7b54e7` and at HEAD `949fc4c`
 (`src/gc.zig:183-215`). Fix: pin the new object as a temporary root until the caller has
 initialised it (or allocate the payload first).
 
+**Fix:** Allocation no longer collects. `allocObject` and `allocBytes` (`src/gc.zig`) only set
+`collection_requested` (on every allocation under `stress_gc`, else when the heap crosses
+`next_gc`), and `GC.collectIfRequested` — called once per instruction at the top of the VM's
+`run` loop, where every live value is on a root — is the only place a collection starts. One
+path covers this bug, Bug 17 and every other caller that holds a half-built object or a popped
+operand in a Zig local across an allocation.
+
+**Test:** `src/vm_gc_test.zig` — "an object allocated under stress survives the allocation of
+its own payload (Bug 15)", "a finished but unrooted object survives the next object allocation
+under stress", and the stress-mode and threshold program runs.
+
 ---
 
-## [ ] Bug 16: GC — `markValue` treats `.future` as a primitive, so an async return payload's objects are collected while `await` still points at them
+## [x] Bug 16: GC — `markValue` treats `.future` as a primitive, so an async return payload's objects are collected while `await` still points at them
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** VM GC reachability — when `src/gc.zig` collects (`allocObject`/`allocBytes`) and what it marks (`markRoots`/`markValue`), against every `createGC` caller in `src/vm.zig`, `src/vm_value.zig`, `src/vm_builtins.zig`
 
@@ -432,11 +443,17 @@ nothing, so a payload holding an array/string/struct is unreachable to the colle
 CRITICAL `[correctness]`; verified by reading at `e7b54e7` and at HEAD `949fc4c`
 (`src/gc.zig:374`, `src/vm.zig:593`). Fix: mark `future.value.*` in `markValue`.
 
+**Fix:** `GC.markValue` (`src/gc.zig`) marks through a Future's payload box
+(`.future => |f| if (f.value) |v| self.markValue(v.*)`).
+
+**Test:** `src/vm_gc_test.zig` — "a completed Future's payload is marked, so its array survives
+a collection (Bug 16)".
+
 ---
 
-## [ ] Bug 17: VM — `trim`/`slice`/`substring` pop the receiver, then allocate from a slice borrowed out of it
+## [x] Bug 17: VM — `trim`/`slice`/`substring` pop the receiver, then allocate from a slice borrowed out of it
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** VM GC reachability — when `src/gc.zig` collects (`allocObject`/`allocBytes`) and what it marks (`markRoots`/`markValue`), against every `createGC` caller in `src/vm.zig`, `src/vm_value.zig`, `src/vm_builtins.zig`
 
@@ -456,6 +473,14 @@ then copied from.
 **Found by:** `/qa-audit --calibrate klar-e7b54e7`, 2026-09-04 — backends territory,
 CRITICAL `[resources]`; verified by reading at both commits. Fix: create the new string
 before popping the receiver, or pin it.
+
+**Fix:** Bug 15's fix — allocation never collects, so the popped receiver's bytes stay valid
+until the method's instruction ends; the collection its allocation requests runs at the next
+instruction boundary, after the result is on the stack. `invokeStringMethod` is unchanged.
+
+**Test:** `src/vm_gc_test.zig` — "a string method's popped receiver survives a collection
+triggered by the method's own allocation (Bug 17)" (segfaulted in `internString` copying the
+freed receiver on the unfixed tree).
 
 ---
 

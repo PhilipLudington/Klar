@@ -327,6 +327,10 @@ pub const VM = struct {
     /// Main execution loop.
     fn run(self: *VM) !Value {
         while (true) {
+            // Safe point: between instructions every live value is on the stack,
+            // in a global, in a frame's closure or in an open upvalue.
+            self.gc.collectIfRequested();
+
             if (self.debug_trace) {
                 self.printStack();
                 _ = self.disassembleInstruction();

@@ -61,9 +61,11 @@ in user programs first, then checker/contract correctness, then tooling, then de
       wrong on macOS, so `createFile` ignores `truncate`/`exclusive` (`:525-528`; a shorter
       rewrite keeps the old tail) and `deleteTree` never removes directories (`:659`). Replace
       every literal with `std.c.O{…}` / `std.c.AT.REMOVEDIR`. (qa-review 2026-09-26)
-- [ ] Bugs 15 + 16 + 17 — GC: unrooted half-built objects (`src/gc.zig:183`), unmarked async
-      payloads (`gc.zig:374`), string methods popping the receiver before `createGC`
-      (`src/vm.zig:1485`). One branch; add a stress-GC run to the VM tests. (qa-audit 2026-09-04)
+- [x] Bugs 15 + 16 + 17 — GC: allocation no longer collects; the VM collects at the top of each
+      instruction (`GC.collectIfRequested`), and `markValue` traces Future payloads. Stress-GC
+      runs live in the unit tests (`src/vm_gc_test.zig`); the runner flag stays the Phase 0 task
+      (departed: collect at safe points, not temp-root each caller). (qa-audit 2026-09-04)
+      (completed 2026-09-26)
 - [ ] Bug 18 — VM carries no integer width: i128 arithmetic + no-op `.trunc#` (`src/vm.zig:1292`,
       `:1381`); carry the declared width in the value or opcode. (qa-audit 2026-09-04)
 - [ ] Bugs 19 + 20 — interpreter `%` is Euclidean (`src/interpreter.zig:749,769`) and `len`

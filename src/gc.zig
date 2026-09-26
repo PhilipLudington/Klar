@@ -90,8 +90,13 @@ pub const GC = struct {
     /// Debug mode - log GC operations.
     debug_gc: bool,
 
-    /// Stress test mode - GC on every allocation.
+    /// Stress test mode - collect at the first safe point after every allocation.
     stress_gc: bool,
+
+    /// Set by an allocation that crossed the threshold (or any allocation under
+    /// `stress_gc`); cleared by `collectGarbage`. Allocation never collects: the
+    /// VM collects at its next safe point via `collectIfRequested`.
+    collection_requested: bool,
 
     /// Root set for GC traversal.
     pub const Roots = struct {
@@ -139,6 +144,7 @@ pub const GC = struct {
             },
             .debug_gc = false,
             .stress_gc = false,
+            .collection_requested = false,
         };
     }
 
@@ -180,14 +186,10 @@ pub const GC = struct {
 
     /// Allocate a new object of the given type.
     /// The object is automatically registered with the GC.
+    /// Never collects (see `collectIfRequested`), so the caller may finish
+    /// building the object — and hold popped operands in locals — across further
+    /// allocations.
     pub fn allocObject(self: *GC, comptime T: type, obj_type: ObjType) !*T {
-        // Stress test: collect on every allocation
-        if (self.stress_gc) {
-            self.collectGarbage();
-        } else if (self.bytes_allocated > self.next_gc) {
-            self.collectGarbage();
-        }
-
         const obj = try self.backing_allocator.create(T);
         const size = @sizeOf(T);
 
@@ -199,6 +201,7 @@ pub const GC = struct {
         self.objects = &obj.header;
 
         self.bytes_allocated += size;
+        self.noteAllocation();
 
         if (self.debug_gc) {
             std.debug.print("GC: Allocated {d} bytes for {s} at {*}\n", .{
@@ -212,17 +215,29 @@ pub const GC = struct {
     }
 
     /// Allocate memory tracked by GC (for variable-sized data like arrays).
+    /// Never collects; see `allocObject`.
     pub fn allocBytes(self: *GC, comptime T: type, n: usize) ![]T {
-        // May trigger GC
-        if (self.stress_gc) {
-            self.collectGarbage();
-        } else if (self.bytes_allocated > self.next_gc) {
-            self.collectGarbage();
-        }
-
         const bytes = try self.backing_allocator.alloc(T, n);
         self.bytes_allocated += n * @sizeOf(T);
+        self.noteAllocation();
         return bytes;
+    }
+
+    /// Request a collection when this allocation crossed the threshold, or on
+    /// every allocation under `stress_gc`.
+    fn noteAllocation(self: *GC) void {
+        if (self.stress_gc or self.bytes_allocated > self.next_gc) {
+            self.collection_requested = true;
+        }
+    }
+
+    /// Collect if an allocation has requested it. Call only at a safe point:
+    /// where every live value is reachable from `roots` (the VM calls it between
+    /// instructions). This is the only place a collection starts during execution.
+    pub fn collectIfRequested(self: *GC) void {
+        if (self.collection_requested) {
+            self.collectGarbage();
+        }
     }
 
     /// Free memory tracked by GC.
@@ -298,6 +313,7 @@ pub const GC = struct {
         }
 
         const before = self.bytes_allocated;
+        self.collection_requested = false;
 
         // Mark phase
         self.markRoots();
@@ -370,8 +386,11 @@ pub const GC = struct {
             .upvalue => |u| self.markObject(&u.header),
             .optional => |o| self.markObject(&o.header),
             .range => |r| self.markObject(&r.header),
+            // A completed Future boxes its result outside the GC heap; the
+            // objects that result points at are reachable through it.
+            .future => |f| if (f.value) |v| self.markValue(v.*),
             // Primitive values don't need marking
-            .int, .float, .bool_, .char_, .void_, .future => {},
+            .int, .float, .bool_, .char_, .void_ => {},
         }
     }
 
