@@ -1551,3 +1551,42 @@ independently; verified 2026-09-06 by running step 1 on the installed compiler a
 both stdlib files at HEAD. Fix: `byte_len()` for `Content-Length` and for every `slice` end bound
 in both files (and `find_byte_in` / `find_str_in`'s search limit); a `len()`-as-byte-bound lint
 would have caught all of them.
+
+---
+
+## [ ] Bug 66: Klar does not compile for Windows since the Zig 0.16 migration
+
+**Status:** Open
+
+**System:** platform layer — `src/compat.zig` (the Zig 0.16 file/dir/process shim),
+`src/main.zig` `getStdOut`/`getStdErr`
+
+**Description:** The Zig 0.15.2 → 0.16.0 migration (`2c69c7f`, 2026-04-20) rebuilt file,
+directory and process I/O in `src/compat.zig` on libc and POSIX file descriptors, and says
+so: `initArgs` "only targets the platforms currently exercised by the Klar build (macOS,
+Linux)". There is no Windows path in the file. CI's Windows jobs, which would have caught
+it, never ran after that date because the Linux gate they wait on was red on the stale Zig
+pin. So both Windows targets CI builds (`x86_64-windows` full suite, `aarch64-windows`
+cross-compile) fail to compile.
+
+**Steps to reproduce:**
+1. On macOS with Zig 0.16.0: `zig build -Dtarget=aarch64-windows --prefix <scratch dir>`
+   (the CI `cross-compile-windows-arm64` job's command).
+2. The same with `-Dtarget=x86_64-windows`.
+
+**Expected:** `klar.exe` is produced for both targets, as it was on Zig 0.15.2.
+
+**Actual:** (2026-09-26, `ci/baseline-zig-016` at `dd207a6`) both fail with the same
+6 errors, and these are only Zig's first analysis wave, so more will follow once they are
+fixed:
+- `std/c.zig:10648`, `:10657`: "dependency on libc must be explicitly specified" (the
+  aarch64 cross-compile does not link libc; `compat.zig` calls `std.c.*` unconditionally,
+  65 call sites)
+- `src/compat.zig:842`: `cwd()` builds a POSIX `AT_FDCWD` integer where Windows needs a
+  `HANDLE`
+- `src/compat.zig:885`: `initArgs` stores `minimal.args.vector`, which is `[]const u16` on
+  Windows
+- `src/main.zig:45`, `:55`: `std.os.windows.kernel32.GetStdHandle` no longer exists in 0.16
+
+**Found by:** the CI baseline item (PLAN.md Next Up, 2026-09-26), running the Windows
+ARM64 job's command locally before pushing.
