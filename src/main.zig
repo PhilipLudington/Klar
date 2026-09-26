@@ -7417,6 +7417,7 @@ test {
     _ = @import("vm_builtins.zig");
     _ = @import("codegen/mod.zig");
     _ = @import("gc.zig");
+    _ = @import("vm_gc_test.zig");
     _ = @import("disasm.zig");
     _ = @import("ir/mod.zig");
     _ = @import("opt/mod.zig");
