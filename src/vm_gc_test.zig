@@ -86,6 +86,23 @@ test "GC: an object allocated under stress survives the allocation of its own pa
     try testing.expectEqualStrings("half-built payload", s.chars);
 }
 
+test "GC: a finished but unrooted object survives the next object allocation under stress" {
+    var vm = try VM.init(testing.allocator);
+    defer vm.deinit();
+    try vm.setup();
+    vm.gc.stress_gc = true;
+
+    // Two allocations inside one VM operation (a closure then its upvalue,
+    // an array then an Optional wrapping it): the first object is complete
+    // but held only in a Zig local when the second allocObject runs.
+    const first = try ObjString.createGC(&vm.gc, "held in a local");
+    const second = try ObjString.createGC(&vm.gc, "allocated next");
+
+    try testing.expect(gcHolds(&vm, &first.header));
+    try testing.expect(gcHolds(&vm, &second.header));
+    try testing.expectEqualStrings("held in a local", first.chars);
+}
+
 test "GC: a completed Future's payload is marked, so its array survives a collection (Bug 16)" {
     var vm = try VM.init(testing.allocator);
     defer vm.deinit();
