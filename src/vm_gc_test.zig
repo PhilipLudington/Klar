@@ -169,11 +169,24 @@ test "GC: crossing the heap threshold without stress still collects at the next 
     defer func.deinit();
     try buildGarbageProgram(&func);
 
+    // Dry run: measure the heap with no collection. A collection resets the
+    // threshold to twice the live heap, so the threshold must be crossed by
+    // the allocation after "gh" dies (the constant "k": object + 1 byte), not
+    // by an earlier one.
+    var dry = try VM.init(testing.allocator);
+    const dry_bytes = blk: {
+        defer dry.deinit();
+        try dry.setup();
+        _ = try dry.interpret(&func);
+        try testing.expect(gcHoldsString(&dry, "gh"));
+        break :blk dry.gc.bytes_allocated;
+    };
+    const before_k = dry_bytes - @sizeOf(ObjString) - 1;
+
     var vm = try VM.init(testing.allocator);
     defer vm.deinit();
     try vm.setup();
-    // Any allocation from here on is over the threshold.
-    vm.gc.next_gc = vm.gc.bytes_allocated;
+    vm.gc.next_gc = before_k;
 
     const result = try vm.interpret(&func);
     try testing.expect(result.eql(Value.fromInt(1)));
