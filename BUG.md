@@ -1651,3 +1651,110 @@ the same `compat.Stat` shape. macOS keeps `std.c.fstat`/`fstatat`, untouched.
 `fa3c287`, clean for both Linux targets after the fix, for `zig build-exe` and `zig test`
 alike. Whether the Linux binary links against CI's LLVM 17 and passes the suite only the
 CI Linux jobs can show.
+
+---
+
+## [ ] Bug 68: On macOS, `compat.Dir.createFile` ignores `truncate` and `exclusive` — a shorter rewrite leaves the old file's tail behind
+
+**Status:** Open
+
+**System:** platform layer — `src/compat.zig` (the Zig 0.16 file/dir/process shim)
+
+**Description:** `createFile` (`src/compat.zig:525-528`) builds its `openat` flags from Linux
+octal literals: `0o100` for `O_CREAT`, `0o1000` for `O_TRUNC`, `0o200` for `O_EXCL`. macOS
+numbers them differently (`O_CREAT` 0x200, `O_TRUNC` 0x400, `O_EXCL` 0x800). So on macOS
+`0o1000` sets `O_CREAT`, `0o100` sets `O_ASYNC` and `0o200` sets `O_FSYNC`. `truncate` and
+`exclusive` are never honoured. Any rewrite shorter than the file it replaces (`klar fmt`,
+`klar.lock`, `klar.json`) keeps the old file's trailing bytes. Present since the 0.16
+migration (`2c69c7f`).
+
+**Steps to reproduce:**
+1. Through `compat`, write "LONG CONTENT HERE 1234567890" to a file.
+2. `writeFile` the same path with "short".
+3. Read it back. Also `createFile(.{ .exclusive = true })` on that existing file.
+
+**Expected:** "short" (5 bytes); the exclusive create fails with `PathAlreadyExists`.
+
+**Actual:** `'shortCONTENT HERE 1234567890'` (28 bytes); the exclusive create returns a handle.
+
+**Found by:** /qa-review on ci/baseline-zig-016, 2026-09-26 — GenA; probe
+`scratch/qa-shardA/probe/probe.zig` — reviewer's evidence, not re-read.
+
+---
+
+## [ ] Bug 69: On macOS, `compat.Dir.deleteTree` never removes directories — `klar clean` leaves `build/` behind
+
+**Status:** Open
+
+**System:** platform layer — `src/compat.zig` (the Zig 0.16 file/dir/process shim)
+
+**Description:** `deleteTree` (`src/compat.zig:659`) hard-codes `AT_REMOVEDIR = 0x200`,
+which is the Linux value; the comment calls it common to both. On macOS it is 0x80, so the
+final `unlinkat` of each directory is a plain file unlink, which fails on a directory, and the
+error is discarded. Files inside are deleted and every directory stays.
+
+**Steps to reproduce:**
+1. `makePath("…/tree/sub")`, then write a file in it.
+2. `deleteTree("…/tree")`, then `access("…/tree")`.
+
+**Expected:** `access` fails; the tree is gone.
+
+**Actual:** `access` succeeds and `tree/sub/` is still on disk.
+
+**Found by:** /qa-review on ci/baseline-zig-016, 2026-09-26 — GenA; probe
+`scratch/qa-shardA/probe/probe2.zig` — reviewer's evidence, not re-read.
+
+---
+
+## [ ] Bug 70: POSIX `compat.Child.spawn` never reports a missing program — the linker fallback chain stops at the first missing linker
+
+**Status:** Open
+
+**System:** platform layer — `src/compat.zig` (the Zig 0.16 file/dir/process shim)
+
+**Deferred:** after the current milestone. It only affects `linkBareMetalTarget`'s fallback,
+and the first linker it tries is present on every supported host.
+
+**Description:** `Child.spawn` (`src/compat.zig:1102-1118`) forks, then execs in the child.
+When exec fails, the child exits 127, so the parent never sees `error.FileNotFound`.
+`linker.zig:498-501` maps FileNotFound to `LinkerNotFound` so it can try the next linker, and
+on macOS and Linux that branch never fires: the chain stops at the first missing name with
+`LinkerFailed`. The Windows path (`std.process.spawn`) does return FileNotFound, so the two
+platforms now disagree.
+
+**Steps to reproduce:**
+1. `compat.Child.init(&.{"surely-not-a-program"}, alloc)`, then `spawn()` and `wait()`.
+
+**Expected:** `spawn` returns `error.FileNotFound`.
+
+**Actual:** `spawn` succeeds and `wait` returns `.Exited = 127`.
+
+**Found by:** /qa-review on ci/baseline-zig-016, 2026-09-26 — GenA; verified by reading
+`src/compat.zig:1102-1118` and `src/codegen/linker.zig:498-501` — reviewer's evidence, not re-read.
+
+---
+
+## [ ] Bug 71: The linker call pipes stdout and stderr but never reads them — a linker that writes more than the pipe buffer hangs `klar build`
+
+**Status:** Open
+
+**System:** native codegen — `src/codegen/linker.zig`
+
+**Deferred:** after the current milestone. Linker output is normally far under the 64 KB
+pipe buffer; it takes a flood of warnings to hit.
+
+**Description:** `linker.zig:382-392` spawns the linker with `.Pipe` for stdout and stderr,
+never reads either, and calls `wait`. A linker that fills a pipe blocks on write while Klar
+blocks in `wait`, so the build hangs. On POSIX `compat.Child.wait` also never closes the
+parent's read ends.
+
+**Steps to reproduce:**
+1. Link through `linker.zig` with a linker (or a wrapper script in its place) that writes
+   more than 64 KB to stderr before exiting.
+
+**Expected:** The link finishes and reports the output or the exit code.
+
+**Actual:** `klar build` hangs in `wait`.
+
+**Found by:** /qa-review on ci/baseline-zig-016, 2026-09-26 — GenA; verified by reading
+`src/codegen/linker.zig:382-392` — reviewer's evidence, not re-read.

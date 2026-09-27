@@ -53,6 +53,10 @@ in user programs first, then checker/contract correctness, then tooling, then de
       only one platform today could come from LLVM rather than Klar. (Philip, 2026-09-26)
 
 **Crashes and wrong results in running programs**
+- [ ] Platform layer — Bugs 68 + 69: `src/compat.zig` hard-codes Linux flag values that are
+      wrong on macOS, so `createFile` ignores `truncate`/`exclusive` (`:525-528`; a shorter
+      rewrite keeps the old tail) and `deleteTree` never removes directories (`:659`). Replace
+      every literal with `std.c.O{…}` / `std.c.AT.REMOVEDIR`. (qa-review 2026-09-26)
 - [ ] Bugs 15 + 16 + 17 — GC: unrooted half-built objects (`src/gc.zig:183`), unmarked async
       payloads (`gc.zig:374`), string methods popping the receiver before `createGC`
       (`src/vm.zig:1485`). One branch; add a stress-GC run to the VM tests. (qa-audit 2026-09-04)
