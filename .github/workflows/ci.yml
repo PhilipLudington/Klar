@@ -25,9 +25,9 @@ jobs:
   # ── Gate job: cheapest runner, fails fast ──────────────────────────
   test-linux:
     name: Linux x86_64 (gate)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Zig
         uses: mlugg/setup-zig@v2
@@ -55,13 +55,13 @@ jobs:
       matrix:
         include:
           - name: macOS (full suite)
-            runner: macos-latest
+            runner: macos-26
             llvm_install: brew install llvm@17
           - name: Linux ARM64 (full suite)
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-26.04-arm
             llvm_install: sudo apt-get update && sudo apt-get install -y llvm-17 llvm-17-dev
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Zig
         uses: mlugg/setup-zig@v2
@@ -86,7 +86,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Zig
         uses: mlugg/setup-zig@v2
@@ -94,7 +94,7 @@ jobs:
           version: 0.16.0
 
       - name: Set up Python (for selfhost AST normalization)
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -103,7 +103,7 @@ jobs:
 
       - name: Cache LLVM
         id: cache-llvm
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: C:/llvm
           key: llvm-18.1.8-windows-amd64-msvc17
@@ -128,9 +128,9 @@ jobs:
   cross-compile-windows-arm64:
     name: Windows ARM64 (cross-compile check)
     needs: test-linux
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Zig
         uses: mlugg/setup-zig@v2

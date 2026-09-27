@@ -20,29 +20,32 @@ test is committed first and seen failing, then the fix. Order: wrong results and
 in user programs first, then checker/contract correctness, then tooling, then debt.
 
 **CI (blocks every PR: the workflow has been red since 2026-04-20)**
-- [ ] CI — baseline the stale workflow: change only Zig 0.15.2 → 0.16.0 (all four jobs) and
+- [x] CI — baseline the stale workflow: change only Zig 0.15.2 → 0.16.0 (all four jobs) and
       add `workflow_dispatch`; leave runners, LLVM and action versions as they are. Record
       every job's result and the runner image each one reports. Each failure that is not the
       workflow itself (a real Linux, macOS or Windows test failure) becomes a BUG.md entry and
       is fixed before the upgrade line. Done when every job is green on the old
-      infrastructure. Red since 2026-04-20; blocks PR 43. (Philip, 2026-09-26)
-- [ ] Bug 66 — port `src/compat.zig` and `src/main.zig` stdio to Windows on Zig 0.16, on the
+      infrastructure. Red since 2026-04-20; blocks PR 43. (Philip, 2026-09-26) (completed
+      2026-09-27, PR 44: all five jobs green in run 36299203501 after Bugs 67, 72, 73)
+- [x] Bug 66 — port `src/compat.zig` and `src/main.zig` stdio to Windows on Zig 0.16, on the
       baseline branch (`ci/baseline-zig-016`), so one PR takes CI from red to every job green.
       Only the Windows CI jobs can prove the port, and they only run with the baseline's Zig
       pin. No `continue-on-error`: the baseline PR waits for the port. Done when
       `zig build -Dtarget=x86_64-windows` and `-Dtarget=aarch64-windows` compile locally and
       both Windows jobs are green. (Philip, 2026-09-26: "get Windows working first")
+      (completed 2026-09-27, PR 44)
 - [ ] PR 43 (Bugs 15–17): once the baseline + port PR merges, rebase `fix/gc-reachability`
       onto `main`, push `--force-with-lease`; it merges when its CI is green.
-- [ ] CI — upgrade runners and actions: `ubuntu-latest` → `ubuntu-26.04`, `ubuntu-24.04-arm` →
-      `ubuntu-26.04-arm`, `macos-latest` → the image the baseline run reported;
+- [x] CI — upgrade runners and actions: `ubuntu-latest` → `ubuntu-26.04`, `ubuntu-24.04-arm` →
+      `ubuntu-26.04-arm`, `macos-latest` → `macos-26` (the baseline run reported
+      `macos-26-arm64`, 20260907.0351); `windows-latest` stays;
       `actions/checkout` v4 → v7, `actions/setup-python` v5 → v7, `actions/cache` v4 → v6; add
       `.github/dependabot.yml` (package-ecosystem `github-actions`, schedule monthly, one
       `groups:` entry matching `*` so every action bump arrives as a single PR,
       `open-pull-requests-limit: 1`) so action majors and the Node-20 stragglers
       (`mlugg/setup-zig`, `ilammy/msvc-dev-cmd`) arrive as PRs; `/today` lists open Dependabot
       PRs on its board (installed `~/.claude` e4b4d07). Done when every job is green.
-      (Philip, 2026-09-26)
+      (Philip, 2026-09-26) (completed 2026-09-27)
 - [ ] CI — one LLVM version on every build: 21. Today the builds use 17 on Linux and macOS CI
       (`apt llvm-17`, `brew llvm@17`), 18.1.8 on Windows CI (vovkos), and 21.1.8 locally
       (Homebrew `llvm`, which `build.zig` `detectLLVMPrefix` finds first). Move Linux to
