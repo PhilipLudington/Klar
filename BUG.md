@@ -1551,3 +1551,346 @@ independently; verified 2026-09-06 by running step 1 on the installed compiler a
 both stdlib files at HEAD. Fix: `byte_len()` for `Content-Length` and for every `slice` end bound
 in both files (and `find_byte_in` / `find_str_in`'s search limit); a `len()`-as-byte-bound lint
 would have caught all of them.
+
+---
+
+## [x] Bug 66: Klar does not compile for Windows since the Zig 0.16 migration
+
+**Status:** Fixed
+
+**System:** platform layer — `src/compat.zig` (the Zig 0.16 file/dir/process shim),
+`src/main.zig` `getStdOut`/`getStdErr`
+
+**Description:** The Zig 0.15.2 → 0.16.0 migration (`2c69c7f`, 2026-04-20) rebuilt file,
+directory and process I/O in `src/compat.zig` on libc and POSIX file descriptors, and says
+so: `initArgs` "only targets the platforms currently exercised by the Klar build (macOS,
+Linux)". There is no Windows path in the file. CI's Windows jobs, which would have caught
+it, never ran after that date because the Linux gate they wait on was red on the stale Zig
+pin. So both Windows targets CI builds (`x86_64-windows` full suite, `aarch64-windows`
+cross-compile) fail to compile.
+
+**Steps to reproduce:**
+1. On macOS with Zig 0.16.0: `zig build -Dtarget=aarch64-windows --prefix <scratch dir>`
+   (the CI `cross-compile-windows-arm64` job's command).
+2. The same with `-Dtarget=x86_64-windows`.
+
+**Expected:** `klar.exe` is produced for both targets, as it was on Zig 0.15.2.
+
+**Actual:** (2026-09-26, `ci/baseline-zig-016` at `dd207a6`) both fail with the same
+6 errors, and these are only Zig's first analysis wave, so more will follow once they are
+fixed:
+- `std/c.zig:10648`, `:10657`: "dependency on libc must be explicitly specified" (the
+  aarch64 cross-compile does not link libc; `compat.zig` calls `std.c.*` unconditionally,
+  65 call sites)
+- `src/compat.zig:842`: `cwd()` builds a POSIX `AT_FDCWD` integer where Windows needs a
+  `HANDLE`
+- `src/compat.zig:885`: `initArgs` stores `minimal.args.vector`, which is `[]const u16` on
+  Windows
+- `src/main.zig:45`, `:55`: `std.os.windows.kernel32.GetStdHandle` no longer exists in 0.16
+
+**Found by:** the CI baseline item (PLAN.md Next Up, 2026-09-26), running the Windows
+ARM64 job's command locally before pushing.
+
+**Fix:** Windows gets its own implementation of the compat surface, over Zig 0.16's
+cross-platform `std.Io` (`std.Io.Dir`, `std.Io.File`, `std.process.spawn`,
+`std.process.Args`/`Environ`, `std.Io.Clock`) on the process-wide single-threaded `Io`, in
+the new `src/compat_windows.zig`. Every `compat` entry point in `src/compat.zig` returns into
+it first when the target is Windows; the POSIX code after that branch is what macOS and
+Linux still run. Linking libc on Windows was rejected: Windows libc has no `openat`,
+`fstatat`, `readdir`, `fork` or `waitpid`, and the aarch64-windows build links no libc at
+all. The 20 `kernel32.GetStdHandle` sites (`main.zig`, `interpreter.zig`, `vm.zig`,
+`vm_builtins.zig`, `repl.zig`, `lsp.zig`, `meta_query.zig`, `formatter.zig`,
+`interop/kira_manifest.zig`) read `std.Io.File.stdout/stderr/stdin().handle`. The registry
+client (`src/pkg/registry.zig`) connects through `std.Io.net` on Windows. On Windows,
+`klar run` exits with the child's exit code cut to 8 bits: std already reports a Windows exit
+status as a `u8` (`std/Io/Threaded.zig:15196`), so the `@truncate` before `compat.exit`
+changes nothing.
+
+**Test:** none: the reproduction is the cross-compile itself.
+`zig build -Dtarget=x86_64-windows` and `-Dtarget=aarch64-windows` into a scratch prefix
+both fail at `fa3c287` and both produce `klar.exe` after the fix. With LLVM enabled (the CI
+x86_64 job), `zig build-exe -fno-emit-bin -target x86_64-windows-gnu -lc` against the LLVM
+headers and the same for `zig test` both type-check clean. That the Windows binary *runs*
+correctly (the full suite on `windows-latest`) only the CI Windows job can show.
+
+---
+
+## [x] Bug 67: Klar does not compile for Linux since the Zig 0.16 migration
+
+**Status:** Fixed
+
+**System:** platform layer — `src/compat.zig` (the Zig 0.16 file/dir/process shim),
+`src/main.zig` `getStdOut`/`getStdErr`
+
+**Description:** Zig 0.16 defines `std.c.Stat` and `std.c.fstat` as `void` on Linux (std
+steers callers to statx). `compat.File.stat` calls `std.c.fstat` and `compat.Dir.statFile`
+and `statFromCStat` use `std.c.Stat`, so Klar has not compiled for Linux since the 0.16
+migration (`2c69c7f`). The macOS gates stayed green because macOS still has both, and the
+Linux CI gate never got as far as compiling Klar: it failed first in `build.zig` on the stale
+Zig 0.15.2 pin. The baseline CI run would have hit this at the gate job, and nothing
+behind the gate would have run.
+
+**Steps to reproduce:**
+1. On macOS with Zig 0.16.0, at `fa3c287`: `zig build-exe -fno-emit-bin -target
+   x86_64-linux-gnu -lc -I /opt/homebrew/opt/llvm/include --dep build_options
+   -Mroot=src/main.zig -Mbuild_options=<file with pub const has_llvm: bool = true;>`
+2. The same with `-target aarch64-linux-gnu`.
+
+**Expected:** Both type-check clean, as the macOS target does.
+
+**Actual:** `src/compat.zig:325:25: error: type 'void' not a function` (`std.c.fstat`), and
+once that is bypassed, `type 'void' does not support field access` on `st.mode` in
+`statFromCStat`.
+
+**Found by:** the Bug 66 port (2026-09-26), type-checking the Linux targets to confirm the
+port left them alone.
+
+**Fix:** `compat.File.stat` and `compat.Dir.statFile` stat through the `statx` syscall on
+Linux (`linuxStat` in `src/compat.zig`, `AT_EMPTY_PATH` for the open-file case), returning
+the same `compat.Stat` shape. macOS keeps `std.c.fstat`/`fstatat`, untouched.
+
+**Test:** none: the reproduction is the type-check in Steps to reproduce, red at
+`fa3c287`, clean for both Linux targets after the fix, for `zig build-exe` and `zig test`
+alike. Whether the Linux binary links against CI's LLVM 17 and passes the suite only the
+CI Linux jobs can show.
+
+---
+
+## [ ] Bug 68: On macOS, `compat.Dir.createFile` ignores `truncate` and `exclusive` — a shorter rewrite leaves the old file's tail behind
+
+**Status:** Open
+
+**System:** platform layer — `src/compat.zig` (the Zig 0.16 file/dir/process shim)
+
+**Description:** `createFile` (`src/compat.zig:525-528`) builds its `openat` flags from Linux
+octal literals: `0o100` for `O_CREAT`, `0o1000` for `O_TRUNC`, `0o200` for `O_EXCL`. macOS
+numbers them differently (`O_CREAT` 0x200, `O_TRUNC` 0x400, `O_EXCL` 0x800). So on macOS
+`0o1000` sets `O_CREAT`, `0o100` sets `O_ASYNC` and `0o200` sets `O_FSYNC`. `truncate` and
+`exclusive` are never honoured. Any rewrite shorter than the file it replaces (`klar fmt`,
+`klar.lock`, `klar.json`) keeps the old file's trailing bytes. Present since the 0.16
+migration (`2c69c7f`).
+
+**Steps to reproduce:**
+1. Through `compat`, write "LONG CONTENT HERE 1234567890" to a file.
+2. `writeFile` the same path with "short".
+3. Read it back. Also `createFile(.{ .exclusive = true })` on that existing file.
+
+**Expected:** "short" (5 bytes); the exclusive create fails with `PathAlreadyExists`.
+
+**Actual:** `'shortCONTENT HERE 1234567890'` (28 bytes); the exclusive create returns a handle.
+
+**Found by:** /qa-review on ci/baseline-zig-016, 2026-09-26 — GenA; probe
+`scratch/qa-shardA/probe/probe.zig` — reviewer's evidence, not re-read.
+
+---
+
+## [ ] Bug 69: On macOS, `compat.Dir.deleteTree` never removes directories — `klar clean` leaves `build/` behind
+
+**Status:** Open
+
+**System:** platform layer — `src/compat.zig` (the Zig 0.16 file/dir/process shim)
+
+**Description:** `deleteTree` (`src/compat.zig:659`) hard-codes `AT_REMOVEDIR = 0x200`,
+which is the Linux value; the comment calls it common to both. On macOS it is 0x80, so the
+final `unlinkat` of each directory is a plain file unlink, which fails on a directory, and the
+error is discarded. Files inside are deleted and every directory stays.
+
+**Steps to reproduce:**
+1. `makePath("…/tree/sub")`, then write a file in it.
+2. `deleteTree("…/tree")`, then `access("…/tree")`.
+
+**Expected:** `access` fails; the tree is gone.
+
+**Actual:** `access` succeeds and `tree/sub/` is still on disk.
+
+**Found by:** /qa-review on ci/baseline-zig-016, 2026-09-26 — GenA; probe
+`scratch/qa-shardA/probe/probe2.zig` — reviewer's evidence, not re-read.
+
+---
+
+## [ ] Bug 70: POSIX `compat.Child.spawn` never reports a missing program — the linker fallback chain stops at the first missing linker
+
+**Status:** Open
+
+**System:** platform layer — `src/compat.zig` (the Zig 0.16 file/dir/process shim)
+
+**Deferred:** after the current milestone. It only affects `linkBareMetalTarget`'s fallback,
+and the first linker it tries is present on every supported host.
+
+**Description:** `Child.spawn` (`src/compat.zig:1102-1118`) forks, then execs in the child.
+When exec fails, the child exits 127, so the parent never sees `error.FileNotFound`.
+`linker.zig:498-501` maps FileNotFound to `LinkerNotFound` so it can try the next linker, and
+on macOS and Linux that branch never fires: the chain stops at the first missing name with
+`LinkerFailed`. The Windows path (`std.process.spawn`) does return FileNotFound, so the two
+platforms now disagree.
+
+**Steps to reproduce:**
+1. `compat.Child.init(&.{"surely-not-a-program"}, alloc)`, then `spawn()` and `wait()`.
+
+**Expected:** `spawn` returns `error.FileNotFound`.
+
+**Actual:** `spawn` succeeds and `wait` returns `.Exited = 127`.
+
+**Found by:** /qa-review on ci/baseline-zig-016, 2026-09-26 — GenA; verified by reading
+`src/compat.zig:1102-1118` and `src/codegen/linker.zig:498-501` — reviewer's evidence, not re-read.
+
+---
+
+## [ ] Bug 71: The linker call pipes stdout and stderr but never reads them — a linker that writes more than the pipe buffer hangs `klar build`
+
+**Status:** Open
+
+**System:** native codegen — `src/codegen/linker.zig`
+
+**Deferred:** after the current milestone. Linker output is normally far under the 64 KB
+pipe buffer; it takes a flood of warnings to hit.
+
+**Description:** `linker.zig:382-392` spawns the linker with `.Pipe` for stdout and stderr,
+never reads either, and calls `wait`. A linker that fills a pipe blocks on write while Klar
+blocks in `wait`, so the build hangs. On POSIX `compat.Child.wait` also never closes the
+parent's read ends.
+
+**Steps to reproduce:**
+1. Link through `linker.zig` with a linker (or a wrapper script in its place) that writes
+   more than 64 KB to stderr before exiting.
+
+**Expected:** The link finishes and reports the output or the exit code.
+
+**Actual:** `klar build` hangs in `wait`.
+
+**Found by:** /qa-review on ci/baseline-zig-016, 2026-09-26 — GenA; verified by reading
+`src/codegen/linker.zig:382-392` — reviewer's evidence, not re-read.
+
+---
+
+## [x] Bug 72: On Windows every `compat.Child.spawn` fails before the child starts — every `klar build` link fails with no linker output
+
+**Status:** Fixed
+
+**System:** platform layer — `src/compat_windows.zig` `io()`, the one `std.Io` every Windows
+compat call runs on
+
+**Description:** `compat_windows.zig` runs every call on
+`std.Io.Threaded.global_single_threaded`, whose allocator is `Allocator.failing`
+(`std/Io/Threaded.zig:1677`). `std.process.spawn` on Windows builds the command line and
+searches PATH in an arena over that allocator (`processSpawnWindows`, `:15578`), so every
+spawn returns `error.OutOfMemory` before `CreateProcess` runs. `linker.zig` maps it to
+`LinkerFailed`, and every native build on Windows prints "Linker error: Linker failed" with
+nothing from `link.exe`, because `link.exe` never started.
+
+**Steps to reproduce:**
+1. CI run 36291851109, Windows (full suite), job 108543946245.
+2. Same mechanism on macOS: `std.process.spawn(Io.Threaded.global_single_threaded.io(),
+   .{ .argv = &.{"true"} })` returns `error.OutOfMemory`; the same call on a `Threaded`
+   given a real allocator spawns and exits 0.
+
+**Expected:** `klar build` links through `link.exe` and the native, selfhost, module, app and
+args suites run on Windows.
+
+**Actual:** 370 builds fail with "Linker error: Linker failed. Check that all required
+libraries are available." (native 6/375 passed, selfhost 29/549, module 2/26, app 1/10,
+args 55/61).
+
+**Found by:** PR 44's first CI run (2026-09-27), reproduced from `scratch/win-job.log` and the
+macOS spawn repro above.
+
+**Fix:** `compat_windows.zig` runs on its own copy of std's `init_single_threaded` with
+`std.heap.page_allocator` in place of `Allocator.failing`, so spawn (and every other Windows
+compat call that allocates inside `std.Io`) gets memory. Everything else about the `Io` is
+unchanged: the process environment block for PATH, no worker threads.
+
+**Test:** `src/compat.zig` test "Child spawns a program found on PATH and reports its exit
+code" (`cmd.exe /c exit 3` on Windows). Only the Windows CI job runs it on the Windows path.
+
+---
+
+## [x] Bug 73: Native runtime checks fail into a bare `unreachable` — on aarch64 Linux a failed bounds check falls through instead of trapping
+
+**Status:** Fixed
+
+**System:** native codegen — `src/codegen/emit.zig`, the failure block of every runtime check
+(array, slice and List bounds, `List.set`, overflow, `!`, `unwrap`, `unwrap_err`, match
+failure)
+
+**Description:** Each runtime check branches to a failure block that holds only LLVM
+`unreachable`. That is undefined behavior, not a trap: LLVM emits a trap for it only where
+the target turns on TrapUnreachable (Darwin does; the x86 Linux gate's `array_bounds` also
+stopped), and on aarch64 Linux it
+emits no instruction at all, so a failed check runs off the end of the function into
+whatever code follows. It also licenses the optimizer to delete the check. Klar promises no
+undefined behavior and bounds-checked indexing.
+
+**Steps to reproduce:**
+1. `klar build test/native/array_bounds.kl -c --target aarch64-linux --emit-asm`.
+2. Read `main`: the `bounds.fail` block (`.LBB0_2`) is empty and is the last label before
+   `.Lfunc_end0`. The macOS build of the same file has `brk #0x1` there.
+
+**Expected:** Every failure block traps on every target (`llvm.trap`), so `array_bounds`
+aborts.
+
+**Actual:** On the Linux ARM64 runner `klar_test_array_bounds` never exited; the job hung
+98 minutes until the run was cancelled (CI run 36291851109, job 108543946262).
+
+**Found by:** PR 44's first CI run (2026-09-27), reproduced locally by cross-compiling to
+aarch64 Linux assembly.
+
+**Fix:** New `Emitter.emitTrap` (`llvm.trap`, then `unreachable`). All 17 failure blocks
+call it: the 16 runtime-check sites and `match.failed`. The aarch64 Linux `bounds.fail` block
+is now `brk #0x1`. Left as bare `unreachable`: blocks after a call that does not return
+(`abort`, `exit`), merge blocks no branch reaches, the two `?` fallbacks the checker rules
+out, and the wasm unsupported-feature trap (wasm's `unreachable` always traps).
+
+**Test:** `test/native/runtime_traps.kl`, checked by `runtime_trap_lowering` in
+`scripts/run-native-tests.sh`.
+
+---
+
+## [ ] Bug 74: A negative narrow signed index passes the native bounds check — `arr[k]` with an `i8` of -1 reads before the array
+
+**Status:** Open
+
+**System:** native codegen — `src/codegen/emit.zig`, the failure block of every runtime check
+
+**Description:** The bounds check zero-extends a narrow index before its unsigned compare,
+but the GEP takes the raw index, which LLVM sign-extends (`src/codegen/emit.zig:9898-9930`;
+the same pattern at `:5160-5185` and `:9957-9990`). An `i8` of -1 becomes 255 for the check,
+passes against any length above 255, and then addresses element -1. The checker accepts any
+integer index type (`src/checker/expressions.zig:1149`). Reads and writes both go out of
+bounds, with no trap: the undefined behavior Bug 73's work set out to remove.
+
+**Steps to reproduce:**
+1. `var arr: [i32; 300] = @repeat(0, 300)`, `let one: i8 = 1`, `let zero: i8 = 0`,
+   `let k: i8 = zero - one`, `let v: i32 = arr[k]`, then `println`.
+2. `klar build` it and run the binary.
+
+**Expected:** The bounds check traps.
+
+**Actual:** The program prints and exits normally (probe `scratch/probe/neg_index.kl`, macOS
+arm64, 2026-09-27: "read arr[-1] without trapping", exit 7).
+
+**Found by:** /qa-review on ci/baseline-zig-016, 2026-09-27 — GenA2; verified by probe.
+
+---
+
+## [ ] Bug 75: Native integer `/` and `%` have no zero or MIN/-1 check — `10 / 0` returns 0 on arm64
+
+**Status:** Open
+
+**System:** native codegen — `src/codegen/emit.zig`, the failure block of every runtime check
+
+**Description:** Integer `/` and `%` lower to bare `sdiv`/`udiv`/`srem`/`urem`
+(`src/codegen/emit.zig:4570-4581`), which is LLVM undefined behavior for a zero divisor and
+for `MIN / -1`. x86 raises SIGFPE; aarch64 returns 0. The VM returns `DivisionByZero`
+(`src/vm.zig:1294`), so the backends disagree on the same program.
+
+**Steps to reproduce:**
+1. `fn main(args: [String]) -> i32`, `let z: i32 = args.len() - 1`, `let r: i32 = 10 / z`,
+   `println("10 / 0 returned {r}")`.
+2. `klar build` it and run the binary with no arguments.
+
+**Expected:** A runtime trap, as the VM reports division by zero.
+
+**Actual:** Prints "10 / 0 returned 0" and exits 7 (probe `scratch/probe/div_zero.kl`, macOS
+arm64, 2026-09-27).
+
+**Found by:** /qa-review on ci/baseline-zig-016, 2026-09-27 — GenA2; verified by probe.

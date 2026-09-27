@@ -109,7 +109,45 @@ fn parseUrl(url: []const u8) RegistryError!UrlComponents {
     return .{ .host = host, .port = port, .path = path };
 }
 
-const SocketStream = struct {
+const SocketStream = if (@import("builtin").os.tag == .windows) WindowsSocketStream else PosixSocketStream;
+
+/// Windows has no libc sockets here (the aarch64-windows build links no libc),
+/// so the registry client connects through Zig 0.16's `std.Io.net` (Bug 66).
+const WindowsSocketStream = struct {
+    stream: std.Io.net.Stream,
+
+    fn io() std.Io {
+        return std.Io.Threaded.global_single_threaded.io();
+    }
+
+    pub fn connect(host: []const u8, port: u16) !WindowsSocketStream {
+        const host_name = std.Io.net.HostName.init(host) catch return RegistryError.ConnectionFailed;
+        const stream = host_name.connect(io(), port, .{ .mode = .stream }) catch return RegistryError.ConnectionFailed;
+        return .{ .stream = stream };
+    }
+
+    pub fn close(self: WindowsSocketStream) void {
+        self.stream.close(io());
+    }
+
+    pub fn writeAll(self: WindowsSocketStream, bytes: []const u8) !void {
+        const i = io();
+        var index: usize = 0;
+        while (index < bytes.len) {
+            const n = i.vtable.netWrite(i.userdata, self.stream.socket.handle, bytes[index..], &.{""}, 1) catch
+                return RegistryError.ConnectionFailed;
+            index += n;
+        }
+    }
+
+    pub fn read(self: WindowsSocketStream, buffer: []u8) !usize {
+        const i = io();
+        var bufs = [_][]u8{buffer};
+        return i.vtable.netRead(i.userdata, self.stream.socket.handle, &bufs) catch RegistryError.ConnectionFailed;
+    }
+};
+
+const PosixSocketStream = struct {
     fd: c_int,
 
     pub fn close(self: SocketStream) void {
@@ -134,6 +172,7 @@ const SocketStream = struct {
 
 fn tcpConnect(allocator: Allocator, host: []const u8, port: u16) !SocketStream {
     _ = allocator;
+    if (comptime @import("builtin").os.tag == .windows) return WindowsSocketStream.connect(host, port);
     // Resolve host via getaddrinfo.
     var host_buf: [256]u8 = undefined;
     if (host.len >= host_buf.len) return RegistryError.ConnectionFailed;

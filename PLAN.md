@@ -19,7 +19,48 @@ phase tasks. Bug fixes follow `~/.claude/rules/bug-format.md` § Fixing a bug: t
 test is committed first and seen failing, then the fix. Order: wrong results and crashes
 in user programs first, then checker/contract correctness, then tooling, then debt.
 
+**CI (blocks every PR: the workflow has been red since 2026-04-20)**
+- [ ] CI — baseline the stale workflow: change only Zig 0.15.2 → 0.16.0 (all four jobs) and
+      add `workflow_dispatch`; leave runners, LLVM and action versions as they are. Record
+      every job's result and the runner image each one reports. Each failure that is not the
+      workflow itself (a real Linux, macOS or Windows test failure) becomes a BUG.md entry and
+      is fixed before the upgrade line. Done when every job is green on the old
+      infrastructure. Red since 2026-04-20; blocks PR 43. (Philip, 2026-09-26)
+- [ ] Bug 66 — port `src/compat.zig` and `src/main.zig` stdio to Windows on Zig 0.16, on the
+      baseline branch (`ci/baseline-zig-016`), so one PR takes CI from red to every job green.
+      Only the Windows CI jobs can prove the port, and they only run with the baseline's Zig
+      pin. No `continue-on-error`: the baseline PR waits for the port. Done when
+      `zig build -Dtarget=x86_64-windows` and `-Dtarget=aarch64-windows` compile locally and
+      both Windows jobs are green. (Philip, 2026-09-26: "get Windows working first")
+- [ ] PR 43 (Bugs 15–17): once the baseline + port PR merges, rebase `fix/gc-reachability`
+      onto `main`, push `--force-with-lease`; it merges when its CI is green.
+- [ ] CI — upgrade runners and actions: `ubuntu-latest` → `ubuntu-26.04`, `ubuntu-24.04-arm` →
+      `ubuntu-26.04-arm`, `macos-latest` → the image the baseline run reported;
+      `actions/checkout` v4 → v7, `actions/setup-python` v5 → v7, `actions/cache` v4 → v6; add
+      `.github/dependabot.yml` (package-ecosystem `github-actions`, schedule monthly, one
+      `groups:` entry matching `*` so every action bump arrives as a single PR,
+      `open-pull-requests-limit: 1`) so action majors and the Node-20 stragglers
+      (`mlugg/setup-zig`, `ilammy/msvc-dev-cmd`) arrive as PRs; `/today` lists open Dependabot
+      PRs on its board (installed `~/.claude` e4b4d07). Done when every job is green.
+      (Philip, 2026-09-26)
+- [ ] CI — one LLVM version on every build: 21. Today the builds use 17 on Linux and macOS CI
+      (`apt llvm-17`, `brew llvm@17`), 18.1.8 on Windows CI (vovkos), and 21.1.8 locally
+      (Homebrew `llvm`, which `build.zig` `detectLLVMPrefix` finds first). Move Linux to
+      `llvm-21-dev` (packaged on Ubuntu 26.04), macOS to `brew install llvm@21`, and Windows
+      to vovkos `llvm-21.1.1-windows-amd64-msvc17-msvcrt.7z`, changing its `actions/cache` key
+      and the `LLVM_PREFIX`/PATH lines with it. Done when every job is green on 21 and
+      `CLAUDE.md` names 21 as the supported LLVM. Why: a codegen difference that shows up on
+      only one platform today could come from LLVM rather than Klar. (Philip, 2026-09-26)
+
 **Crashes and wrong results in running programs**
+- [ ] Native codegen — Bugs 74 + 75: runtime checks that let undefined behavior through. A
+      negative `i8`/`i16` index passes the bounds check (zext) and the GEP sign-extends it
+      (`src/codegen/emit.zig:9898`, `:5160`, `:9957`); integer `/` and `%` have no zero or
+      MIN/-1 check (`:4570`). One branch; both fail into `emitTrap`. (qa-review 2026-09-27)
+- [ ] Platform layer — Bugs 68 + 69: `src/compat.zig` hard-codes Linux flag values that are
+      wrong on macOS, so `createFile` ignores `truncate`/`exclusive` (`:525-528`; a shorter
+      rewrite keeps the old tail) and `deleteTree` never removes directories (`:659`). Replace
+      every literal with `std.c.O{…}` / `std.c.AT.REMOVEDIR`. (qa-review 2026-09-26)
 - [ ] Bugs 15 + 16 + 17 — GC: unrooted half-built objects (`src/gc.zig:183`), unmarked async
       payloads (`gc.zig:374`), string methods popping the receiver before `createGC`
       (`src/vm.zig:1485`). One branch; add a stress-GC run to the VM tests. (qa-audit 2026-09-04)

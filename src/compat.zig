@@ -14,10 +14,17 @@
 //!
 //! The goal is API compatibility with the Zig 0.15 surface the Klar compiler
 //! was using, not full feature parity with the Zig stdlib.
+//!
+//! Windows has none of the libc/POSIX calls below, so on Windows every entry
+//! point returns early into `compat_windows.zig`, which implements the same
+//! surface over `std.Io` (Bug 66). The POSIX code after each such branch is
+//! what macOS and Linux run, unchanged.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
+const is_windows = builtin.os.tag == .windows;
+const win = @import("compat_windows.zig");
 
 // -----------------------------------------------------------------------------
 // ArrayList writer shim — 0.16 removed `.writer(allocator)` on
@@ -235,10 +242,12 @@ pub const File = struct {
     pub const Kind = Stat.Kind;
 
     pub fn close(self: File) void {
+        if (comptime is_windows) return win.fileClose(self.handle);
         _ = std.c.close(self.handle);
     }
 
     pub fn writeAll(self: File, bytes: []const u8) WriteError!void {
+        if (comptime is_windows) return win.fileWriteAll(self.handle, bytes);
         var index: usize = 0;
         while (index < bytes.len) {
             const rc = std.c.write(self.handle, bytes.ptr + index, bytes.len - index);
@@ -260,6 +269,7 @@ pub const File = struct {
     }
 
     pub fn write(self: File, bytes: []const u8) WriteError!usize {
+        if (comptime is_windows) return win.fileWrite(self.handle, bytes);
         const rc = std.c.write(self.handle, bytes.ptr, bytes.len);
         if (rc < 0) {
             switch (posix.errno(rc)) {
@@ -276,6 +286,7 @@ pub const File = struct {
     }
 
     pub fn readAll(self: File, buffer: []u8) ReadError!usize {
+        if (comptime is_windows) return win.fileReadAll(self.handle, buffer);
         var total: usize = 0;
         while (total < buffer.len) {
             const rc = std.c.read(self.handle, buffer.ptr + total, buffer.len - total);
@@ -294,6 +305,7 @@ pub const File = struct {
     }
 
     pub fn read(self: File, buffer: []u8) ReadError!usize {
+        if (comptime is_windows) return win.fileRead(self.handle, buffer);
         while (true) {
             const rc = std.c.read(self.handle, buffer.ptr, buffer.len);
             if (rc < 0) {
@@ -309,6 +321,7 @@ pub const File = struct {
     }
 
     pub fn getEndPos(self: File) !u64 {
+        if (comptime is_windows) return win.fileGetEndPos(self.handle);
         const SEEK_SET: std.c.whence_t = 0;
         const SEEK_CUR: std.c.whence_t = 1;
         const SEEK_END: std.c.whence_t = 2;
@@ -321,6 +334,8 @@ pub const File = struct {
     }
 
     pub fn stat(self: File) !Stat {
+        if (comptime is_windows) return win.fileStat(self.handle);
+        if (comptime builtin.os.tag == .linux) return linuxStat(self.handle, "", 0x1000); // AT_EMPTY_PATH
         var st: std.c.Stat = undefined;
         const rc = std.c.fstat(self.handle, &st);
         if (rc != 0) return error.Unexpected;
@@ -360,6 +375,7 @@ pub const File = struct {
     }
 
     pub fn seekTo(self: File, pos: u64) !void {
+        if (comptime is_windows) return win.fileSeekTo(self.handle, pos);
         const SEEK_SET: std.c.whence_t = 0;
         const rc = std.c.lseek(self.handle, @intCast(pos), SEEK_SET);
         if (rc < 0) return error.Unexpected;
@@ -416,6 +432,33 @@ fn readAllAllocGrow(file: File, allocator: std.mem.Allocator, max_bytes: usize) 
     return allocator.realloc(buf, len) catch buf[0..len];
 }
 
+/// Zig 0.16 defines no `std.c.Stat` or `std.c.fstat` on Linux (both are
+/// `void`; std steers callers to statx), so Linux stats through the statx
+/// syscall. Same result shape as `statFromCStat` (Bug 67).
+fn linuxStat(dirfd: posix.fd_t, p: [*:0]const u8, flags: u32) !Stat {
+    const linux = std.os.linux;
+    var stx: linux.Statx = undefined;
+    const rc = linux.statx(dirfd, p, flags, .{ .TYPE = true, .MODE = true, .SIZE = true, .MTIME = true }, &stx);
+    if (linux.errno(rc) != .SUCCESS) return error.Unexpected;
+    const S = linux.S;
+    const mode: linux.mode_t = stx.mode;
+    const kind: Stat.Kind = blk: {
+        if (S.ISDIR(mode)) break :blk .directory;
+        if (S.ISREG(mode)) break :blk .file;
+        if (S.ISLNK(mode)) break :blk .sym_link;
+        if (S.ISFIFO(mode)) break :blk .named_pipe;
+        if (S.ISCHR(mode)) break :blk .character_device;
+        if (S.ISBLK(mode)) break :blk .block_device;
+        if (S.ISSOCK(mode)) break :blk .unix_domain_socket;
+        break :blk .unknown;
+    };
+    return .{
+        .size = stx.size,
+        .mtime = @as(i128, stx.mtime.sec) * std.time.ns_per_s + stx.mtime.nsec,
+        .kind = kind,
+    };
+}
+
 fn statFromCStat(st: std.c.Stat) Stat {
     const S = std.c.S;
     const kind: Stat.Kind = blk: {
@@ -460,6 +503,7 @@ pub const Dir = struct {
     }
 
     pub fn openFile(self: Dir, sub_path: []const u8, flags: OpenFlags) !File {
+        if (comptime is_windows) return File{ .handle = try win.dirOpenFile(self.handle, sub_path, flags) };
         var buf: [4096]u8 = undefined;
         const zpath = try tmpZPath(&buf, sub_path);
         const o_flag: c_int = switch (flags.mode) {
@@ -475,6 +519,7 @@ pub const Dir = struct {
     }
 
     pub fn createFile(self: Dir, sub_path: []const u8, flags: CreateFlags) !File {
+        if (comptime is_windows) return File{ .handle = try win.dirCreateFile(self.handle, sub_path, flags) };
         var buf: [4096]u8 = undefined;
         const zpath = try tmpZPath(&buf, sub_path);
         var o_flag: c_int = if (flags.read) 2 else 1; // O_RDWR or O_WRONLY
@@ -490,11 +535,11 @@ pub const Dir = struct {
     }
 
     pub fn openDir(self: Dir, sub_path: []const u8, options: OpenDirOptions) !Dir {
-        _ = options;
+        if (comptime is_windows) return Dir{ .handle = try win.dirOpenDir(self.handle, sub_path, options) };
         var buf: [4096]u8 = undefined;
         const zpath = try tmpZPath(&buf, sub_path);
-        const O_DIRECTORY: c_int = if (builtin.os.tag == .macos) 0x100000 else 0o200000;
-        const fd = std.c.openat(self.handle, zpath.ptr, @bitCast(O_DIRECTORY), @as(std.c.mode_t, 0));
+        // std's per-target layout: a literal is wrong somewhere (0o200000 is O_DIRECT on aarch64-linux).
+        const fd = std.c.openat(self.handle, zpath.ptr, .{ .DIRECTORY = true }, @as(std.c.mode_t, 0));
         if (fd < 0) {
             return mapOpenErrno();
         }
@@ -502,6 +547,7 @@ pub const Dir = struct {
     }
 
     pub fn access(self: Dir, sub_path: []const u8, options: AccessOptions) AccessError!void {
+        if (comptime is_windows) return win.dirAccess(self.handle, sub_path);
         _ = options;
         var buf: [4096]u8 = undefined;
         const zpath = tmpZPath(&buf, sub_path) catch return AccessError.Unexpected;
@@ -512,8 +558,10 @@ pub const Dir = struct {
     }
 
     pub fn statFile(self: Dir, sub_path: []const u8) !Stat {
+        if (comptime is_windows) return win.dirStatFile(self.handle, sub_path);
         var buf: [4096]u8 = undefined;
         const zpath = try tmpZPath(&buf, sub_path);
+        if (comptime builtin.os.tag == .linux) return linuxStat(self.handle, zpath.ptr, 0) catch error.FileNotFound;
         var st: std.c.Stat = undefined;
         const rc = fstatat(self.handle, zpath.ptr, &st, 0);
         if (rc != 0) return error.FileNotFound;
@@ -521,6 +569,7 @@ pub const Dir = struct {
     }
 
     pub fn makePath(self: Dir, sub_path: []const u8) !void {
+        if (comptime is_windows) return win.dirMakePath(self.handle, sub_path);
         // Recursive mkdir -p behavior.
         var buf: [4096]u8 = undefined;
         if (sub_path.len >= buf.len) return error.NameTooLong;
@@ -544,6 +593,7 @@ pub const Dir = struct {
     }
 
     pub fn makeDir(self: Dir, sub_path: []const u8) !void {
+        if (comptime is_windows) return win.dirMakeDir(self.handle, sub_path);
         var buf: [4096]u8 = undefined;
         const zpath = try tmpZPath(&buf, sub_path);
         const rc = mkdirat_wrap(self.handle, zpath.ptr, 0o755);
@@ -555,6 +605,7 @@ pub const Dir = struct {
     }
 
     pub fn deleteFile(self: Dir, sub_path: []const u8) DeleteError!void {
+        if (comptime is_windows) return win.dirDeleteFile(self.handle, sub_path);
         var buf: [4096]u8 = undefined;
         const zpath = tmpZPath(&buf, sub_path) catch return DeleteError.AccessDenied;
         const rc = std.c.unlinkat(self.handle, zpath.ptr, 0);
@@ -571,6 +622,7 @@ pub const Dir = struct {
     }
 
     pub fn rename(self: Dir, old_sub_path: []const u8, new_sub_path: []const u8) RenameError!void {
+        if (comptime is_windows) return win.dirRename(self.handle, old_sub_path, new_sub_path);
         var old_buf: [4096]u8 = undefined;
         var new_buf: [4096]u8 = undefined;
         const old_z = tmpZPath(&old_buf, old_sub_path) catch return RenameError.Unexpected;
@@ -587,6 +639,7 @@ pub const Dir = struct {
     }
 
     pub fn deleteTree(self: Dir, sub_path: []const u8) !void {
+        if (comptime is_windows) return win.dirDeleteTree(self.handle, sub_path);
         // Best-effort recursive delete using POSIX nftw-style open+iterate.
         var dir = self.openDir(sub_path, .{ .iterate = true }) catch |err| switch (err) {
             else => return err,
@@ -623,7 +676,7 @@ pub const Dir = struct {
     }
 
     pub fn realpath(self: Dir, sub_path: []const u8, out_buffer: []u8) ![]u8 {
-        _ = self;
+        if (comptime is_windows) return win.dirRealpath(self.handle, sub_path, out_buffer);
         var zbuf: [4096]u8 = undefined;
         const zpath = try tmpZPath(&zbuf, sub_path);
         var resolved: [4096]u8 = undefined;
@@ -636,9 +689,9 @@ pub const Dir = struct {
     }
 
     pub fn realpathAlloc(self: Dir, allocator: std.mem.Allocator, sub_path: []const u8) ![]u8 {
+        if (comptime is_windows) return win.dirRealpathAlloc(self.handle, allocator, sub_path);
         var zbuf: [4096]u8 = undefined;
         const zpath = try tmpZPath(&zbuf, sub_path);
-        _ = self;
         var resolved: [4096]u8 = undefined;
         const rc_opt = realpath_libc(zpath.ptr, &resolved);
         if (rc_opt == null) return error.FileNotFound;
@@ -667,6 +720,7 @@ pub const Dir = struct {
     };
 
     pub fn iterate(self: Dir) Iterator {
+        if (comptime is_windows) return Iterator{ .dir = {}, .first = true, .win_state = win.iterInit(self.handle) };
         // Open a fresh DIR* via dup to avoid consuming the caller's fd.
         const dup_fd = std.c.dup(self.handle);
         const dir_ptr: ?*std.c.DIR = if (dup_fd >= 0) std.c.fdopendir(dup_fd) else null;
@@ -674,8 +728,9 @@ pub const Dir = struct {
     }
 
     pub const Iterator = struct {
-        dir: ?*std.c.DIR,
+        dir: if (is_windows) void else ?*std.c.DIR,
         first: bool,
+        win_state: if (is_windows) win.IterState else void = if (is_windows) undefined else {},
 
         pub const Entry = struct {
             name: []const u8,
@@ -683,6 +738,7 @@ pub const Dir = struct {
         };
 
         pub fn next(self: *Iterator) !?Entry {
+            if (comptime is_windows) return win.iterNext(&self.win_state);
             const dir = self.dir orelse return null;
             while (true) {
                 const ent = std.c.readdir(dir) orelse {
@@ -707,6 +763,7 @@ pub const Dir = struct {
         }
 
         pub fn deinit(self: *Iterator) void {
+            if (comptime is_windows) return;
             if (self.dir) |d| _ = std.c.closedir(d);
             self.dir = null;
         }
@@ -764,7 +821,7 @@ pub const Dir = struct {
                                 .basename = e.name,
                                 .path = full_path,
                                 .kind = e.kind,
-                                .dir = Dir{ .handle = -1 },
+                                .dir = Dir{ .handle = invalid_handle },
                             };
                         };
                         const path_dup = try self.allocator.dupe(u8, full_path);
@@ -790,7 +847,7 @@ pub const Dir = struct {
                 }
                 var done = self.stack.pop() orelse break;
                 done.iter.deinit();
-                if (done.owned and done.dir_handle >= 0) _ = std.c.close(done.dir_handle);
+                if (done.owned and done.dir_handle != invalid_handle) closeDirHandle(done.dir_handle);
                 self.allocator.free(done.path);
             }
             return null;
@@ -800,7 +857,7 @@ pub const Dir = struct {
             while (self.stack.items.len > 0) {
                 var item = self.stack.pop() orelse break;
                 item.iter.deinit();
-                if (item.owned and item.dir_handle >= 0) _ = std.c.close(item.dir_handle);
+                if (item.owned and item.dir_handle != invalid_handle) closeDirHandle(item.dir_handle);
                 self.allocator.free(item.path);
             }
             self.stack.deinit(self.allocator);
@@ -808,6 +865,15 @@ pub const Dir = struct {
         }
     };
 };
+
+/// The Walker's "no directory" handle: -1 on POSIX, INVALID_HANDLE_VALUE on
+/// Windows. Every handle `openDir` returns differs from it.
+const invalid_handle: posix.fd_t = if (is_windows) std.os.windows.INVALID_HANDLE_VALUE else -1;
+
+fn closeDirHandle(handle: posix.fd_t) void {
+    if (comptime is_windows) return win.dirClose(handle);
+    _ = std.c.close(handle);
+}
 
 fn mapOpenErrno() anyerror {
     return switch (posix.errno(-1)) {
@@ -834,6 +900,7 @@ fn mkdirat_wrap(dirfd: posix.fd_t, p: [*:0]const u8, mode: std.c.mode_t) c_int {
 // -----------------------------------------------------------------------------
 
 pub fn cwd() Dir {
+    if (comptime is_windows) return Dir{ .handle = win.cwd() };
     // AT_FDCWD is -2 on macOS/BSD, -100 on Linux.
     const AT_FDCWD: posix.fd_t = if (builtin.os.tag == .macos or
         builtin.os.tag == .freebsd or
@@ -844,6 +911,7 @@ pub fn cwd() Dir {
 }
 
 pub fn accessAbsolute(absolute_path: []const u8, options: AccessOptions) AccessError!void {
+    if (comptime is_windows) return win.accessAbsolute(absolute_path);
     _ = options;
     var buf: [4096]u8 = undefined;
     const zpath = tmpZPath(&buf, absolute_path) catch return AccessError.Unexpected;
@@ -852,6 +920,7 @@ pub fn accessAbsolute(absolute_path: []const u8, options: AccessOptions) AccessE
 }
 
 pub fn selfExePath(out_buffer: []u8) ![]u8 {
+    if (comptime is_windows) return win.selfExePath(out_buffer);
     if (builtin.os.tag == .macos) {
         var size: u32 = @intCast(out_buffer.len);
         const rc = _NSGetExecutablePath(out_buffer.ptr, &size);
@@ -879,9 +948,9 @@ pub fn selfExePath(out_buffer: []u8) ![]u8 {
 var cached_argv: []const [*:0]const u8 = &.{};
 
 pub fn initArgs(minimal: std.process.Init.Minimal) void {
-    // On non-posix platforms (Windows/Wasi) the Vector type differs; this
-    // compat module only targets the platforms currently exercised by the
-    // Klar build (macOS, Linux).
+    if (comptime is_windows) return win.initArgs(minimal);
+    // On Windows the Vector is WTF-16, so compat_windows.zig keeps the whole
+    // `Args` and decodes it in argsAlloc. WASI is not a Klar host target.
     cached_argv = minimal.args.vector;
 }
 
@@ -891,6 +960,7 @@ pub fn argsAllocFromMinimal(minimal: std.process.Init.Minimal, allocator: std.me
 }
 
 pub fn argsAlloc(allocator: std.mem.Allocator) ![][:0]u8 {
+    if (comptime is_windows) return win.argsAlloc(allocator);
     const out = try allocator.alloc([:0]u8, cached_argv.len);
     errdefer allocator.free(out);
     for (cached_argv, 0..) |arg, i| {
@@ -906,6 +976,7 @@ pub fn argsFree(allocator: std.mem.Allocator, args: [][:0]u8) void {
 }
 
 pub fn getEnvVarOwned(allocator: std.mem.Allocator, key: []const u8) ![]u8 {
+    if (comptime is_windows) return win.getEnvVarOwned(allocator, key);
     var buf: [4096]u8 = undefined;
     const zkey = try tmpZPath(&buf, key);
     const val = std.c.getenv(zkey.ptr) orelse return EnvVarError.EnvironmentVariableNotFound;
@@ -914,6 +985,7 @@ pub fn getEnvVarOwned(allocator: std.mem.Allocator, key: []const u8) ![]u8 {
 }
 
 pub fn exit(code: u8) noreturn {
+    if (comptime is_windows) return win.exit(code);
     std.c.exit(code);
     unreachable;
 }
@@ -925,10 +997,12 @@ pub fn exit(code: u8) noreturn {
 extern "c" fn time(tloc: ?*c_longlong) c_longlong;
 
 pub fn timestamp() i64 {
+    if (comptime is_windows) return @intCast(@divFloor(win.nanoTimestamp(), std.time.ns_per_s));
     return @intCast(time(null));
 }
 
 pub fn milliTimestamp() i64 {
+    if (comptime is_windows) return @intCast(@divFloor(win.nanoTimestamp(), std.time.ns_per_ms));
     var ts: std.c.timespec = undefined;
     const rc = std.c.clock_gettime(.REALTIME, &ts);
     if (rc != 0) {
@@ -961,6 +1035,7 @@ pub fn posixWaitpid(pid: i32) i32 {
 }
 
 pub fn nanoTimestamp() i128 {
+    if (comptime is_windows) return win.nanoTimestamp();
     var ts: std.c.timespec = undefined;
     const rc = std.c.clock_gettime(.REALTIME, &ts);
     if (rc != 0) {
@@ -991,12 +1066,14 @@ pub const Child = struct {
     stdout: ?File = null,
     stderr: ?File = null,
     pid: i32 = 0,
+    win_child: if (is_windows) ?std.process.Child else void = if (is_windows) null else {},
 
     pub fn init(argv: []const []const u8, allocator: std.mem.Allocator) Child {
         return .{ .argv = argv, .allocator = allocator };
     }
 
     pub fn spawn(self: *Child) !void {
+        if (comptime is_windows) return win.childSpawn(self);
         // Convert argv to null-terminated C strings.
         var argv_buf = try self.allocator.alloc(?[*:0]const u8, self.argv.len + 1);
         defer self.allocator.free(argv_buf);
@@ -1054,6 +1131,7 @@ pub const Child = struct {
     }
 
     pub fn wait(self: *Child) !Term {
+        if (comptime is_windows) return win.childWait(self);
         var status: c_int = 0;
         while (true) {
             const rc = std.c.waitpid(self.pid, &status, 0);
@@ -1077,3 +1155,24 @@ pub const Child = struct {
         return self.wait();
     }
 };
+
+test "Dir.openDir refuses a regular file and opens a directory" {
+    // Pins O_DIRECTORY: without the target's own bit, openat opens a file as a dir.
+    const dir = cwd();
+    if (dir.openDir("build.zig", .{})) |_| {
+        return error.TestExpectedError;
+    } else |err| try std.testing.expectEqual(error.NotDir, err);
+    _ = try dir.openDir("src", .{});
+}
+
+test "Child spawns a program found on PATH and reports its exit code" {
+    // Pins Bug 72: on Windows every spawn failed before the child started, so
+    // every `klar build` link failed with no linker output.
+    const argv: []const []const u8 = if (is_windows)
+        &.{ "cmd.exe", "/c", "exit 3" }
+    else
+        &.{ "sh", "-c", "exit 3" };
+    var child = Child.init(argv, std.testing.allocator);
+    const term = try child.spawnAndWait();
+    try std.testing.expectEqual(Child.Term{ .Exited = 3 }, term);
+}

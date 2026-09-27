@@ -657,8 +657,8 @@ pub fn generateKlarSource(allocator: Allocator, m: *const KiraManifest) ![]u8 {
 
 /// Run the import-kira command: read manifest JSON, generate .kl output.
 pub fn importKiraCommand(allocator: Allocator, args: []const []const u8) !void {
-    const stderr = compat.File{ .handle = if (comptime @import("builtin").os.tag == .windows) (std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) orelse @panic("failed to get stderr handle")) else std.posix.STDERR_FILENO };
-    const stdout = compat.File{ .handle = if (comptime @import("builtin").os.tag == .windows) (std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) orelse @panic("failed to get stdout handle")) else std.posix.STDOUT_FILENO };
+    const stderr = compat.File{ .handle = if (comptime @import("builtin").os.tag == .windows) (std.Io.File.stderr().handle) else std.posix.STDERR_FILENO };
+    const stdout = compat.File{ .handle = if (comptime @import("builtin").os.tag == .windows) (std.Io.File.stdout().handle) else std.posix.STDOUT_FILENO };
 
     var manifest_path: ?[]const u8 = null;
     var output_path: ?[]const u8 = null;
