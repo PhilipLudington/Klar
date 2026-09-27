@@ -538,8 +538,8 @@ pub const Dir = struct {
         if (comptime is_windows) return Dir{ .handle = try win.dirOpenDir(self.handle, sub_path, options) };
         var buf: [4096]u8 = undefined;
         const zpath = try tmpZPath(&buf, sub_path);
-        const O_DIRECTORY: c_int = if (builtin.os.tag == .macos) 0x100000 else 0o200000;
-        const fd = std.c.openat(self.handle, zpath.ptr, @bitCast(O_DIRECTORY), @as(std.c.mode_t, 0));
+        // std's per-target layout: a literal is wrong somewhere (0o200000 is O_DIRECT on aarch64-linux).
+        const fd = std.c.openat(self.handle, zpath.ptr, .{ .DIRECTORY = true }, @as(std.c.mode_t, 0));
         if (fd < 0) {
             return mapOpenErrno();
         }

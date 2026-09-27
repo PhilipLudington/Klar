@@ -1598,11 +1598,13 @@ the new `src/compat_windows.zig`. Every `compat` entry point in `src/compat.zig`
 it first when the target is Windows; the POSIX code after that branch is what macOS and
 Linux still run. Linking libc on Windows was rejected: Windows libc has no `openat`,
 `fstatat`, `readdir`, `fork` or `waitpid`, and the aarch64-windows build links no libc at
-all. The 19 `kernel32.GetStdHandle` sites (`main.zig`, `interpreter.zig`, `vm.zig`,
+all. The 20 `kernel32.GetStdHandle` sites (`main.zig`, `interpreter.zig`, `vm.zig`,
 `vm_builtins.zig`, `repl.zig`, `lsp.zig`, `meta_query.zig`, `formatter.zig`,
 `interop/kira_manifest.zig`) read `std.Io.File.stdout/stderr/stdin().handle`. The registry
-client (`src/pkg/registry.zig`) connects through `std.Io.net` on Windows. `klar run`'s
-Windows exit path truncates the child's `u32` exit code to the `u8` `compat.exit` takes.
+client (`src/pkg/registry.zig`) connects through `std.Io.net` on Windows. On Windows,
+`klar run` exits with the child's exit code cut to 8 bits: std already reports a Windows exit
+status as a `u8` (`std/Io/Threaded.zig:15196`), so the `@truncate` before `compat.exit`
+changes nothing.
 
 **Test:** none: the reproduction is the cross-compile itself.
 `zig build -Dtarget=x86_64-windows` and `-Dtarget=aarch64-windows` into a scratch prefix
