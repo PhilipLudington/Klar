@@ -26,6 +26,14 @@ in user programs first, then checker/contract correctness, then tooling, then de
       workflow itself (a real Linux, macOS or Windows test failure) becomes a BUG.md entry and
       is fixed before the upgrade line. Done when every job is green on the old
       infrastructure. Red since 2026-04-20; blocks PR 43. (Philip, 2026-09-26)
+- [ ] Bug 66 — port `src/compat.zig` and `src/main.zig` stdio to Windows on Zig 0.16, on the
+      baseline branch (`ci/baseline-zig-016`), so one PR takes CI from red to every job green.
+      Only the Windows CI jobs can prove the port, and they only run with the baseline's Zig
+      pin. No `continue-on-error`: the baseline PR waits for the port. Done when
+      `zig build -Dtarget=x86_64-windows` and `-Dtarget=aarch64-windows` compile locally and
+      both Windows jobs are green. (Philip, 2026-09-26: "get Windows working first")
+- [ ] PR 43 (Bugs 15–17): once the baseline + port PR merges, rebase `fix/gc-reachability`
+      onto `main`, push `--force-with-lease`; it merges when its CI is green.
 - [ ] CI — upgrade runners and actions: `ubuntu-latest` → `ubuntu-26.04`, `ubuntu-24.04-arm` →
       `ubuntu-26.04-arm`, `macos-latest` → the image the baseline run reported;
       `actions/checkout` v4 → v7, `actions/setup-python` v5 → v7, `actions/cache` v4 → v6; add
