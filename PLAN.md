@@ -36,7 +36,7 @@ in user programs first, then checker/contract correctness, then tooling, then de
       (completed 2026-09-27, PR 44)
 - [ ] PR 43 (Bugs 15–17): once the baseline + port PR merges, rebase `fix/gc-reachability`
       onto `main`, push `--force-with-lease`; it merges when its CI is green.
-- [x] CI — upgrade runners and actions: `ubuntu-latest` → `ubuntu-26.04`, `ubuntu-24.04-arm` →
+- [ ] CI — upgrade runners and actions: `ubuntu-latest` → `ubuntu-26.04`, `ubuntu-24.04-arm` →
       `ubuntu-26.04-arm`, `macos-latest` → `macos-26` (the baseline run reported
       `macos-26-arm64`, 20260907.0351); `windows-latest` stays;
       `actions/checkout` v4 → v7, `actions/setup-python` v5 → v7, `actions/cache` v4 → v6; add
@@ -45,7 +45,8 @@ in user programs first, then checker/contract correctness, then tooling, then de
       `open-pull-requests-limit: 1`) so action majors and the Node-20 stragglers
       (`mlugg/setup-zig`, `ilammy/msvc-dev-cmd`) arrive as PRs; `/today` lists open Dependabot
       PRs on its board (installed `~/.claude` e4b4d07). Done when every job is green.
-      (Philip, 2026-09-26) (completed 2026-09-27)
+      (Philip, 2026-09-26) (built 2026-09-27 on `ci/upgrade-runners-actions`; checked off
+      when that PR's CI run is green on every job)
 - [ ] CI — one LLVM version on every build: 21. Today the builds use 17 on Linux and macOS CI
       (`apt llvm-17`, `brew llvm@17`), 18.1.8 on Windows CI (vovkos), and 21.1.8 locally
       (Homebrew `llvm`, which `build.zig` `detectLLVMPrefix` finds first). Move Linux to
