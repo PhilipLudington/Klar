@@ -1763,9 +1763,9 @@ parent's read ends.
 
 ---
 
-## [ ] Bug 72: On Windows every `compat.Child.spawn` fails before the child starts — every `klar build` link fails with no linker output
+## [x] Bug 72: On Windows every `compat.Child.spawn` fails before the child starts — every `klar build` link fails with no linker output
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** platform layer — `src/compat_windows.zig` `io()`, the one `std.Io` every Windows
 compat call runs on
@@ -1794,11 +1794,19 @@ args 55/61).
 **Found by:** PR 44's first CI run (2026-09-27), reproduced from `scratch/win-job.log` and the
 macOS spawn repro above.
 
+**Fix:** `compat_windows.zig` runs on its own copy of std's `init_single_threaded` with
+`std.heap.page_allocator` in place of `Allocator.failing`, so spawn (and every other Windows
+compat call that allocates inside `std.Io`) gets memory. Everything else about the `Io` is
+unchanged: the process environment block for PATH, no worker threads.
+
+**Test:** `src/compat.zig` test "Child spawns a program found on PATH and reports its exit
+code" (`cmd.exe /c exit 3` on Windows). Only the Windows CI job runs it on the Windows path.
+
 ---
 
-## [ ] Bug 73: Native runtime checks fail into a bare `unreachable` — on aarch64 Linux a failed bounds check falls through instead of trapping
+## [x] Bug 73: Native runtime checks fail into a bare `unreachable` — on aarch64 Linux a failed bounds check falls through instead of trapping
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** native codegen — `src/codegen/emit.zig`, the failure block of every runtime check
 (array, slice and List bounds, `List.set`, overflow, `!`, `unwrap`, `unwrap_err`, match
@@ -1825,3 +1833,12 @@ aborts.
 
 **Found by:** PR 44's first CI run (2026-09-27), reproduced locally by cross-compiling to
 aarch64 Linux assembly.
+
+**Fix:** New `Emitter.emitTrap` (`llvm.trap`, then `unreachable`). All 17 failure blocks
+call it: the 16 runtime-check sites and `match.failed`. The aarch64 Linux `bounds.fail` block
+is now `brk #0x1`. Left as bare `unreachable`: blocks after a call that does not return
+(`abort`, `exit`), merge blocks no branch reaches, the two `?` fallbacks the checker rules
+out, and the wasm unsupported-feature trap (wasm's `unreachable` always traps).
+
+**Test:** `test/native/runtime_traps.kl`, checked by `runtime_trap_lowering` in
+`scripts/run-native-tests.sh`.

@@ -882,6 +882,19 @@ pub const Emitter = struct {
         return llvm.Const.int(llvm.Types.int64(self.ctx), value, false);
     }
 
+    /// Terminate the current block with a trap: `llvm.trap` then `unreachable`.
+    /// Every runtime check's failure block ends here. A bare `unreachable` is
+    /// undefined behavior rather than a trap: aarch64 Linux emits no
+    /// instruction for it, so a failed check fell through into the next
+    /// function, and the optimizer may delete the check (Bug 73).
+    fn emitTrap(self: *Emitter) void {
+        const trap_id = llvm.lookupIntrinsicID("llvm.trap");
+        const trap_fn = llvm.getIntrinsicDeclaration(self.module, trap_id, &.{});
+        const trap_type = llvm.intrinsicGetType(self.ctx, trap_id, &.{});
+        _ = self.builder.buildCall(trap_type, trap_fn, &.{}, "");
+        _ = self.builder.buildUnreachable();
+    }
+
     /// Emit a wasm trap for unsupported operations (filesystem, stdin, etc.).
     /// Prints an error message and calls __builtin_trap / unreachable.
     fn emitWasmUnsupportedTrap(self: *Emitter, feature_name: [:0]const u8) llvm.ValueRef {
@@ -4682,7 +4695,7 @@ pub const Emitter = struct {
 
         // Emit trap block
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, trap_block);
-        _ = self.builder.buildUnreachable();
+        self.emitTrap();
 
         // Continue in the ok block
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, ok_block);
@@ -5107,7 +5120,7 @@ pub const Emitter = struct {
                     _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
 
                     self.builder.positionAtEnd(fail_block);
-                    _ = self.builder.buildUnreachable();
+                    self.emitTrap();
 
                     self.builder.positionAtEnd(ok_block);
 
@@ -5164,7 +5177,7 @@ pub const Emitter = struct {
 
         // Fail block: trap/unreachable
         self.builder.positionAtEnd(fail_block);
-        _ = self.builder.buildUnreachable();
+        self.emitTrap();
 
         // Continue in OK block
         self.builder.positionAtEnd(ok_block);
@@ -6603,7 +6616,7 @@ pub const Emitter = struct {
 
         // Emit match failed block - this should be unreachable for exhaustive matches
         self.builder.positionAtEnd(match_failed_bb);
-        _ = self.builder.buildUnreachable();
+        self.emitTrap();
 
         // Position at merge block
         self.builder.positionAtEnd(merge_bb);
@@ -9908,7 +9921,7 @@ pub const Emitter = struct {
 
                         // Fail block: trap/unreachable
                         self.builder.positionAtEnd(fail_block);
-                        _ = self.builder.buildUnreachable();
+                        self.emitTrap();
 
                         // Continue in OK block
                         self.builder.positionAtEnd(ok_block);
@@ -9967,7 +9980,7 @@ pub const Emitter = struct {
 
                         // Fail block: trap/unreachable
                         self.builder.positionAtEnd(fail_block);
-                        _ = self.builder.buildUnreachable();
+                        self.emitTrap();
 
                         // Continue in OK block
                         self.builder.positionAtEnd(ok_block);
@@ -10011,7 +10024,7 @@ pub const Emitter = struct {
 
                         // Fail: unreachable (panic)
                         self.builder.positionAtEnd(fail_block);
-                        _ = self.builder.buildUnreachable();
+                        self.emitTrap();
 
                         // OK: load element from header's data pointer
                         self.builder.positionAtEnd(ok_block);
@@ -10089,7 +10102,7 @@ pub const Emitter = struct {
                                     _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
 
                                     self.builder.positionAtEnd(fail_block);
-                                    _ = self.builder.buildUnreachable();
+                                    self.emitTrap();
 
                                     self.builder.positionAtEnd(ok_block);
                                     const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fb_header_type, fb_header, 0, "list.ptr_ptr");
@@ -10151,7 +10164,7 @@ pub const Emitter = struct {
 
             // Fail block: trap/unreachable
             self.builder.positionAtEnd(fail_block);
-            _ = self.builder.buildUnreachable();
+            self.emitTrap();
 
             // Continue in OK block
             self.builder.positionAtEnd(ok_block);
@@ -10248,7 +10261,7 @@ pub const Emitter = struct {
 
                 // Fail block: trap/unreachable
                 self.builder.positionAtEnd(fail_block);
-                _ = self.builder.buildUnreachable();
+                self.emitTrap();
 
                 // Continue in OK block
                 self.builder.positionAtEnd(ok_block);
@@ -10301,7 +10314,7 @@ pub const Emitter = struct {
                         _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
 
                         self.builder.positionAtEnd(fail_block);
-                        _ = self.builder.buildUnreachable();
+                        self.emitTrap();
 
                         self.builder.positionAtEnd(ok_block);
                         const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fb_header_type, fb_header, 0, "list.ptr_ptr");
@@ -10369,7 +10382,7 @@ pub const Emitter = struct {
 
                         // Fail block: trap/unreachable
                         self.builder.positionAtEnd(fail_block);
-                        _ = self.builder.buildUnreachable();
+                        self.emitTrap();
 
                         // Continue in OK block
                         self.builder.positionAtEnd(ok_block);
@@ -10424,7 +10437,7 @@ pub const Emitter = struct {
 
                         // Fail block: trap/unreachable
                         self.builder.positionAtEnd(fail_block);
-                        _ = self.builder.buildUnreachable();
+                        self.emitTrap();
 
                         // Continue in OK block
                         self.builder.positionAtEnd(ok_block);
@@ -10509,7 +10522,7 @@ pub const Emitter = struct {
 
                 // Fail block: unreachable/trap
                 self.builder.positionAtEnd(fail_block);
-                _ = self.builder.buildUnreachable();
+                self.emitTrap();
 
                 // OK block: load and return value
                 self.builder.positionAtEnd(ok_block);
@@ -19714,7 +19727,7 @@ pub const Emitter = struct {
 
         // Fail block: trap
         self.builder.positionAtEnd(fail_bb);
-        _ = self.builder.buildUnreachable();
+        self.emitTrap();
 
         // OK block: perform the set
         self.builder.positionAtEnd(ok_bb);
@@ -35073,7 +35086,7 @@ pub const Emitter = struct {
 
         // Fail block: trap
         self.builder.positionAtEnd(fail_block);
-        _ = self.builder.buildUnreachable();
+        self.emitTrap();
 
         // Ok block: return value
         self.builder.positionAtEnd(ok_block);
@@ -35112,7 +35125,7 @@ pub const Emitter = struct {
 
         // Fail block (Ok case): trap
         self.builder.positionAtEnd(fail_block);
-        _ = self.builder.buildUnreachable();
+        self.emitTrap();
 
         // Err block: return error value
         self.builder.positionAtEnd(err_block);

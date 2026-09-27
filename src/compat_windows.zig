@@ -19,8 +19,19 @@ const compat = @import("compat.zig");
 const Io = std.Io;
 const Handle = std.posix.fd_t;
 
+/// The single-threaded `Io` every Windows compat call runs on. It is std's
+/// `init_single_threaded` (the process environment block, no worker threads)
+/// with a real allocator: `global_single_threaded` has `Allocator.failing`,
+/// and `std.process.spawn` builds the command line and searches PATH in an
+/// arena over it, so every spawn there failed with `OutOfMemory` (Bug 72).
+var threaded: Io.Threaded = init: {
+    var t = Io.Threaded.init_single_threaded;
+    t.allocator = std.heap.page_allocator;
+    break :init t;
+};
+
 fn io() Io {
-    return Io.Threaded.global_single_threaded.io();
+    return threaded.io();
 }
 
 /// Maps a `std.Io` error onto the compat error set `E` by name.
