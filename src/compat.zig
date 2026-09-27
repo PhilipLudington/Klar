@@ -1155,3 +1155,12 @@ pub const Child = struct {
         return self.wait();
     }
 };
+
+test "Dir.openDir refuses a regular file and opens a directory" {
+    // Pins O_DIRECTORY: without the target's own bit, openat opens a file as a dir.
+    const dir = cwd();
+    if (dir.openDir("build.zig", .{})) |_| {
+        return error.TestExpectedError;
+    } else |err| try std.testing.expectEqual(error.NotDir, err);
+    _ = try dir.openDir("src", .{});
+}
