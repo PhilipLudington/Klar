@@ -50,6 +50,19 @@ PASSED=0
 FAILED=0
 FAILURES=""
 
+# Per-test run timeout, so one hanging binary is one failure instead of a hung
+# job (the Linux ARM64 CI job sat 98 minutes on array_bounds). GNU timeout is
+# `timeout` on Linux and Git Bash and `gtimeout` from Homebrew coreutils on
+# macOS; `--version` tells it apart from Windows' own timeout.exe. Without
+# either, tests run untimed as before.
+NATIVE_TEST_TIMEOUT="${NATIVE_TEST_TIMEOUT:-60}"
+RUN_TIMEOUT=""
+if timeout --version >/dev/null 2>&1; then
+    RUN_TIMEOUT="timeout $NATIVE_TEST_TIMEOUT"
+elif gtimeout --version >/dev/null 2>&1; then
+    RUN_TIMEOUT="gtimeout $NATIVE_TEST_TIMEOUT"
+fi
+
 # Check if test expects a build error (looks in first 5 lines)
 expects_build_error() {
     head -5 "$1" | grep -q "// Expected: build-error"
@@ -186,7 +199,7 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
 
         # Run and get exit code (capture stderr for diagnostics on failure)
         run_stderr_file="$BUILD_DIR/klar_run_stderr_$$"
-        "$run_bin" 2>"$run_stderr_file"
+        $RUN_TIMEOUT "$run_bin" 2>"$run_stderr_file"
         result=$?
         run_stderr=$(cat "$run_stderr_file" 2>/dev/null | head -3 || true)
         rm -f "$run_stderr_file"
@@ -194,7 +207,14 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
         # Check against expected (if defined)
         expected=$(get_expected "$name")
 
-        if [ "$expected" = "-1" ] || [ $result -eq $expected ]; then
+        if [ -n "$RUN_TIMEOUT" ] && [ $result -eq 124 ]; then
+            echo "✗ $name (timed out after ${NATIVE_TEST_TIMEOUT}s)"
+            FAILED=$((FAILED + 1))
+            if [ -n "$FAILURES" ]; then
+                FAILURES="$FAILURES,"
+            fi
+            FAILURES="$FAILURES\"$name: timed out after ${NATIVE_TEST_TIMEOUT}s\""
+        elif [ "$expected" = "-1" ] || [ $result -eq $expected ]; then
             echo "✓ $name (exit: $result)"
             PASSED=$((PASSED + 1))
         else
@@ -232,6 +252,47 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
         FAILURES="$FAILURES\"$name: build failed\""
     fi
 done
+
+# Trap lowering (Bug 73): every runtime check's failure block must call
+# llvm.trap before its `unreachable`. A bare `unreachable` is undefined
+# behavior: aarch64 Linux emits no instruction for it, so a failed check falls
+# through into whatever code follows (array_bounds hung there), and the
+# optimizer may delete the check outright. test/native/runtime_traps.kl reaches
+# each kind of check; this compiles it to LLVM IR (no link) and reads the IR.
+trap_name="runtime_trap_lowering"
+trap_dir="$BUILD_DIR/klar_trap_ir_$$"
+mkdir -p "$trap_dir"
+trap_ir="$trap_dir/runtime_traps.ll"
+( cd "$trap_dir" && "$KLAR" build "$TEST_DIR/runtime_traps.kl" -c -o "$trap_dir/runtime_traps.o" --emit-llvm >/dev/null 2>&1 )
+if [ -f "$trap_ir" ]; then
+    # Pair each failure-block label with its first instruction.
+    trap_blocks=$(awk '
+        /^[A-Za-z_.0-9]*(fail|trap|failed)[0-9]*:/ { label = $1; next }
+        label != "" && NF > 0 { print label " " $0; label = "" }
+    ' "$trap_ir")
+    trap_total=$(printf '%s\n' "$trap_blocks" | grep -c . || true)
+    trap_bare=$(printf '%s\n' "$trap_blocks" | grep -v "call void @llvm.trap()" | grep -c . || true)
+    if [ "$trap_total" -gt 0 ] && [ "$trap_bare" -eq 0 ]; then
+        echo "✓ $trap_name ($trap_total failure blocks trap)"
+        PASSED=$((PASSED + 1))
+    else
+        echo "✗ $trap_name ($trap_bare of $trap_total failure blocks do not call llvm.trap)"
+        printf '%s\n' "$trap_blocks" | grep -v "call void @llvm.trap()" | head -5 | sed 's/^/  /'
+        FAILED=$((FAILED + 1))
+        if [ -n "$FAILURES" ]; then
+            FAILURES="$FAILURES,"
+        fi
+        FAILURES="$FAILURES\"$trap_name: $trap_bare of $trap_total failure blocks do not call llvm.trap\""
+    fi
+else
+    echo "✗ $trap_name (runtime_traps.kl did not compile to LLVM IR)"
+    FAILED=$((FAILED + 1))
+    if [ -n "$FAILURES" ]; then
+        FAILURES="$FAILURES,"
+    fi
+    FAILURES="$FAILURES\"$trap_name: runtime_traps.kl did not compile to LLVM IR\""
+fi
+rm -rf "$trap_dir"
 
 TOTAL=$((PASSED + FAILED))
 

@@ -1760,3 +1760,68 @@ parent's read ends.
 
 **Found by:** /qa-review on ci/baseline-zig-016, 2026-09-26 — GenA; verified by reading
 `src/codegen/linker.zig:382-392` — reviewer's evidence, not re-read.
+
+---
+
+## [ ] Bug 72: On Windows every `compat.Child.spawn` fails before the child starts — every `klar build` link fails with no linker output
+
+**Status:** Open
+
+**System:** platform layer — `src/compat_windows.zig` `io()`, the one `std.Io` every Windows
+compat call runs on
+
+**Description:** `compat_windows.zig` runs every call on
+`std.Io.Threaded.global_single_threaded`, whose allocator is `Allocator.failing`
+(`std/Io/Threaded.zig:1677`). `std.process.spawn` on Windows builds the command line and
+searches PATH in an arena over that allocator (`processSpawnWindows`, `:15578`), so every
+spawn returns `error.OutOfMemory` before `CreateProcess` runs. `linker.zig` maps it to
+`LinkerFailed`, and every native build on Windows prints "Linker error: Linker failed" with
+nothing from `link.exe`, because `link.exe` never started.
+
+**Steps to reproduce:**
+1. CI run 36291851109, Windows (full suite), job 108543946245.
+2. Same mechanism on macOS: `std.process.spawn(Io.Threaded.global_single_threaded.io(),
+   .{ .argv = &.{"true"} })` returns `error.OutOfMemory`; the same call on a `Threaded`
+   given a real allocator spawns and exits 0.
+
+**Expected:** `klar build` links through `link.exe` and the native, selfhost, module, app and
+args suites run on Windows.
+
+**Actual:** 370 builds fail with "Linker error: Linker failed. Check that all required
+libraries are available." (native 6/375 passed, selfhost 29/549, module 2/26, app 1/10,
+args 55/61).
+
+**Found by:** PR 44's first CI run (2026-09-27), reproduced from `scratch/win-job.log` and the
+macOS spawn repro above.
+
+---
+
+## [ ] Bug 73: Native runtime checks fail into a bare `unreachable` — on aarch64 Linux a failed bounds check falls through instead of trapping
+
+**Status:** Open
+
+**System:** native codegen — `src/codegen/emit.zig`, the failure block of every runtime check
+(array, slice and List bounds, `List.set`, overflow, `!`, `unwrap`, `unwrap_err`, match
+failure)
+
+**Description:** Each runtime check branches to a failure block that holds only LLVM
+`unreachable`. That is undefined behavior, not a trap: LLVM emits a trap for it only where
+the target turns on TrapUnreachable (Darwin does; the x86 Linux gate's `array_bounds` also
+stopped), and on aarch64 Linux it
+emits no instruction at all, so a failed check runs off the end of the function into
+whatever code follows. It also licenses the optimizer to delete the check. Klar promises no
+undefined behavior and bounds-checked indexing.
+
+**Steps to reproduce:**
+1. `klar build test/native/array_bounds.kl -c --target aarch64-linux --emit-asm`.
+2. Read `main`: the `bounds.fail` block (`.LBB0_2`) is empty and is the last label before
+   `.Lfunc_end0`. The macOS build of the same file has `brk #0x1` there.
+
+**Expected:** Every failure block traps on every target (`llvm.trap`), so `array_bounds`
+aborts.
+
+**Actual:** On the Linux ARM64 runner `klar_test_array_bounds` never exited; the job hung
+98 minutes until the run was cancelled (CI run 36291851109, job 108543946262).
+
+**Found by:** PR 44's first CI run (2026-09-27), reproduced locally by cross-compiling to
+aarch64 Linux assembly.

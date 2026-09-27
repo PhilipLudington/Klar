@@ -1164,3 +1164,15 @@ test "Dir.openDir refuses a regular file and opens a directory" {
     } else |err| try std.testing.expectEqual(error.NotDir, err);
     _ = try dir.openDir("src", .{});
 }
+
+test "Child spawns a program found on PATH and reports its exit code" {
+    // Pins Bug 72: on Windows every spawn failed before the child started, so
+    // every `klar build` link failed with no linker output.
+    const argv: []const []const u8 = if (is_windows)
+        &.{ "cmd.exe", "/c", "exit 3" }
+    else
+        &.{ "sh", "-c", "exit 3" };
+    var child = Child.init(argv, std.testing.allocator);
+    const term = try child.spawnAndWait();
+    try std.testing.expectEqual(Child.Term{ .Exited = 3 }, term);
+}
