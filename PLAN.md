@@ -53,6 +53,10 @@ in user programs first, then checker/contract correctness, then tooling, then de
       only one platform today could come from LLVM rather than Klar. (Philip, 2026-09-26)
 
 **Crashes and wrong results in running programs**
+- [ ] Native codegen — Bugs 74 + 75: runtime checks that let undefined behavior through. A
+      negative `i8`/`i16` index passes the bounds check (zext) and the GEP sign-extends it
+      (`src/codegen/emit.zig:9898`, `:5160`, `:9957`); integer `/` and `%` have no zero or
+      MIN/-1 check (`:4570`). One branch; both fail into `emitTrap`. (qa-review 2026-09-27)
 - [ ] Platform layer — Bugs 68 + 69: `src/compat.zig` hard-codes Linux flag values that are
       wrong on macOS, so `createFile` ignores `truncate`/`exclusive` (`:525-528`; a shorter
       rewrite keeps the old tail) and `deleteTree` never removes directories (`:659`). Replace

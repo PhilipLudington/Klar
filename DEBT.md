@@ -56,6 +56,9 @@ environment variable gives `EnvironmentVariableNotFound`.
 `cwd().statFile("does/not/exist")` returns `FileNotFound`; opening a known file and calling
 `.stat()` gives `.kind == .file` and a size that matches `getEndPos()`;
 `getEnvVarOwned(alloc, "KLAR_SURELY_UNSET_VAR")` returns `EnvironmentVariableNotFound`.
+Also (qa-review 2026-09-27, TestCov2): a Windows test that runs a second allocating `std.Io`
+path through `compat_windows.io()`, so a new call written against
+`Io.Threaded.global_single_threaded` (Bug 72's cause) fails there.
 
 **Found by:** /qa-review on ci/baseline-zig-016, 2026-09-26 — TestCov — reviewer's reading, not re-verified.
 
@@ -93,3 +96,45 @@ reads stdin in the VM, the interpreter or the REPL. Only the LSP's stdin path is
 - A `read_line` program fed one line through a pipe echoes the same output under `--vm` and under `--interpret`.
 
 **Found by:** /qa-review on ci/baseline-zig-016, 2026-09-26 — TestCov — reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 6: `runtime_trap_lowering` reaches 11 of 17 trap sites and passes on any count
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `test/native/runtime_traps.kl`, `scripts/run-native-tests.sh` (`runtime_trap_lowering`)
+**Due when:** touching `test/native/runtime_traps.kl` or a runtime-check block in `src/codegen/emit.zig`
+
+**Description:** The fixture indexes only identifiers, so the list-field path
+(`emit.zig:10104`), the non-identifier array, slice and List paths (`:10166`, `:10263`,
+`:10316`) and `emitIndexAddressOf` (`:10384`, `:10439`) never reach the IR the check reads.
+The check passes when `trap_total > 0`, so a lost failure block goes unnoticed too.
+
+**Payment:** Extend the fixture with a struct holding a `List#[i32]` field indexed through the
+struct, `make_arr()[i]`, `make_slice()[i]`, `make_list()[i]`, and `ref arr[i]` / `ref dv[i]`.
+Assert the new block count (at least 19 today), or grep once per label kind (`overflow_trap`,
+`bounds.fail`, `list.bounds.fail`, `set.fail`, `unwrap.fail`, `unwrap_err.fail`,
+`match.failed`). Revert one missed site to bare `unreachable` and see it red.
+
+**Found by:** /qa-review on ci/baseline-zig-016, 2026-09-27 — TestCov2, GenA2 — reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 7: Native trap tests pass on any exit code, and the timeout branch is untested
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `scripts/run-native-tests.sh:147` (`*) echo -1`), `:62`, `:129-135`; `test/native/overflow_add.kl`, `test/native/array_bounds.kl`
+**Due when:** touching `scripts/run-native-tests.sh`
+
+**Description:** `overflow_add.kl` says it must not return 0, but the runner accepts any exit
+code, so a failed check that falls through and exits cleanly is green. Only a hang surfaced
+Bug 73. The per-binary `timeout` has no `-k`, so a binary that ignores SIGTERM still hangs
+the job, and nothing exercises the exit-124 branch.
+
+**Payment:** Mark trap tests (e.g. an `expects_trap` list) and require a signal or non-zero
+exit for them. Use `timeout -k 5`. Add a script-level check that runs a hanging binary under
+`NATIVE_TEST_TIMEOUT=1` and expects one FAILED entry reading "timed out".
+
+**Found by:** /qa-review on ci/baseline-zig-016, 2026-09-27 — GenA2, TestCov2 — reviewer's reading, not re-verified.

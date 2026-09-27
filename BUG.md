@@ -1842,3 +1842,55 @@ out, and the wasm unsupported-feature trap (wasm's `unreachable` always traps).
 
 **Test:** `test/native/runtime_traps.kl`, checked by `runtime_trap_lowering` in
 `scripts/run-native-tests.sh`.
+
+---
+
+## [ ] Bug 74: A negative narrow signed index passes the native bounds check — `arr[k]` with an `i8` of -1 reads before the array
+
+**Status:** Open
+
+**System:** native codegen — `src/codegen/emit.zig`, the failure block of every runtime check
+
+**Description:** The bounds check zero-extends a narrow index before its unsigned compare,
+but the GEP takes the raw index, which LLVM sign-extends (`src/codegen/emit.zig:9898-9930`;
+the same pattern at `:5160-5185` and `:9957-9990`). An `i8` of -1 becomes 255 for the check,
+passes against any length above 255, and then addresses element -1. The checker accepts any
+integer index type (`src/checker/expressions.zig:1149`). Reads and writes both go out of
+bounds, with no trap: the undefined behavior Bug 73's work set out to remove.
+
+**Steps to reproduce:**
+1. `var arr: [i32; 300] = @repeat(0, 300)`, `let one: i8 = 1`, `let zero: i8 = 0`,
+   `let k: i8 = zero - one`, `let v: i32 = arr[k]`, then `println`.
+2. `klar build` it and run the binary.
+
+**Expected:** The bounds check traps.
+
+**Actual:** The program prints and exits normally (probe `scratch/probe/neg_index.kl`, macOS
+arm64, 2026-09-27: "read arr[-1] without trapping", exit 7).
+
+**Found by:** /qa-review on ci/baseline-zig-016, 2026-09-27 — GenA2; verified by probe.
+
+---
+
+## [ ] Bug 75: Native integer `/` and `%` have no zero or MIN/-1 check — `10 / 0` returns 0 on arm64
+
+**Status:** Open
+
+**System:** native codegen — `src/codegen/emit.zig`, the failure block of every runtime check
+
+**Description:** Integer `/` and `%` lower to bare `sdiv`/`udiv`/`srem`/`urem`
+(`src/codegen/emit.zig:4570-4581`), which is LLVM undefined behavior for a zero divisor and
+for `MIN / -1`. x86 raises SIGFPE; aarch64 returns 0. The VM returns `DivisionByZero`
+(`src/vm.zig:1294`), so the backends disagree on the same program.
+
+**Steps to reproduce:**
+1. `fn main(args: [String]) -> i32`, `let z: i32 = args.len() - 1`, `let r: i32 = 10 / z`,
+   `println("10 / 0 returned {r}")`.
+2. `klar build` it and run the binary with no arguments.
+
+**Expected:** A runtime trap, as the VM reports division by zero.
+
+**Actual:** Prints "10 / 0 returned 0" and exits 7 (probe `scratch/probe/div_zero.kl`, macOS
+arm64, 2026-09-27).
+
+**Found by:** /qa-review on ci/baseline-zig-016, 2026-09-27 — GenA2; verified by probe.
