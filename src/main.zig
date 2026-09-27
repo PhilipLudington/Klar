@@ -42,8 +42,7 @@ const kira_build = @import("interop/kira_build.zig");
 // Cross-platform IO helpers
 fn getStdOut() compat.File {
     if (comptime builtin.os.tag == .windows) {
-        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) orelse
-            @panic("failed to get stdout handle");
+        const handle = std.Io.File.stdout().handle;
         return .{ .handle = handle };
     } else {
         return .{ .handle = std.posix.STDOUT_FILENO };
@@ -52,8 +51,7 @@ fn getStdOut() compat.File {
 
 fn getStdErr() compat.File {
     if (comptime builtin.os.tag == .windows) {
-        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) orelse
-            @panic("failed to get stderr handle");
+        const handle = std.Io.File.stderr().handle;
         return .{ .handle = handle };
     } else {
         return .{ .handle = std.posix.STDERR_FILENO };
@@ -3825,7 +3823,7 @@ fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, prog
         compat.cwd().deleteFile(temp_path) catch {};
 
         switch (term) {
-            .Exited => |code| compat.exit(code),
+            .Exited => |code| compat.exit(@truncate(code)),
             .Signal => |sig| {
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Process terminated by signal: {d}\n", .{sig}) catch "Process terminated by signal\n";

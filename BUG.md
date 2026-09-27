@@ -1554,9 +1554,9 @@ would have caught all of them.
 
 ---
 
-## [ ] Bug 66: Klar does not compile for Windows since the Zig 0.16 migration
+## [x] Bug 66: Klar does not compile for Windows since the Zig 0.16 migration
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** platform layer — `src/compat.zig` (the Zig 0.16 file/dir/process shim),
 `src/main.zig` `getStdOut`/`getStdErr`
@@ -1590,3 +1590,64 @@ fixed:
 
 **Found by:** the CI baseline item (PLAN.md Next Up, 2026-09-26), running the Windows
 ARM64 job's command locally before pushing.
+
+**Fix:** Windows gets its own implementation of the compat surface, over Zig 0.16's
+cross-platform `std.Io` (`std.Io.Dir`, `std.Io.File`, `std.process.spawn`,
+`std.process.Args`/`Environ`, `std.Io.Clock`) on the process-wide single-threaded `Io`, in
+the new `src/compat_windows.zig`. Every `compat` entry point in `src/compat.zig` returns into
+it first when the target is Windows; the POSIX code after that branch is what macOS and
+Linux still run. Linking libc on Windows was rejected: Windows libc has no `openat`,
+`fstatat`, `readdir`, `fork` or `waitpid`, and the aarch64-windows build links no libc at
+all. The 19 `kernel32.GetStdHandle` sites (`main.zig`, `interpreter.zig`, `vm.zig`,
+`vm_builtins.zig`, `repl.zig`, `lsp.zig`, `meta_query.zig`, `formatter.zig`,
+`interop/kira_manifest.zig`) read `std.Io.File.stdout/stderr/stdin().handle`. The registry
+client (`src/pkg/registry.zig`) connects through `std.Io.net` on Windows. `klar run`'s
+Windows exit path truncates the child's `u32` exit code to the `u8` `compat.exit` takes.
+
+**Test:** none: the reproduction is the cross-compile itself.
+`zig build -Dtarget=x86_64-windows` and `-Dtarget=aarch64-windows` into a scratch prefix
+both fail at `fa3c287` and both produce `klar.exe` after the fix. With LLVM enabled (the CI
+x86_64 job), `zig build-exe -fno-emit-bin -target x86_64-windows-gnu -lc` against the LLVM
+headers and the same for `zig test` both type-check clean. That the Windows binary *runs*
+correctly (the full suite on `windows-latest`) only the CI Windows job can show.
+
+---
+
+## [x] Bug 67: Klar does not compile for Linux since the Zig 0.16 migration
+
+**Status:** Fixed
+
+**System:** platform layer — `src/compat.zig` (the Zig 0.16 file/dir/process shim),
+`src/main.zig` `getStdOut`/`getStdErr`
+
+**Description:** Zig 0.16 defines `std.c.Stat` and `std.c.fstat` as `void` on Linux (std
+steers callers to statx). `compat.File.stat` calls `std.c.fstat` and `compat.Dir.statFile`
+and `statFromCStat` use `std.c.Stat`, so Klar has not compiled for Linux since the 0.16
+migration (`2c69c7f`). The macOS gates stayed green because macOS still has both, and the
+Linux CI gate never got as far as compiling Klar: it failed first in `build.zig` on the stale
+Zig 0.15.2 pin. The baseline CI run would have hit this at the gate job, and nothing
+behind the gate would have run.
+
+**Steps to reproduce:**
+1. On macOS with Zig 0.16.0, at `fa3c287`: `zig build-exe -fno-emit-bin -target
+   x86_64-linux-gnu -lc -I /opt/homebrew/opt/llvm/include --dep build_options
+   -Mroot=src/main.zig -Mbuild_options=<file with pub const has_llvm: bool = true;>`
+2. The same with `-target aarch64-linux-gnu`.
+
+**Expected:** Both type-check clean, as the macOS target does.
+
+**Actual:** `src/compat.zig:325:25: error: type 'void' not a function` (`std.c.fstat`), and
+once that is bypassed, `type 'void' does not support field access` on `st.mode` in
+`statFromCStat`.
+
+**Found by:** the Bug 66 port (2026-09-26), type-checking the Linux targets to confirm the
+port left them alone.
+
+**Fix:** `compat.File.stat` and `compat.Dir.statFile` stat through the `statx` syscall on
+Linux (`linuxStat` in `src/compat.zig`, `AT_EMPTY_PATH` for the open-file case), returning
+the same `compat.Stat` shape. macOS keeps `std.c.fstat`/`fstatat`, untouched.
+
+**Test:** none: the reproduction is the type-check in Steps to reproduce, red at
+`fa3c287`, clean for both Linux targets after the fix, for `zig build-exe` and `zig test`
+alike. Whether the Linux binary links against CI's LLVM 17 and passes the suite only the
+CI Linux jobs can show.
