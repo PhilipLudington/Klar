@@ -1897,9 +1897,9 @@ arm64, 2026-09-27).
 
 ---
 
-## [ ] Bug 76: `klar build -c -o <path>` fails when the path is on another filesystem — the freestanding tests are red on Ubuntu 26.04
+## [x] Bug 76: `klar build -c -o <path>` fails when the path is on another filesystem — the freestanding tests are red on Ubuntu 26.04
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** file move — `compat.Dir.rename` (`src/compat.zig`), called by `buildNative`'s
 `-c -o` path (`src/main.zig`)
@@ -1921,3 +1921,13 @@ tmpfs, so every `-c -o /tmp/…` build fails there.
 
 **Found by:** PR 45's CI run 36301572227 (2026-09-27); reproduced locally on a RAM disk
 2026-09-28.
+
+**Fix:** `compat.Dir.rename` tries the rename first. When it fails with `CrossDevice`
+(`EXDEV`, or `NOT_SAME_DEVICE` from Windows `dirRename`), it copies the file to the
+destination and deletes the source (`copyThenDelete`), as `mv` does. Only a cross-filesystem
+move stops being atomic. Every caller goes through this one path: `buildNative`'s `-c -o`,
+and the same-directory temp-file rename in `src/main.zig`, which never crosses filesystems.
+
+**Test:** `src/compat.zig`, test "Dir.rename moves a file onto another filesystem" (runs the
+cross-device case on Linux via `/dev/shm`, and on macOS when a RAM disk is mounted at
+`/Volumes/KlarXdev`).

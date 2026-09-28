@@ -621,7 +621,20 @@ pub const Dir = struct {
         }
     }
 
+    /// Moves a file. Within one filesystem it is an atomic rename. Across
+    /// filesystems, where rename(2) fails with EXDEV (NOT_SAME_DEVICE on
+    /// Windows), it copies the file and then deletes the source, as `mv` does,
+    /// so it is not atomic there (Bug 76: `-c -o /tmp/x.o` with /tmp on tmpfs).
     pub fn rename(self: Dir, old_sub_path: []const u8, new_sub_path: []const u8) RenameError!void {
+        self.renameSameFs(old_sub_path, new_sub_path) catch |err| switch (err) {
+            error.CrossDevice => return self.copyThenDelete(old_sub_path, new_sub_path),
+            error.FileNotFound => return RenameError.FileNotFound,
+            error.AccessDenied => return RenameError.AccessDenied,
+            error.Unexpected => return RenameError.Unexpected,
+        };
+    }
+
+    fn renameSameFs(self: Dir, old_sub_path: []const u8, new_sub_path: []const u8) (RenameError || error{CrossDevice})!void {
         if (comptime is_windows) return win.dirRename(self.handle, old_sub_path, new_sub_path);
         var old_buf: [4096]u8 = undefined;
         var new_buf: [4096]u8 = undefined;
@@ -633,9 +646,26 @@ pub const Dir = struct {
             switch (errno) {
                 .NOENT => return RenameError.FileNotFound,
                 .ACCES, .PERM => return RenameError.AccessDenied,
+                .XDEV => return error.CrossDevice,
                 else => return RenameError.Unexpected,
             }
         }
+    }
+
+    /// The cross-filesystem half of `rename`.
+    fn copyThenDelete(self: Dir, old_sub_path: []const u8, new_sub_path: []const u8) RenameError!void {
+        self.copyFile(old_sub_path, self, new_sub_path, .{}) catch |err| {
+            self.deleteFile(new_sub_path) catch {};
+            return if (err == error.FileNotFound) RenameError.FileNotFound else RenameError.Unexpected;
+        };
+        self.deleteFile(old_sub_path) catch |err| {
+            self.deleteFile(new_sub_path) catch {};
+            return switch (err) {
+                error.FileNotFound => RenameError.FileNotFound,
+                error.AccessDenied => RenameError.AccessDenied,
+                else => RenameError.Unexpected,
+            };
+        };
     }
 
     pub fn deleteTree(self: Dir, sub_path: []const u8) !void {
