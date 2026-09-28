@@ -1894,3 +1894,30 @@ for `MIN / -1`. x86 raises SIGFPE; aarch64 returns 0. The VM returns `DivisionBy
 arm64, 2026-09-27).
 
 **Found by:** /qa-review on ci/baseline-zig-016, 2026-09-27 — GenA2; verified by probe.
+
+---
+
+## [ ] Bug 76: `klar build -c -o <path>` fails when the path is on another filesystem — the freestanding tests are red on Ubuntu 26.04
+
+**Status:** Open
+
+**System:** file move — `compat.Dir.rename` (`src/compat.zig`), called by `buildNative`'s
+`-c -o` path (`src/main.zig`)
+
+**Description:** `-c` emits the object under `build/` and then renames it to the `-o` path.
+`compat.Dir.rename` is a bare `renameat`, which fails with `EXDEV` when the two paths are on
+different filesystems, and it maps `EXDEV` to `Unexpected`. Ubuntu 26.04 mounts `/tmp` as
+tmpfs, so every `-c -o /tmp/…` build fails there.
+
+**Steps to reproduce:**
+1. Mount a RAM disk: `diskutil erasevolume HFS+ KlarXdev $(hdiutil attach -nomount ram://20480)`.
+2. `klar build test/native/freestanding/bare_metal_target.kl --target aarch64-none-elf
+   --freestanding -c -o /Volumes/KlarXdev/b.o`.
+
+**Expected:** The object file lands at `/Volumes/KlarXdev/b.o`.
+
+**Actual:** `Failed to rename object file: Unexpected`, and no file. In CI run 36301572227
+(PR 45's first run on `ubuntu-26.04`) the gate's freestanding tests failed this way, 2 of 2.
+
+**Found by:** PR 45's CI run 36301572227 (2026-09-27); reproduced locally on a RAM disk
+2026-09-28.
