@@ -1961,3 +1961,33 @@ rename failure also leaves the object file in the current directory.
 Bug 76).
 
 **Found by:** Builder on `ci/upgrade-runners-actions`, 2026-09-28, while reproducing Bug 76.
+
+---
+
+## [x] Bug 78: `run-unit-tests.sh` counts a skipped Zig test as a failure — the Windows job is red on a skip
+
+**Status:** Fixed
+
+**Description:** The wrapper reads `N/M tests passed` from `zig build test --summary all` and
+sets `failed = M - N`. Zig counts a test that returns `error.SkipZigTest` in `M` but not in
+`N`, so one skip made the wrapper report one failure and exit 1 while `zig build test`
+itself succeeded. Bug 76's test skips on Windows, which exposed it.
+
+**Steps to reproduce:**
+1. Put a stub `zig` first on `PATH` that prints
+   `Build Summary: 4/4 steps succeeded; 293/294 tests passed (1 skipped)` and exits 0.
+2. `./scripts/run-unit-tests.sh`.
+
+**Expected:** `All 293 tests passed (1 skipped)`, exit 0.
+
+**Actual:** `1/294 tests failed`, exit 1. CI run 36473776418, Windows (full suite): "run test
+293 pass, 1 skip", then "✗ Unit Tests failed".
+
+**Found by:** CI run 36473776418 on `ci/upgrade-runners-actions`, 2026-09-28.
+
+**Fix:** The wrapper reads the `(K skipped)` count and sets `failed = M - N - K`
+(`scripts/run-unit-tests.sh`). The summary line names the skips.
+
+**Test:** none — the wrapper has no harness of its own. Verified with the stub `zig` above:
+red before the fix, green after, and a stub reporting `292/294 tests passed (1 skipped)`
+with exit 1 still reports one failure and exits 1.
