@@ -1931,3 +1931,33 @@ and the same-directory temp-file rename in `src/main.zig`, which never crosses f
 **Test:** `src/compat.zig`, test "Dir.rename moves a file onto another filesystem" (runs the
 cross-device case on Linux via `/dev/shm`, and on macOS when a RAM disk is mounted at
 `/Volumes/KlarXdev`).
+
+---
+
+## [ ] Bug 77: A failed `klar build` prints its error and exits 0
+
+**Status:** Open
+
+**System:** CLI build errors — `buildNative` in `src/main.zig`, the `try stderr.writeAll(msg);
+return;` failure paths
+
+**Deferred:** after the current milestone. Every test script that builds also checks for the
+output file, so a failure is still caught in CI; a user script that trusts the exit code is
+not.
+
+**Description:** `buildNative` reports a failure by writing to stderr and returning from a
+`!void` function, so `main` sees success. `src/main.zig` has about 80 such paths. The `-c -o`
+rename failure also leaves the object file in the current directory.
+
+**Steps to reproduce:**
+1. Mount a RAM disk at `/Volumes/KlarXdev` and check out a tree before Bug 76's fix.
+2. `klar build test/native/freestanding/bare_metal_target.kl --target aarch64-none-elf
+   --freestanding -c -o /Volumes/KlarXdev/b.o; echo $?`.
+
+**Expected:** A nonzero exit status.
+
+**Actual:** `Failed to rename object file: Unexpected`, exit status 0, and
+`bare_metal_target.o` left in the current directory (seen 2026-09-28 while reproducing
+Bug 76).
+
+**Found by:** Builder on `ci/upgrade-runners-actions`, 2026-09-28, while reproducing Bug 76.
