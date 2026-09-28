@@ -657,7 +657,7 @@ pub const Dir = struct {
     /// destination is replaced whole (whatever its mode) and survives a failed copy.
     fn copyThenDelete(self: Dir, old_sub_path: []const u8, new_sub_path: []const u8) RenameError!void {
         var tmp_buf: [4096]u8 = undefined;
-        const tmp_sub_path = std.fmt.bufPrint(&tmp_buf, "{s}.klar-move-{d}", .{ new_sub_path, std.c.getpid() }) catch return RenameError.Unexpected;
+        const tmp_sub_path = std.fmt.bufPrint(&tmp_buf, "{s}.klar-move-{d}", .{ new_sub_path, nanoTimestamp() }) catch return RenameError.Unexpected;
         self.copyFile(old_sub_path, self, tmp_sub_path, .{}) catch |err| {
             self.deleteFile(tmp_sub_path) catch {};
             return mapMoveErr(err);
