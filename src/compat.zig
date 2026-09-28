@@ -652,19 +652,32 @@ pub const Dir = struct {
         }
     }
 
-    /// The cross-filesystem half of `rename`.
+    /// The cross-filesystem half of `rename`. Copies to a fresh temp file beside
+    /// the destination and renames it over the destination, so an existing
+    /// destination is replaced whole (whatever its mode) and survives a failed copy.
     fn copyThenDelete(self: Dir, old_sub_path: []const u8, new_sub_path: []const u8) RenameError!void {
-        self.copyFile(old_sub_path, self, new_sub_path, .{}) catch |err| {
-            self.deleteFile(new_sub_path) catch {};
-            return if (err == error.FileNotFound) RenameError.FileNotFound else RenameError.Unexpected;
+        var tmp_buf: [4096]u8 = undefined;
+        const tmp_sub_path = std.fmt.bufPrint(&tmp_buf, "{s}.klar-move-{d}", .{ new_sub_path, std.c.getpid() }) catch return RenameError.Unexpected;
+        self.copyFile(old_sub_path, self, tmp_sub_path, .{}) catch |err| {
+            self.deleteFile(tmp_sub_path) catch {};
+            return mapMoveErr(err);
+        };
+        self.renameSameFs(tmp_sub_path, new_sub_path) catch |err| {
+            self.deleteFile(tmp_sub_path) catch {};
+            return mapMoveErr(err);
         };
         self.deleteFile(old_sub_path) catch |err| {
+            // The move is not atomic here; the destination already holds the file.
             self.deleteFile(new_sub_path) catch {};
-            return switch (err) {
-                error.FileNotFound => RenameError.FileNotFound,
-                error.AccessDenied => RenameError.AccessDenied,
-                else => RenameError.Unexpected,
-            };
+            return mapMoveErr(err);
+        };
+    }
+
+    fn mapMoveErr(err: anyerror) RenameError {
+        return switch (err) {
+            error.FileNotFound => RenameError.FileNotFound,
+            error.AccessDenied => RenameError.AccessDenied,
+            else => RenameError.Unexpected,
         };
     }
 

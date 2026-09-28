@@ -1985,9 +1985,11 @@ itself succeeded. Bug 76's test skips on Windows, which exposed it.
 
 **Found by:** CI run 36473776418 on `ci/upgrade-runners-actions`, 2026-09-28.
 
-**Fix:** The wrapper reads the `(K skipped)` count and sets `failed = M - N - K`
-(`scripts/run-unit-tests.sh`). The summary line names the skips.
+**Fix:** The wrapper reads the skip count from the parenthesis after `tests passed` only and
+sets `failed = M - N - K` (`scripts/run-unit-tests.sh`). The summary line names the skips.
+The first fix matched the first `(K skipped)` on the line, so a skipped build step or a
+`(1 skipped, 1 failed)` test count still miscounted (qa-review 2026-09-28).
 
-**Test:** none — the wrapper has no harness of its own. Verified with the stub `zig` above:
-red before the fix, green after, and a stub reporting `292/294 tests passed (1 skipped)`
-with exit 1 still reports one failure and exits 1.
+**Test:** `scripts/test-run-unit-tests.sh`, run by `run-tests.sh`: a stub `zig` prints real
+Zig 0.16 summary lines (no skips, a skip, a skip beside a failure, a skipped step) and the
+test checks the wrapper's exit code and `.test-results.json` counts.
