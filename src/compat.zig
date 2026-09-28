@@ -1236,3 +1236,67 @@ test "Dir.rename moves a file onto another filesystem" {
     }
     if (tried == 0) return error.SkipZigTest;
 }
+
+test "Dir.copyThenDelete onto a longer existing file leaves only the source's bytes" {
+    // Pins qa-review 2026-09-28 finding 1: on macOS createFile never sets O_TRUNC
+    // (Bug 68), so the cross-device copy kept the old destination's tail.
+    if (is_windows) return error.SkipZigTest;
+    const dir = cwd();
+    var src_buf: [64]u8 = undefined;
+    var dest_buf: [64]u8 = undefined;
+    const src = try std.fmt.bufPrint(&src_buf, "klar-xdev-src-{d}.tmp", .{std.c.getpid()});
+    const dest = try std.fmt.bufPrint(&dest_buf, "klar-xdev-dest-{d}.tmp", .{std.c.getpid()});
+    defer dir.deleteFile(src) catch {};
+    defer dir.deleteFile(dest) catch {};
+    try dir.writeFile(.{ .sub_path = dest, .data = "OLD DESTINATION, LONGER THAN THE SOURCE" });
+    try dir.writeFile(.{ .sub_path = src, .data = "new" });
+    try dir.copyThenDelete(src, dest);
+    const got = try dir.readFileAlloc(std.testing.allocator, dest, 128);
+    defer std.testing.allocator.free(got);
+    try std.testing.expectEqualStrings("new", got);
+    try std.testing.expectError(error.FileNotFound, dir.access(src, .{}));
+}
+
+test "Dir.copyThenDelete replaces a read-only destination, as rename does" {
+    // Pins qa-review 2026-09-28 finding 3: a failed create deleted the existing
+    // destination and reported Unexpected. rename(2) replaces it regardless of its mode.
+    if (is_windows or std.c.geteuid() == 0) return error.SkipZigTest;
+    const dir = cwd();
+    var src_buf: [64]u8 = undefined;
+    var dest_buf: [64]u8 = undefined;
+    const src = try std.fmt.bufPrint(&src_buf, "klar-xdev-ro-src-{d}.tmp", .{std.c.getpid()});
+    const dest = try std.fmt.bufPrint(&dest_buf, "klar-xdev-ro-dest-{d}.tmp", .{std.c.getpid()});
+    defer dir.deleteFile(src) catch {};
+    defer dir.deleteFile(dest) catch {};
+    try dir.writeFile(.{ .sub_path = dest, .data = "read-only" });
+    var zbuf: [4096]u8 = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), std.c.chmod(try tmpZPath(&zbuf, dest), 0o444));
+    try dir.writeFile(.{ .sub_path = src, .data = "replacement" });
+    try dir.copyThenDelete(src, dest);
+    const got = try dir.readFileAlloc(std.testing.allocator, dest, 128);
+    defer std.testing.allocator.free(got);
+    try std.testing.expectEqualStrings("replacement", got);
+}
+
+test "Dir.copyThenDelete into an unwritable directory is AccessDenied and keeps the source" {
+    // Pins qa-review 2026-09-28 finding 3: copy errors collapsed to Unexpected.
+    if (is_windows or std.c.geteuid() == 0) return error.SkipZigTest;
+    const dir = cwd();
+    var src_buf: [64]u8 = undefined;
+    var sub_buf: [64]u8 = undefined;
+    var dest_buf: [128]u8 = undefined;
+    const src = try std.fmt.bufPrint(&src_buf, "klar-xdev-acc-src-{d}.tmp", .{std.c.getpid()});
+    const sub = try std.fmt.bufPrint(&sub_buf, "klar-xdev-acc-dir-{d}", .{std.c.getpid()});
+    const dest = try std.fmt.bufPrint(&dest_buf, "{s}/moved.tmp", .{sub});
+    defer dir.deleteFile(src) catch {};
+    try dir.makeDir(sub);
+    var zbuf: [4096]u8 = undefined;
+    defer {
+        _ = std.c.chmod(tmpZPath(&zbuf, sub) catch unreachable, 0o755);
+        dir.deleteTree(sub) catch {};
+    }
+    try std.testing.expectEqual(@as(c_int, 0), std.c.chmod(try tmpZPath(&zbuf, sub), 0o555));
+    try dir.writeFile(.{ .sub_path = src, .data = "kept" });
+    try std.testing.expectError(error.AccessDenied, dir.copyThenDelete(src, dest));
+    try dir.access(src, .{});
+}

@@ -47,6 +47,10 @@ if ! ./run-build.sh; then
 fi
 
 # Run all test suites
+# The unit-test wrapper's own parsing (Bug 78) writes no results file, so its
+# failure is added to TOTAL_FAILED below by hand.
+WRAPPER_FAILED=0
+run_suite "Wrapper Tests" "./scripts/test-run-unit-tests.sh" || WRAPPER_FAILED=1
 run_suite "Unit Tests" "./scripts/run-unit-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
 run_suite "Native Tests" "./scripts/run-native-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
 run_suite "App Tests" "./scripts/run-app-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
@@ -94,7 +98,7 @@ SELFHOST_PASSED=$(read_json_field .selfhost-test-results.json passed)
 SELFHOST_FAILED=$(read_json_field .selfhost-test-results.json failed)
 
 TOTAL_PASSED=$((UNIT_PASSED + NATIVE_PASSED + APP_PASSED + MODULE_PASSED + ARGS_PASSED + FREESTANDING_PASSED + CHECK_PASSED + FMT_PASSED + META_PASSED + SELFHOST_PASSED))
-TOTAL_FAILED=$((UNIT_FAILED + NATIVE_FAILED + APP_FAILED + MODULE_FAILED + ARGS_FAILED + FREESTANDING_FAILED + CHECK_FAILED + FMT_FAILED + META_FAILED + SELFHOST_FAILED))
+TOTAL_FAILED=$((WRAPPER_FAILED + UNIT_FAILED + NATIVE_FAILED + APP_FAILED + MODULE_FAILED + ARGS_FAILED + FREESTANDING_FAILED + CHECK_FAILED + FMT_FAILED + META_FAILED + SELFHOST_FAILED))
 
 printf "  %-15s %3d passed, %d failed\n" "Unit Tests:" "$UNIT_PASSED" "$UNIT_FAILED"
 printf "  %-15s %3d passed, %d failed\n" "Native Tests:" "$NATIVE_PASSED" "$NATIVE_FAILED"
