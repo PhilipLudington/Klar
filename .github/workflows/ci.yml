@@ -1,20 +1,11 @@
 name: CI
 
+# Nightly on main, never on PRs or merges (decided 2026-09-28). The pipeline reads the
+# result at pick-up (~/.claude/skills/continue-plan/nightly-ci.sh);
+# `gh workflow run ci.yml --ref <branch>` tests a branch by hand.
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'scratch/**'
-      - 'LICENSE'
-  pull_request:
-    branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'scratch/**'
-      - 'LICENSE'
+  schedule:
+    - cron: '0 10 * * *'   # 10:00 UTC
   workflow_dispatch:
 
 concurrency:
@@ -22,9 +13,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ── Skip a scheduled run when main has not moved since the last one ──
+  # The job name is read by nightly-ci.sh, which passes over runs where this
+  # is the only job that ran. Keep it exactly as written.
+  changes:
+    name: New commits since last nightly
+    runs-on: ubuntu-26.04
+    timeout-minutes: 3
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: check
+        # A manual dispatch always tests; a scheduled run only when main moved in ~25h.
+        run: |
+          age=$(( $(date +%s) - $(git log -1 --format=%ct) ))
+          if [ "$GITHUB_EVENT_NAME" != schedule ] || [ "$age" -lt 90000 ]; then
+            echo run=true >> "$GITHUB_OUTPUT"
+          else
+            echo run=false >> "$GITHUB_OUTPUT"
+          fi
+
   # ── Gate job: cheapest runner, fails fast ──────────────────────────
   test-linux:
     name: Linux x86_64 (gate)
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
@@ -48,7 +62,6 @@ jobs:
   test-unix:
     name: ${{ matrix.name }}
     needs: test-linux
-    if: github.event.pull_request.draft != true
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -80,7 +93,6 @@ jobs:
   test-windows:
     name: Windows (full suite)
     needs: test-linux
-    if: github.event.pull_request.draft != true
     runs-on: windows-latest
     defaults:
       run:
