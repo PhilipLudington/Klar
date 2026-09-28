@@ -1176,3 +1176,33 @@ test "Child spawns a program found on PATH and reports its exit code" {
     const term = try child.spawnAndWait();
     try std.testing.expectEqual(Child.Term{ .Exited = 3 }, term);
 }
+
+test "Dir.rename moves a file onto another filesystem" {
+    // Pins Bug 76: rename(2) fails with EXDEV across filesystems, so
+    // `klar build -c -o /tmp/x.o` failed wherever /tmp is its own mount (tmpfs
+    // on Ubuntu 26.04). /dev/shm is tmpfs on every Linux runner. On macOS, mount
+    // a RAM disk at /Volumes/KlarXdev to run the cross-device case:
+    //   diskutil erasevolume HFS+ KlarXdev $(hdiutil attach -nomount ram://20480)
+    // An absent candidate is passed over; one on the same filesystem still passes.
+    if (is_windows) return error.SkipZigTest;
+    const dir = cwd();
+    const candidates = [_][]const u8{ "/dev/shm", "/tmp", "/Volumes/KlarXdev" };
+    var name_buf: [64]u8 = undefined;
+    const name = try std.fmt.bufPrint(&name_buf, "klar-bug76-{d}.tmp", .{std.c.getpid()});
+    var tried: usize = 0;
+    for (candidates) |candidate| {
+        dir.access(candidate, .{}) catch continue;
+        var dest_buf: [256]u8 = undefined;
+        const dest = try std.fmt.bufPrint(&dest_buf, "{s}/{s}", .{ candidate, name });
+        try dir.writeFile(.{ .sub_path = name, .data = "bug76" });
+        defer dir.deleteFile(name) catch {};
+        defer dir.deleteFile(dest) catch {};
+        try dir.rename(name, dest);
+        try std.testing.expectError(error.FileNotFound, dir.access(name, .{}));
+        const got = try dir.readFileAlloc(std.testing.allocator, dest, 64);
+        defer std.testing.allocator.free(got);
+        try std.testing.expectEqualStrings("bug76", got);
+        tried += 1;
+    }
+    if (tried == 0) return error.SkipZigTest;
+}
