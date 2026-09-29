@@ -66,9 +66,11 @@ in user programs first, then checker/contract correctness, then tooling, then de
       wrong on macOS, so `createFile` ignores `truncate`/`exclusive` (`:525-528`; a shorter
       rewrite keeps the old tail) and `deleteTree` never removes directories (`:659`). Replace
       every literal with `std.c.O{…}` / `std.c.AT.REMOVEDIR`. (qa-review 2026-09-26)
-- [ ] Bugs 15 + 16 + 17 — GC: unrooted half-built objects (`src/gc.zig:183`), unmarked async
-      payloads (`gc.zig:374`), string methods popping the receiver before `createGC`
-      (`src/vm.zig:1485`). One branch; add a stress-GC run to the VM tests. (qa-audit 2026-09-04)
+- [x] Bugs 15 + 16 + 17 — GC: allocation no longer collects; the VM collects at the top of each
+      instruction (`GC.collectIfRequested`), and `markValue` traces Future payloads. Stress-GC
+      runs live in the unit tests (`src/vm_gc_test.zig`); the runner flag stays the Phase 0 task
+      (departed: collect at safe points, not temp-root each caller). (qa-audit 2026-09-04)
+      (completed 2026-09-26)
 - [ ] Bug 18 — VM carries no integer width: i128 arithmetic + no-op `.trunc#` (`src/vm.zig:1292`,
       `:1381`); carry the declared width in the value or opcode. (qa-audit 2026-09-04)
 - [ ] Bugs 19 + 20 — interpreter `%` is Euclidean (`src/interpreter.zig:749,769`) and `len`
@@ -207,6 +209,13 @@ fix lands with a failing test and stays fixed.
       and fail on any output difference; seed it with the Bug 18/19/20/41/42 triggers.
 - [ ] Expose stress-GC (`stress_gc = true`) through a runner flag and run the VM suite under
       it once in `run-tests.sh`; seed `test/vm/` with the Bug 15/16/17 triggers.
+- [ ] Extend the stress-GC seeds past the stack roots the Bugs 15–17 tests cover. Add three
+      programs: (1) a string in a global and a closure capturing a local string, first as
+      an open upvalue and then closed, each allocating again before it is read back; (2)
+      `op_array` → `op_array_push`, `op_tuple`, `op_struct`, `op_some` and `op_closure` with
+      a captured upvalue, each result checked; (3) an async function that returns an array,
+      a collection before `await`, then indexing the awaited array (Bug 16 end to end).
+      (found: qa-review 2026-09-26, Bugs 15/16)
 - [ ] Measure Bug 49 at HEAD (`klar build broken.kl; echo $?`) and Bug 45's `env_get` return
       type; update both entries.
 - [ ] Run the Bug 7/9/10/11/12 repros from their entries; close or open each.

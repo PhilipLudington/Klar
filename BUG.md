@@ -379,9 +379,11 @@ checker's table read one shared list.
 
 ---
 
-## [ ] Bug 15: GC — `allocObject` returns an unrooted object, so the caller's next `allocBytes` can collect and free it half-built
+## [x] Bug 15: GC — `allocObject` returns an unrooted object, so the caller's next `allocBytes` can collect and free it half-built
 
-**Status:** Open
+**Status:** Fixed
+
+**System:** VM GC reachability — when `src/gc.zig` collects (`allocObject`/`allocBytes`) and what it marks (`markRoots`/`markValue`), against every `createGC` caller in `src/vm.zig`, `src/vm_value.zig`, `src/vm_builtins.zig`
 
 **Description:** `GC.allocObject` (`src/gc.zig:183`) links the new object into the sweep
 list and returns it; nothing roots it. Every `createGC` then calls `allocBytes` for the
@@ -405,11 +407,24 @@ CRITICAL `[resources]`; verified by reading at `e7b54e7` and at HEAD `949fc4c`
 (`src/gc.zig:183-215`). Fix: pin the new object as a temporary root until the caller has
 initialised it (or allocate the payload first).
 
+**Fix:** Allocation no longer collects. `allocObject` and `allocBytes` (`src/gc.zig`) only set
+`collection_requested` (on every allocation under `stress_gc`, else when the heap crosses
+`next_gc`), and `GC.collectIfRequested` — called once per instruction at the top of the VM's
+`run` loop, where every live value is on a root — is the only place a collection starts. One
+path covers this bug, Bug 17 and every other caller that holds a half-built object or a popped
+operand in a Zig local across an allocation.
+
+**Test:** `src/vm_gc_test.zig` — "an object allocated under stress survives the allocation of
+its own payload (Bug 15)", "a finished but unrooted object survives the next object allocation
+under stress", and the stress-mode and threshold program runs.
+
 ---
 
-## [ ] Bug 16: GC — `markValue` treats `.future` as a primitive, so an async return payload's objects are collected while `await` still points at them
+## [x] Bug 16: GC — `markValue` treats `.future` as a primitive, so an async return payload's objects are collected while `await` still points at them
 
-**Status:** Open
+**Status:** Fixed
+
+**System:** VM GC reachability — when `src/gc.zig` collects (`allocObject`/`allocBytes`) and what it marks (`markRoots`/`markValue`), against every `createGC` caller in `src/vm.zig`, `src/vm_value.zig`, `src/vm_builtins.zig`
 
 **Description:** `op_return` from an async function stores the result in a heap `*Value`
 (`src/vm.zig:593` at HEAD, `:587` at `e7b54e7`) and wraps it in a Future. `GC.markValue`
@@ -428,11 +443,19 @@ nothing, so a payload holding an array/string/struct is unreachable to the colle
 CRITICAL `[correctness]`; verified by reading at `e7b54e7` and at HEAD `949fc4c`
 (`src/gc.zig:374`, `src/vm.zig:593`). Fix: mark `future.value.*` in `markValue`.
 
+**Fix:** `GC.markValue` (`src/gc.zig`) marks through a Future's payload box
+(`.future => |f| if (f.value) |v| self.markValue(v.*)`).
+
+**Test:** `src/vm_gc_test.zig` — "a completed Future's payload is marked, so its array survives
+a collection (Bug 16)".
+
 ---
 
-## [ ] Bug 17: VM — `trim`/`slice`/`substring` pop the receiver, then allocate from a slice borrowed out of it
+## [x] Bug 17: VM — `trim`/`slice`/`substring` pop the receiver, then allocate from a slice borrowed out of it
 
-**Status:** Open
+**Status:** Fixed
+
+**System:** VM GC reachability — when `src/gc.zig` collects (`allocObject`/`allocBytes`) and what it marks (`markRoots`/`markValue`), against every `createGC` caller in `src/vm.zig`, `src/vm_value.zig`, `src/vm_builtins.zig`
 
 **Description:** In `invokeStringMethod` (`src/vm.zig:1485` trim, `:1537` slice, `:1575`
 substring at HEAD; `:1477/:1531/:1569` at `e7b54e7`) the receiver is popped, then a
@@ -450,6 +473,14 @@ then copied from.
 **Found by:** `/qa-audit --calibrate klar-e7b54e7`, 2026-09-04 — backends territory,
 CRITICAL `[resources]`; verified by reading at both commits. Fix: create the new string
 before popping the receiver, or pin it.
+
+**Fix:** Bug 15's fix — allocation never collects, so the popped receiver's bytes stay valid
+until the method's instruction ends; the collection its allocation requests runs at the next
+instruction boundary, after the result is on the stack. `invokeStringMethod` is unchanged.
+
+**Test:** `src/vm_gc_test.zig` — "a string method's popped receiver survives a collection
+triggered by the method's own allocation (Bug 17)" (segfaulted in `internString` copying the
+freed receiver on the unfixed tree).
 
 ---
 
@@ -1521,6 +1552,8 @@ route `=` to the statement node that already checks it.
 
 **Status:** Open
 
+**System:** HTTP stdlib message framing — `Content-Length` and body bounds in `stdlib/http_client.kl` (`http_request`, `parse_http_response`) and `stdlib/http_server.kl`
+
 **Description:** On the native backend `string.len()` counts UTF-8 codepoints
 (`klar_string_char_len`) and `byte_len()` counts bytes, while `slice()` is byte-indexed and
 `tcp_write` sends `strlen` bytes. `stdlib/http_client.kl:196` and `stdlib/http_server.kl:281`
@@ -1551,6 +1584,41 @@ independently; verified 2026-09-06 by running step 1 on the installed compiler a
 both stdlib files at HEAD. Fix: `byte_len()` for `Content-Length` and for every `slice` end bound
 in both files (and `find_byte_in` / `find_str_in`'s search limit); a `len()`-as-byte-bound lint
 would have caught all of them.
+
+---
+
+## [ ] Bug 65: `http_request` returns a truncated body as `Ok` when the read ends before `Content-Length`
+
+**Status:** Open
+
+**System:** HTTP stdlib message framing — `Content-Length` and body bounds in `stdlib/http_client.kl` (`http_request`, `parse_http_response`) and `stdlib/http_server.kl`
+
+**Deferred:** rides the Bug 64 Next Up line, which `/continue-plan` rule 4 collects by System — alone it is none of the three Next Up kinds (no crash, no Phase 0 deliverable waits on it)
+
+**Description:** `http_request` (`stdlib/http_client.kl`) returns
+`parse_http_response(response_data)` on three paths without comparing the body it has to the
+`Content-Length` header: a `tcp_read` error after some data has arrived (`:217`), a clean close
+by the peer before every declared byte arrived (`:225`), and the 1000-read loop cap running out
+(`:263`). `parse_http_response` never checks the body length against the header either, so the
+caller gets the parsed status (200) and a cut-off body with nothing marking it incomplete.
+
+**Steps to reproduce:**
+1. Serve a response with `Content-Length: 100` and close the socket after 50 body bytes (or
+   reset it mid-body).
+2. Call `http_get` on it and print the status, `body.len()` and whether the result is `Ok`.
+
+**Expected:** `Err` (or an explicit incomplete flag) when fewer than `Content-Length` body bytes
+arrived.
+
+**Actual:** (by reading HEAD `a8dfecd`, 2026-09-26; not run) `Ok` with status 200 and a 50-byte
+body. Also reached by a download larger than 1000 reads' worth when `recv` returns one MSS at a
+time (about 1.4 MB).
+
+**Found by:** `~/.claude` QA calibration, Fixture 4 label pass
+(`~/.claude/qa-reviews/Klar/fixture-4/20260922-202009/report.md` row 125), verified 2026-09-22 by
+reading `20a5a3e:stdlib/http_client.kl` (`:213-217`, `:257-260`) and HEAD; filed through
+`.claude/inbox/` and re-read at HEAD 2026-09-26. Present since Phase 6 (`20a5a3e`). Distinct
+from Bug 64 (byte vs codepoint length) and from the server's single `tcp_read`.
 
 ---
 
