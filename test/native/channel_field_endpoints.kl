@@ -18,6 +18,41 @@ fn drain(inbox: Inbox) -> i64 {
     return v ?? 0.as#[i64]
 }
 
+// The same paths rooted at a method's `self` or parameter, a generic function's parameter,
+// and a generic struct's method: parameters registered outside `emitFunction`.
+impl Worker {
+    fn push(self: Worker) -> void {
+        self.tx.send(4000000006)
+    }
+}
+
+impl Inbox {
+    fn take(self: Inbox) -> i64 {
+        let v: ?i64 = self.rx.recv()
+        return v ?? 0.as#[i64]
+    }
+}
+
+struct Pump { n: i32 }
+
+impl Pump {
+    fn feed(self: Pump, w: Worker) -> void {
+        w.tx.send(4000000008)
+    }
+}
+
+fn push_generic#[T](w: Worker, tag: T) -> void {
+    w.tx.send(4000000009)
+}
+
+struct Holder#[T] { tx: Sender#[i64], tag: T }
+
+impl#[T] Holder#[T] {
+    fn push(self: Holder#[T]) -> void {
+        self.tx.send(4000000010)
+    }
+}
+
 fn main() -> i32 {
     let pair: (Sender#[i64], Receiver#[i64]) = channel_create#[i64](8)
     let tx: Sender#[i64] = pair.0
@@ -66,6 +101,47 @@ fn main() -> i32 {
     tx.send(4000000005)
     if drain(inbox) != 4000000005.as#[i64] {
         return 5
+    }
+
+    // A method's `self` field, both ends.
+    w.push()
+    tx.send(1)
+    let f: ?i64 = rx.recv()
+    if (f ?? 0.as#[i64]) != 4000000006.as#[i64] {
+        return 6
+    }
+    let f_rest: ?i64 = rx.recv()
+    tx.send(4000000007)
+    if inbox.take() != 4000000007.as#[i64] {
+        return 7
+    }
+
+    // A field of a method's parameter.
+    let p: Pump = Pump { n: 0 }
+    p.feed(w)
+    tx.send(1)
+    let g: ?i64 = rx.recv()
+    if (g ?? 0.as#[i64]) != 4000000008.as#[i64] {
+        return 8
+    }
+    let g_rest: ?i64 = rx.recv()
+
+    // A field of a generic function's parameter.
+    push_generic#[i32](w, 0)
+    tx.send(1)
+    let h: ?i64 = rx.recv()
+    if (h ?? 0.as#[i64]) != 4000000009.as#[i64] {
+        return 9
+    }
+    let h_rest: ?i64 = rx.recv()
+
+    // A generic struct's method.
+    let holder: Holder#[i32] = Holder#[i32] { tx: tx, tag: 0 }
+    holder.push()
+    tx.send(1)
+    let k: ?i64 = rx.recv()
+    if (k ?? 0.as#[i64]) != 4000000010.as#[i64] {
+        return 10
     }
     return 0
 }
