@@ -1,6 +1,6 @@
 // Skip: windows (pthread not available on MSVC)
-// Bug 83: a Sender or Receiver that arrived as a function parameter was not recognised as a
-// channel endpoint, so `send` emitted nothing and `recv` returned no channel value. Each
+// Bug 83: a Sender or Receiver that arrived as a function parameter, or was declared with
+// `var`, was not recognised as a channel endpoint, so `send` emitted nothing and `recv` returned no channel value. Each
 // send through a parameter is followed by one through a local, so a lost send reads the
 // local's value instead of hanging.
 fn produce(tx: Sender#[i64]) -> void {
@@ -40,6 +40,16 @@ fn main() -> i32 {
     if consume(rx) != 5.as#[i64] {
         return 3
     }
+
+    // A `var` Sender takes the same path as a parameter.
+    var vtx: Sender#[i64] = tx
+    vtx.send(6)
+    tx.send(1)
+    let six: ?i64 = rx.recv()
+    if (six ?? 0.as#[i64]) != 6.as#[i64] {
+        return 5
+    }
+    let one_more: ?i64 = rx.recv()
 
     // close through a Sender parameter: recv on the empty channel returns None.
     finish(tx)
