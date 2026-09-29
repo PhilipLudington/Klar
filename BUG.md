@@ -2366,8 +2366,8 @@ falling back to the checker. The per-local `is_sender`/`is_receiver`/`channel_el
 flags are gone: the local's recorded `semantic_type` carries the same fact. Impl methods
 (with `Self` read as the impl's struct) and monomorphized functions and methods record it
 for their parameters too, and a field path through a generic struct (`Holder#[i32]`)
-reads the monomorphized struct's fields. Closure parameters do not, since native closures
-cannot yet access a struct parameter's fields at all.
+reads the monomorphized struct's fields. Closure parameters do not, since a native closure
+cannot yet take a struct parameter at all (the call fails LLVM verification).
 
 **Test:** `test/native/channel_field_endpoints.kl`
 

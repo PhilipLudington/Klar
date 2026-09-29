@@ -7550,7 +7550,7 @@ pub const Emitter = struct {
         }
     }
 
-    /// A method parameter's declared type, with `Self` (or `&Self`) read as the impl's
+    /// A method parameter's declared type, with `Self` (or `ref Self`) read as the impl's
     /// struct, so a field path rooted at `self` resolves as one rooted at a plain parameter.
     fn resolveMethodParamType(self: *Emitter, type_expr: ast.TypeExpr, struct_name: []const u8) ?types.Type {
         switch (type_expr) {
