@@ -4071,6 +4071,7 @@ pub const Emitter = struct {
             .is_alloca = true,
             .ty = key_llvm_type,
             .is_signed = key_is_signed,
+            .semantic_type = key_type,
         }) catch return EmitError.OutOfMemory;
 
         self.named_values.put(value_binding, .{
@@ -4078,6 +4079,7 @@ pub const Emitter = struct {
             .is_alloca = true,
             .ty = value_llvm_type,
             .is_signed = value_is_signed,
+            .semantic_type = value_type,
         }) catch return EmitError.OutOfMemory;
 
         // Create blocks
@@ -7859,11 +7861,12 @@ pub const Emitter = struct {
         }
     }
 
-    /// The element type an index reads from an array or a List.
+    /// The element type an index reads from an array, a slice or a List.
     fn elementTypeOf(collection: types.Type) ?types.Type {
         const ty = if (collection == .reference) collection.reference.inner else collection;
         return switch (ty) {
             .array => |a| a.element,
+            .slice => |sl| sl.element,
             .list => |l| l.element,
             else => null,
         };
