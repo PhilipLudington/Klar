@@ -2250,3 +2250,31 @@ the same two-step lookup and would fail the same way once the dispatch is fixed.
 binary hangs until it is killed.
 
 **Found by:** /qa-review on fix/bug-79-integration-crash, 2026-09-29 — GenA — reviewer's evidence (probe `scratch/qa79a/send_param.kl`, IR and hang), not re-read.
+
+---
+
+## [ ] Bug 84: A bare `None` in a tuple element or a `push` argument is emitted as `i32 0`
+
+**Status:** Open
+
+**System:** contextual literal width — `emitExprWithHint` in `src/codegen/emit.zig`, the
+codegen side of the checker's `checkExprWithHint`: `List.push`, `Sender.send`, tuple
+elements
+
+**Description:** `emitExprWithHint` sets `expected_type` for a bare `None` identifier, but
+`emitIdentifier` (`src/codegen/emit.zig:~4481`) never reads it, so every bare `None`
+outside `return` becomes the `i32 0` placeholder. A tuple is then built from `{i32, i32}` and
+read as `{?i64, i32}`. A `push(None)` stores 4 bytes into a 16-byte optional slot, which
+leaves the payload uninitialized; the tag reads 0 only by luck.
+
+**Steps to reproduce:**
+1. `let t: (?i64, i32) = (None, 3)` then `return t.1`; separately
+   `var os: List#[?i64] = List.new#[?i64]()`, `os.push(None)`, with `--emit-llvm`.
+2. `klar build` and run.
+
+**Expected:** Exit 3; the push stores a full `?i64` none value.
+
+**Actual:** Exit 192; the IR has `store i32 0, ptr %push.elem_ptr`. It is the same before
+and after Bug 79's fix.
+
+**Found by:** /qa-review fix-check on fix/bug-79-integration-crash, 2026-09-29 — GenA — reviewer's evidence (probes `scratch/qa79a/fc_none.kl`, `fc_pushnone.ll`), not re-read.
