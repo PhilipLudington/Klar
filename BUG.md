@@ -2333,9 +2333,9 @@ signature!` with `call void @Pump_feed({ i64 } %p, ptr %tx)` (declared `i32`),
 
 ---
 
-## [ ] Bug 86: `send` on a struct-field or tuple-field `Sender` emits no code, so the receiver blocks
+## [x] Bug 86: `send` on a struct-field or tuple-field `Sender` emits no code, so the receiver blocks
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** Native channels — `isSenderExpr` / `getSenderElementType` in `src/codegen/emit.zig`
 
@@ -2358,11 +2358,24 @@ in a function, and it is Bug 83's mechanism on a different target.
 **Found by:** /qa-review on fix/bug-83-sender-param, 2026-09-29 — GenA — reviewer's evidence
 (probes `scratch/qa83/struct_field_main.kl`, `param_recv_via_field.kl`, `struct_field_sender.kl`), not re-read.
 
+**Fix:** Every channel test (`isSenderExpr`, `isReceiverExpr`, `getSenderElementType`,
+`getReceiverElementType`, and `recv`'s element width) now goes through
+`channelEndpointOf` (`src/codegen/emit.zig`), which reads the declared type of a local or
+of a struct or tuple field path rooted at one (`localPathType`), at any depth, before
+falling back to the checker. The per-local `is_sender`/`is_receiver`/`channel_element_type`
+flags are gone: the local's recorded `semantic_type` carries the same fact. Impl methods
+(with `Self` read as the impl's struct) and monomorphized functions and methods record it
+for their parameters too, and a field path through a generic struct (`Holder#[i32]`)
+reads the monomorphized struct's fields. Closure parameters do not, since a native closure
+cannot yet take a struct parameter at all (the call fails LLVM verification).
+
+**Test:** `test/native/channel_field_endpoints.kl`
+
 ---
 
-## [ ] Bug 87: An aliased channel endpoint type is not a channel endpoint — `send` hangs or fails verification
+## [x] Bug 87: An aliased channel endpoint type is not a channel endpoint — `send` hangs or fails verification
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** Native channels — `isSenderExpr` / `getSenderElementType` in `src/codegen/emit.zig`
 
@@ -2384,6 +2397,15 @@ verification with `call void @produce(ptr %tx3)`, where the function is declared
 
 **Found by:** /qa-review on fix/bug-83-sender-param, 2026-09-29 — GenA — reviewer's evidence
 (probes `scratch/qa83/alias_let.kl`, `alias_param.kl`), not re-read.
+
+**Fix:** A local's `semantic_type` is its declared type resolved through the checker, so
+an alias of `Sender#[T]`/`Receiver#[T]` resolves to the endpoint, and `channelEndpointOf`
+(Bug 86's one path) reads it for a `let`, a `var` or a parameter. `namedTypeToLLVM` lowers
+a named alias of an endpoint as `typeExprToLLVM` lowers a spelled-out `Sender#[T]` (the
+pointer), so a parameter of the alias matches its call site. How that pointer relates to
+the `{ ptr }` endpoint layout elsewhere is Bug 85's question, unchanged here.
+
+**Test:** `test/native/channel_alias_endpoints.kl`
 
 ---
 
@@ -2415,3 +2437,81 @@ take `{ i1, i32 }`.
 
 **Found by:** /qa-review on fix/bug-83-sender-param, 2026-09-29 — GenA — reviewer's evidence
 (probe `scratch/qa83/pre_nest_call.kl`), not re-read.
+
+---
+
+## [ ] Bug 89: A non-channel type alias lowers to `i32` — wrong-width parameters and a compiler segfault
+
+**Status:** Open
+
+**System:** native codegen — `namedTypeToLLVM` in `src/codegen/emit.zig`
+
+**Description:** `namedTypeToLLVM` (`src/codegen/emit.zig:7418-7433`) resolves an alias only
+for extern types and, since Bug 87, for channel endpoints. Every other alias falls through
+to the `i32` default, so a parameter or local declared through `type Id = i64` or
+`type P = (i64, i64)` gets the wrong LLVM type.
+
+**Steps to reproduce:**
+1. `type Id = i64` with `fn f(x: Id) -> i64 { return x }`, called from `main`; or
+   `type P = (i64, i64)` with `let pair: P = (1, 2)` then `pair.0`.
+2. `klar build` it.
+
+**Expected:** It builds; the alias lowers as the type it names.
+
+**Actual:** The first fails LLVM verification (`ret i32 %x1` in a function returning `i64`).
+The second segfaults the compiler in `LLVMStructGetTypeAtIndex` (`emitFieldAccess`, `:9864`).
+
+**Found by:** /qa-review on fix/bug-86-channel-field-alias, 2026-09-29 — GenA — reviewer's
+evidence (probes in the review scratchpad), not re-read.
+
+---
+
+## [ ] Bug 90: A channel endpoint reached by an index or a `for` binding is not an endpoint
+
+**Status:** Open
+
+**System:** Native channels — `isSenderExpr` / `getSenderElementType` in `src/codegen/emit.zig`
+
+**Description:** `channelEndpointOf` (`src/codegen/emit.zig:7780-7823`) finds an endpoint
+through a local or a field path rooted at one (`localPathType`). An index expression has no
+case there, and a `for` loop binding is registered without `semantic_type`, so both fall to
+the checker fallback, which cannot see them. The send is silently dropped, as in Bug 86.
+
+**Steps to reproduce:**
+1. `let txs: [Sender#[i64]; 1] = [tx]` then `txs[0].send(4000000001)` and `rx.recv()`; or
+   `for t: Sender#[i64] in txs { t.send(4000000001) }` followed by a sentinel send.
+2. `klar build` it and run.
+
+**Expected:** The value arrives on the receiver.
+
+**Actual:** The indexed send emits nothing and the `recv` hangs (exit 124); the loop
+binding's send is dropped and `recv` reads the sentinel (exit 1).
+
+**Found by:** /qa-review on fix/bug-86-channel-field-alias, 2026-09-29 — GenA — reviewer's
+evidence (probes `arr.kl`, `forl.kl`), not re-read.
+
+---
+
+## [ ] Bug 91: Channels do not exist in the tree-walking interpreter
+
+**Status:** Open
+
+**System:** interpreter builtins — `src/interpreter.zig`
+
+**Deferred:** after the current milestone. The bytecode VM (the default `klar run`) and
+native both run channel programs; only `--interpret` fails, and no Phase 0 deliverable
+depends on interpreter channels.
+
+**Description:** `channel_create` and the `Sender`/`Receiver` methods are implemented in the
+VM and native codegen but not in `src/interpreter.zig`, against the rule that a language
+feature works in all three backends.
+
+**Steps to reproduce:**
+1. `klar run test/native/channel_param_endpoints.kl --interpret` (or either new channel test).
+
+**Expected:** Exit 0, as with the VM and a native build.
+
+**Actual:** `Undefined variable: 'channel_create'`, exit 1.
+
+**Found by:** /qa-review on fix/bug-86-channel-field-alias, 2026-09-29 — GenB — reviewer's
+evidence (`--interpret` runs of the three channel tests), not re-read.

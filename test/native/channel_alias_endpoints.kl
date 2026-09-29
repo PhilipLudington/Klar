@@ -1,0 +1,50 @@
+// Skip: windows (pthread not available on MSVC)
+// Bug 87: a channel endpoint declared through a type alias was not a channel endpoint: a
+// `let` of the alias dropped its send, and a parameter of the alias was lowered as `i32`,
+// which failed LLVM verification. Each send through an alias is followed by one through a
+// local, so a lost send reads the local's value instead of hanging.
+type Tx = Sender#[i64]
+
+type Rx = Receiver#[i64]
+
+fn produce(tx: Tx) -> void {
+    tx.send(4000000002)
+}
+
+fn consume(rx: Rx) -> i64 {
+    let v: ?i64 = rx.recv()
+    return v ?? 0.as#[i64]
+}
+
+fn main() -> i32 {
+    let pair: (Sender#[i64], Receiver#[i64]) = channel_create#[i64](8)
+    let tx: Sender#[i64] = pair.0
+    let rx: Receiver#[i64] = pair.1
+
+    // A `let` of the alias.
+    let atx: Tx = tx
+    atx.send(4000000001)
+    tx.send(1)
+    let a: ?i64 = rx.recv()
+    if (a ?? 0.as#[i64]) != 4000000001.as#[i64] {
+        return 1
+    }
+    let a_rest: ?i64 = rx.recv()
+
+    // A parameter of the alias, both ends.
+    produce(tx)
+    tx.send(1)
+    if consume(rx) != 4000000002.as#[i64] {
+        return 2
+    }
+    let b_rest: ?i64 = rx.recv()
+
+    // A `var` Receiver of the alias.
+    var arx: Rx = rx
+    tx.send(4000000003)
+    let c: ?i64 = arx.recv()
+    if (c ?? 0.as#[i64]) != 4000000003.as#[i64] {
+        return 3
+    }
+    return 0
+}

@@ -35,10 +35,18 @@ fn main() -> i32 {
         return 2
     }
 
-    // Receiver parameter.
-    tx.send(5)
-    if consume(rx) != 5.as#[i64] {
+    // Receiver parameter, read at the element's width: a value wider than i32 (Debt 13).
+    tx.send(4000000000)
+    if consume(rx) != big {
         return 3
+    }
+
+    // A `var` Receiver takes the same path as a parameter (Debt 13).
+    var vrx: Receiver#[i64] = rx
+    tx.send(4000000001)
+    let vr: ?i64 = vrx.recv()
+    if (vr ?? 0.as#[i64]) != 4000000001.as#[i64] {
+        return 6
     }
 
     // A `var` Sender takes the same path as a parameter.
@@ -56,6 +64,23 @@ fn main() -> i32 {
     let closed: ?i64 = rx.recv()
     if closed != None {
         return 4
+    }
+
+    // A bare `None` sent on a `Sender#[?i64]` is the optional's none value (Debt 13).
+    let opair: (Sender#[?i64], Receiver#[?i64]) = channel_create#[?i64](4)
+    let otx: Sender#[?i64] = opair.0
+    let orx: Receiver#[?i64] = opair.1
+    otx.send(None)
+    otx.send(Some(7.as#[i64]))
+    let first: ? ?i64 = orx.recv()
+    let first_inner: ?i64 = first ?? Some(99.as#[i64])
+    if first_inner != None {
+        return 7
+    }
+    let second: ? ?i64 = orx.recv()
+    let second_inner: ?i64 = second ?? Some(0.as#[i64])
+    if (second_inner ?? 0.as#[i64]) != 7.as#[i64] {
+        return 8
     }
     return 0
 }

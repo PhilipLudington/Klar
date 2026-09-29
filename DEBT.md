@@ -236,8 +236,15 @@ bug badge reads only open entries.
 
 ---
 
-## [ ] Debt 13: A Receiver parameter's element width, a `var` Receiver and `send(None)` are untested
+## [x] Debt 13: A Receiver parameter's element width, a `var` Receiver and `send(None)` are untested
 
+**Status:** Paid
+**Paid:** fix/bug-86-channel-field-alias, 2026-09-29: `channel_param_endpoints.kl` reads
+`4000000000` through `consume(rx)` (exit 3 when recv reads at i32), reads through a
+`var vrx: Receiver#[i64]` (exit 6 when a `var` Receiver is not an endpoint), and sends
+`None` then `Some(7)` on a `Sender#[?i64]`. The `None` half has no runtime symptom when
+the hint is dropped (the 4-byte zero also zeroes the tag, as in Bug 84's push), so it
+checks behavior but pins nothing.
 **Kind:** test-gap
 **Where:** `src/codegen/emit.zig` parameter registration (~2396-2401), `var` registration (~2888-2890), `emitIdentifier` `None` branch (~4501-4509); `test/native/channel_param_endpoints.kl`
 **Due when:** touching `test/native/channel_param_endpoints.kl` · touching the channel-field registration in `src/codegen/emit.zig`
