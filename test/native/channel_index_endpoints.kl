@@ -7,6 +7,10 @@ struct Fleet { txs: [Sender#[i64]; 1] }
 
 struct Worker { tx: Sender#[i64] }
 
+fn send_first(s: [Sender#[i64]]) -> void {
+    s[0].send(4000000008)
+}
+
 fn main() -> i32 {
     let pair: (Sender#[i64], Receiver#[i64]) = channel_create#[i64](8)
     let tx: Sender#[i64] = pair.0
@@ -80,6 +84,29 @@ fn main() -> i32 {
     let g: ?i64 = rx.recv()
     if (g ?? 0.as#[i64]) != 4000000007.as#[i64] {
         return 7
+    }
+    let g_rest: ?i64 = rx.recv()
+
+    // An index of a slice parameter.
+    let slice_txs: [Sender#[i64]] = [tx]
+    send_first(slice_txs)
+    tx.send(1)
+    let h: ?i64 = rx.recv()
+    if (h ?? 0.as#[i64]) != 4000000008.as#[i64] {
+        return 8
+    }
+    let h_rest: ?i64 = rx.recv()
+
+    // The value binding of a `for` over a Map.
+    var m: Map#[i32, Sender#[i64]] = Map.new#[i32, Sender#[i64]]()
+    m.insert(1, tx)
+    for (k, v) in m {
+        v.send(4000000009)
+    }
+    tx.send(1)
+    let i: ?i64 = rx.recv()
+    if (i ?? 0.as#[i64]) != 4000000009.as#[i64] {
+        return 9
     }
     return 0
 }
