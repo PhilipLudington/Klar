@@ -1,5 +1,5 @@
-// Bug 79: a contextual type hint reaches only the expression the checker hints (a literal,
-// a call, a tuple, through parentheses), never a literal nested inside another expression.
+// Bug 79: a contextual type hint reaches only a literal, an Ok/Err/Some/None call or a
+// tuple (through parentheses), never a literal nested inside another expression.
 // An index literal under an i64 hint was emitted as i64 and failed LLVM verification.
 fn widen(x: i32) -> i64 {
     return x.as#[i64]
@@ -28,7 +28,7 @@ fn main() -> i32 {
         return 3
     }
 
-    // A call is hinted for its own result; its literal arguments keep the parameter types.
+    // A user call gets no hint; its literal arguments keep the parameter types.
     dst.push(widen(3))
     let second: i32 = 1
     let d1: i64 = dst.get(second)!
