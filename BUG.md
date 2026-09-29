@@ -2330,3 +2330,88 @@ signature!` with `call void @Pump_feed({ i64 } %p, ptr %tx)` (declared `i32`),
 
 **Found by:** /continue-plan on fix/bug-83-sender-param, 2026-09-29 — Builder — reproduced
 (a first cut of `test/native/channel_param_endpoints.kl` with all three cases).
+
+---
+
+## [ ] Bug 86: `send` on a struct-field or tuple-field `Sender` emits no code, so the receiver blocks
+
+**Status:** Open
+
+**System:** Native channels — `isSenderExpr` / `getSenderElementType` in `src/codegen/emit.zig`
+
+**Description:** `isSenderExpr` (`src/codegen/emit.zig:31095`) and `isReceiverExpr` (`:31110`)
+recognise a local marked `is_sender`/`is_receiver`, then ask the checker. A target that is not
+a bare identifier, such as a struct field `w.tx.send(v)` or a tuple field `pair.0.send(v)`, is
+neither, so the send falls through and nothing is emitted. This happens in `main` as well as
+in a function, and it is Bug 83's mechanism on a different target.
+
+**Steps to reproduce:**
+1. `struct W { tx: Sender#[i64] }`, build `w` from `channel#[i64]()`'s sender, then
+   `w.tx.send(7)` followed by `rx.recv()`.
+2. `klar build` and run it.
+
+**Expected:** `recv` returns 7.
+
+**Actual:** The send emits only the field GEP and load. With a later `send(1)`, `recv` reads
+1 (probes exit 1). Without one, `recv` blocks forever.
+
+**Found by:** /qa-review on fix/bug-83-sender-param, 2026-09-29 — GenA — reviewer's evidence
+(probes `scratch/qa83/struct_field_main.kl`, `param_recv_via_field.kl`, `struct_field_sender.kl`), not re-read.
+
+---
+
+## [ ] Bug 87: An aliased channel endpoint type is not a channel endpoint — `send` hangs or fails verification
+
+**Status:** Open
+
+**System:** Native channels — `isSenderExpr` / `getSenderElementType` in `src/codegen/emit.zig`
+
+**Description:** `getChannelTypeInfo` (`src/codegen/emit.zig:7786-7803`) counts only a literal
+`generic_apply` of `Sender`/`Receiver` as a channel type. An alias (`type Tx = Sender#[i64]`)
+is not resolved, so a `let` of that type gets no channel fields and a parameter of that type
+is lowered as `i32`. Since Bug 83's fix, parameters and `var`s go through the same helper
+and share the gap.
+
+**Steps to reproduce:**
+1. `type Tx = Sender#[i64]`, then `let tx: Tx = pair.0`, `tx.send(4000000000)`, `rx.recv()`.
+2. Separately, `fn produce(tx: Tx) -> void { tx.send(1) }` called with the sender.
+3. `klar build` and run each one.
+
+**Expected:** The value arrives, as it does with `Sender#[i64]` written out.
+
+**Actual:** The `let` case hangs (`timeout 5` exit 124). The parameter case fails LLVM
+verification with `call void @produce(ptr %tx3)`, where the function is declared `i32`.
+
+**Found by:** /qa-review on fix/bug-83-sender-param, 2026-09-29 — GenA — reviewer's evidence
+(probes `scratch/qa83/alias_let.kl`, `alias_param.kl`), not re-read.
+
+---
+
+## [ ] Bug 88: A bare `None` passed as a user-function argument is emitted as `i32 0`
+
+**Status:** Open
+
+**System:** contextual literal width — `emitExprWithHint` in `src/codegen/emit.zig`, the
+codegen side of the checker's `checkExprWithHint`: `List.push`, `Sender.send`, tuple
+elements
+
+**Deferred:** after the current milestone. The program fails to build rather than running
+wrong, and `Some`/typed locals work around it.
+
+**Description:** Call arguments are not hinted with their parameter types, so a bare `None`
+argument reaches `emitIdentifier` (`src/codegen/emit.zig:4511-4517`) with no optional hint
+and is emitted as the `i32 0` placeholder. Bug 84's fix covers only hinted sites.
+`let n: ?i64 = f(None)` works only because the statement's hint happens to match the
+parameter's type.
+
+**Steps to reproduce:**
+1. `fn pick(a: ?i32) -> i64 { ... }`, then `let x: i64 = pick(None)`.
+2. `klar build` it.
+
+**Expected:** It builds, and `pick` receives none.
+
+**Actual:** LLVM verification fails with `call i64 @pick(i32 0)`, where `pick` is declared to
+take `{ i1, i32 }`.
+
+**Found by:** /qa-review on fix/bug-83-sender-param, 2026-09-29 — GenA — reviewer's evidence
+(probe `scratch/qa83/pre_nest_call.kl`), not re-read.

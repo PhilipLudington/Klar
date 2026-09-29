@@ -233,3 +233,40 @@ numbers, and leave a one-line pointer at the top of `BUG.md`. Confirm first that
 bug badge reads only open entries.
 
 **Found by:** /qa-review WATCH [file-growth], seen on ci-baseline-zig-016, ci-upgrade-runners-actions and fix/bug-79-integration-crash (2026-09-27 to 2026-09-29) — Growth — reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 13: A Receiver parameter's element width, a `var` Receiver and `send(None)` are untested
+
+**Kind:** test-gap
+**Where:** `src/codegen/emit.zig` parameter registration (~2396-2401), `var` registration (~2888-2890), `emitIdentifier` `None` branch (~4501-4509); `test/native/channel_param_endpoints.kl`
+**Due when:** touching `test/native/channel_param_endpoints.kl` · touching the channel-field registration in `src/codegen/emit.zig`
+
+**Description:** Bug 83's test pins the Sender side of a parameter's element type, but
+`consume(rx)` reads `5`, which fits in i32, so a Receiver parameter read at the wrong width
+would pass. The `var` Receiver branch (`is_receiver = !ci.is_sender`) is not exercised, and
+no test sends a bare `None` through a `Sender#[?i64]`, although the new comment in
+`emitIdentifier` names `send` as a hint site.
+
+**Payment:** In `channel_param_endpoints.kl`, send `4000000000` and read it through
+`consume(rx)`; add `var vrx: Receiver#[i64] = rx` and `vrx.recv()`; and add `tx.send(None)`
+then `tx.send(Some(7))` on a `Sender#[?i64]`, asserting both on the receiving side.
+
+**Found by:** /qa-review on fix/bug-83-sender-param, 2026-09-29 — TestCov — reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 14: `src/codegen/emit.zig` is far over the file-size limit; the channel cluster is one clean seam
+
+**Kind:** extraction
+**Where:** `src/codegen/emit.zig` (38947 raw lines on 2026-09-29), channel cluster `getChannelEndpointType` … `isReceiverExpr` (~30572-31126)
+**Due when:** touching the channel cluster in `src/codegen/emit.zig` (Bugs 85-87 will)
+
+**Description:** The file is about 19× the raw ceiling and grows on almost every codegen fix
+(+881/−250 over its last 15 commits). The channel code sits in one contiguous block of about
+555 lines, including the pthread mutex/cond declarers.
+
+**Payment:** Move the channel cluster to `src/codegen/channels.zig`, a sibling of `list.zig`
+and `map.zig`, before or as part of the Bug 85-87 fixes, so their new code lands there.
+
+**Found by:** /qa-review WATCH [file-growth], seen on ci-baseline-zig-016, fix/bug-79-integration-crash and fix/bug-83-sender-param (2026-09-27 to 2026-09-29) — Growth — reviewer's reading, not re-verified.
