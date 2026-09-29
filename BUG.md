@@ -2064,12 +2064,13 @@ test checks the wrapper's exit code and `.test-results.json` counts.
 
 ---
 
-## [ ] Bug 79: Native `integration` module test crashes intermittently (SIGABRT or SIGSEGV, ~3% of runs)
+## [x] Bug 79: Native `integration` module test crashes intermittently (SIGABRT or SIGSEGV, ~3% of runs)
 
-**Status:** Open
+**Status:** Fixed
 
-**System:** stdlib integration — `test/module/integration/main.kl` and the stdlib modules it
-composes (json, toml, path, string_builder, file); cause not yet located
+**System:** contextual literal width — `emitExprWithHint` in `src/codegen/emit.zig`, the
+codegen side of the checker's `checkExprWithHint`: `List.push`, `Sender.send`, tuple
+elements
 
 **Description:** The natively built integration binary sometimes dies before printing
 anything, with SIGABRT (exit 134) or SIGSEGV (exit 11). The same binary passes on most runs,
@@ -2093,6 +2094,26 @@ crashed in **6 of 200** direct runs (exit 134 four times, exit 11 twice), with n
 test run live. The next full `./run-tests.sh` passed 2162/2162.
 
 **Found by:** Builder on `fix/gc-reachability`, 2026-09-29, re-gating PR 43.
+
+**Cause:** heap corruption, not a race. Every crash is in test 11 (`test_hash_pipeline`), in
+`stdlib/sha256.kl`. `init_k` pushes 64 constants into a `List#[u32]`; the 31 above i32 max
+(`k.push(2870763221)`, …) were emitted as i64 and stored 8 bytes into a 4-byte slot. At a
+buffer's last slot (index 7, 15, 31, 63) the extra 4 bytes land on the next heap block. When
+that block is the header of `sha256`'s input list, the low half of its data pointer becomes
+0, and `sha256_pad` faults at `0x100000000` (SIGSEGV) or a later `realloc` aborts on the bad
+pointer (SIGABRT). The checker typed each literal as the element type through
+`checkExprWithHint`; codegen emitted `push`'s argument with no hint at all. `Sender.send` had
+the same gap. `MallocScribble=1` makes the crash likely: 22 of 40 runs failed.
+
+**Fix:** `emitExprWithHint` (`src/codegen/emit.zig`) mirrors `checkExprWithHint`: the hint
+reaches a literal, a bare `None`, a call and a tuple (through parentheses) and nothing nested
+inside them. `List.push` passes the list's element type, `Sender.send` the channel's
+(`getSenderElementType`), and tuple elements their own element type, which also stops a
+tuple element's hint leaking into an index literal inside it. The integration binary then
+passed 60 of 60 runs under `MallocScribble=1`.
+
+**Test:** `test/native/list_push_literal_width.kl`, `test/native/channel_send_literal_width.kl`,
+`test/native/hint_reach_literal_width.kl`
 
 ---
 

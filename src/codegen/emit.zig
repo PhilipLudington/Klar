@@ -4314,6 +4314,26 @@ pub const Emitter = struct {
         self.has_terminator = true;
     }
 
+    /// Emit an expression the checker typed with `checkExprWithHint(expr, hint)`.
+    /// The hint reaches exactly the expression kinds the checker hints (a literal, a bare
+    /// `None`, a call for Ok/Err, a tuple, through parentheses) and nothing nested inside
+    /// them, so `list.push(4000000000)` into a `List#[u32]` emits an i32 constant while an
+    /// index literal in `push(xs.get(0)!)` keeps its own i32 width. Every other kind is
+    /// emitted with no hint, whatever the enclosing statement set.
+    fn emitExprWithHint(self: *Emitter, expr: ast.Expr, hint: ?types.Type) EmitError!llvm.ValueRef {
+        // Parentheses pass the hint to what they enclose, as checkExprWithHint does.
+        if (expr == .grouped) return self.emitExprWithHint(expr.grouped.expr, hint);
+        const hinted = switch (expr) {
+            .literal, .call, .tuple_literal => true,
+            .identifier => |id| std.mem.eql(u8, id.name, "None"),
+            else => false,
+        };
+        const prev_expected = self.expected_type;
+        self.expected_type = if (hinted) hint else null;
+        defer self.expected_type = prev_expected;
+        return self.emitExpr(expr);
+    }
+
     fn emitExpr(self: *Emitter, expr: ast.Expr) EmitError!llvm.ValueRef {
         return switch (expr) {
             .literal => |lit| self.emitLiteral(lit),
@@ -9745,15 +9765,12 @@ pub const Emitter = struct {
         var element_types = std.ArrayListUnmanaged(llvm.TypeRef).empty;
         defer element_types.deinit(self.allocator);
 
-        const prev_expected = self.expected_type;
         for (tup.elements, 0..) |elem, i| {
-            // Set expected_type for this element (for Ok/Err type inference)
-            self.expected_type = if (expected_elem_types) |eet| eet[i] else null;
-            const value = try self.emitExpr(elem);
+            // Each element gets its own hint (literal width, Ok/Err type inference)
+            const value = try self.emitExprWithHint(elem, if (expected_elem_types) |eet| eet[i] else null);
             element_values.append(self.allocator, value) catch return EmitError.OutOfMemory;
             element_types.append(self.allocator, llvm.typeOf(value)) catch return EmitError.OutOfMemory;
         }
-        self.expected_type = prev_expected;
 
         // Create tuple type (anonymous struct in LLVM)
         const tuple_type = llvm.Types.struct_(self.ctx, element_types.items, false);
@@ -12008,7 +12025,7 @@ pub const Emitter = struct {
                 }
                 if (std.mem.eql(u8, method.method_name, "push")) {
                     if (method.args.len != 1) return EmitError.InvalidAST;
-                    const value = try self.emitExpr(method.args[0]);
+                    const value = try self.emitExprWithHint(method.args[0], self.getListElementType(method.object));
                     return self.emitListPush(ptr, method, value);
                 }
                 if (std.mem.eql(u8, method.method_name, "pop")) {
@@ -30765,7 +30782,7 @@ pub const Emitter = struct {
     fn emitChannelSend(self: *Emitter, sender_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         if (method.args.len != 1) return EmitError.InvalidAST;
 
-        const value = try self.emitExpr(method.args[0]);
+        const value = try self.emitExprWithHint(method.args[0], self.getSenderElementType(method.object));
         const func = self.current_function orelse return EmitError.InvalidAST;
 
         const inner_type = self.getChannelInnerType();
@@ -31031,6 +31048,24 @@ pub const Emitter = struct {
 
         _ = i8_type;
         return llvm.c.LLVMGetUndef(llvm.Types.void_(self.ctx));
+    }
+
+    /// The element type `T` of a `Sender#[T]` expression: a local's recorded channel
+    /// element type, else the type checker's.
+    fn getSenderElementType(self: *Emitter, expr: ast.Expr) ?types.Type {
+        if (expr == .identifier) {
+            if (self.named_values.get(expr.identifier.name)) |local| {
+                if (local.is_sender) {
+                    if (local.channel_element_type) |elem_type| return elem_type;
+                }
+            }
+        }
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            if (expr_type == .sender) return expr_type.sender.element;
+        }
+        return null;
     }
 
     /// Check if an expression is a Sender type.
