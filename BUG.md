@@ -2466,9 +2466,9 @@ evidence (probes in the review scratchpad), not re-read.
 
 ---
 
-## [ ] Bug 90: A channel endpoint reached by an index or a `for` binding is not an endpoint
+## [x] Bug 90: A channel endpoint reached by an index or a `for` binding is not an endpoint
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** Native channels — `isSenderExpr` / `getSenderElementType` in `src/codegen/emit.zig`
 
@@ -2489,6 +2489,15 @@ binding's send is dropped and `recv` reads the sentinel (exit 1).
 
 **Found by:** /qa-review on fix/bug-86-channel-field-alias, 2026-09-29 — GenA — reviewer's
 evidence (probes `arr.kl`, `forl.kl`), not re-read.
+
+**Fix:** `localPathType` (`src/codegen/emit.zig`), the declared-type reader behind Bug 86's
+one path `channelEndpointOf`, now reads an index of an array or a List as the element type,
+so `txs[0]`, `fleet.txs[0]` and `ws[0].tx` resolve like any field path. A `for` binding over
+an array, slice, List or Set records its annotated type (which the parser requires) as its
+`semantic_type`, as a `let` does. A slice index is not read: no test covers a slice of
+endpoints.
+
+**Test:** `test/native/channel_index_endpoints.kl`
 
 ---
 

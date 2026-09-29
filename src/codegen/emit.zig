@@ -3109,6 +3109,9 @@ pub const Emitter = struct {
             else => return unsupportedFeatureDebug(@src()), // Only simple bindings for now
         };
 
+        // A binding's declared type, so a channel endpoint bound by the loop is one.
+        const binding_type = self.forBindingType(loop.pattern);
+
         // Check if iterable is a range literal (fast path) or Range#[T] type (iterator protocol)
         switch (loop.iterable) {
             .range => |range| {
@@ -3121,16 +3124,16 @@ pub const Emitter = struct {
                     try self.emitForLoopRangeIterator(func, binding_name, loop.iterable, loop.body);
                 } else if (self.isSliceExpr(loop.iterable)) {
                     // Slice iteration: for x in slice { body }
-                    try self.emitForLoopSlice(func, binding_name, loop.iterable, loop.body);
+                    try self.emitForLoopSlice(func, binding_name, loop.iterable, binding_type, loop.body);
                 } else if (self.isArrayExpr(loop.iterable)) {
                     // Fixed array iteration: for x in arr { body }
-                    try self.emitForLoopArray(func, binding_name, loop.iterable, loop.body);
+                    try self.emitForLoopArray(func, binding_name, loop.iterable, binding_type, loop.body);
                 } else if (self.isListExpr(loop.iterable)) {
                     // List iteration: for x in list { body }
-                    try self.emitForLoopList(func, binding_name, loop.iterable, loop.body);
+                    try self.emitForLoopList(func, binding_name, loop.iterable, binding_type, loop.body);
                 } else if (self.isSetExpr(loop.iterable)) {
                     // Set iteration: for x in set { body }
-                    try self.emitForLoopSet(func, binding_name, loop.iterable, loop.body);
+                    try self.emitForLoopSet(func, binding_name, loop.iterable, binding_type, loop.body);
                 } else {
                     return unsupportedFeatureDebug(@src());
                 }
@@ -3384,6 +3387,7 @@ pub const Emitter = struct {
         func: llvm.ValueRef,
         binding_name: []const u8,
         iterable: ast.Expr,
+        binding_type: ?types.Type,
         body: *ast.Block,
     ) EmitError!void {
         // For array iteration: for x in arr { body }
@@ -3431,6 +3435,7 @@ pub const Emitter = struct {
             .is_alloca = true,
             .ty = elem_type,
             .is_signed = is_signed,
+            .semantic_type = binding_type,
         }) catch return EmitError.OutOfMemory;
 
         // Create blocks
@@ -3507,6 +3512,7 @@ pub const Emitter = struct {
         func: llvm.ValueRef,
         binding_name: []const u8,
         iterable: ast.Expr,
+        binding_type: ?types.Type,
         body: *ast.Block,
     ) EmitError!void {
         // Get the slice alloca and element type
@@ -3535,6 +3541,7 @@ pub const Emitter = struct {
             .is_alloca = true,
             .ty = element_llvm_type,
             .is_signed = is_signed,
+            .semantic_type = binding_type,
         }) catch return EmitError.OutOfMemory;
 
         // Create blocks
@@ -3614,6 +3621,7 @@ pub const Emitter = struct {
         func: llvm.ValueRef,
         binding_name: []const u8,
         iterable: ast.Expr,
+        binding_type: ?types.Type,
         body: *ast.Block,
     ) EmitError!void {
         // Get the list alloca and element type
@@ -3643,6 +3651,7 @@ pub const Emitter = struct {
             .is_alloca = true,
             .ty = element_llvm_type,
             .is_signed = is_signed,
+            .semantic_type = binding_type,
         }) catch return EmitError.OutOfMemory;
 
         // Create blocks
@@ -3806,6 +3815,7 @@ pub const Emitter = struct {
         func: llvm.ValueRef,
         binding_name: []const u8,
         iterable: ast.Expr,
+        binding_type: ?types.Type,
         body: *ast.Block,
     ) EmitError!void {
         // Get the set alloca and element type
@@ -3837,6 +3847,7 @@ pub const Emitter = struct {
             .is_alloca = true,
             .ty = element_llvm_type,
             .is_signed = is_signed,
+            .semantic_type = binding_type,
         }) catch return EmitError.OutOfMemory;
 
         // Create blocks
@@ -7797,9 +7808,10 @@ pub const Emitter = struct {
         };
     }
 
-    /// The channel endpoint an expression evaluates to, if any: a local, or a struct or
-    /// tuple field of one at any depth, whose declared type resolves to an endpoint (an
-    /// alias included), else the type checker's reading of the expression.
+    /// The channel endpoint an expression evaluates to, if any: a local (a `for` binding
+    /// included), or a struct field, tuple field or array or List element of one at any
+    /// depth, whose declared type resolves to an endpoint (an alias included), else the
+    /// type checker's reading of the expression.
     fn channelEndpointOf(self: *Emitter, expr: ast.Expr) ?ChannelTypeInfo {
         if (self.localPathType(expr)) |ty| {
             if (channelInfoOfType(ty)) |ci| return ci;
@@ -7811,8 +7823,9 @@ pub const Emitter = struct {
         return null;
     }
 
-    /// The semantic type of a local or of a field path rooted at one (`w.tx`, `pair.0`,
-    /// `o.w.tx`), from the types recorded when the locals were declared.
+    /// The semantic type of a local or of a field or index path rooted at one (`w.tx`,
+    /// `pair.0`, `o.w.tx`, `txs[0]`, `ws[0].tx`), from the types recorded when the locals
+    /// were declared.
     fn localPathType(self: *Emitter, expr: ast.Expr) ?types.Type {
         switch (expr) {
             .identifier => |id| {
@@ -7841,8 +7854,27 @@ pub const Emitter = struct {
                     else => return null,
                 }
             },
+            .index => |ix| return elementTypeOf(self.localPathType(ix.object) orelse return null),
             else => return null,
         }
+    }
+
+    /// The element type an index reads from an array or a List.
+    fn elementTypeOf(collection: types.Type) ?types.Type {
+        const ty = if (collection == .reference) collection.reference.inner else collection;
+        return switch (ty) {
+            .array => |a| a.element,
+            .list => |l| l.element,
+            else => null,
+        };
+    }
+
+    /// The semantic type of a `for` loop binding: its annotation, which the parser requires
+    /// on a simple binding.
+    fn forBindingType(self: *Emitter, pattern: ast.Pattern) ?types.Type {
+        if (pattern != .binding) return null;
+        const te = pattern.binding.type_annotation orelse return null;
+        return self.resolveTypeExprDirect(te);
     }
 
     /// The monomorphized struct an applied generic type (`Holder#[i32]`) names, whose
