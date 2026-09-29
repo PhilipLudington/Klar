@@ -7811,8 +7811,8 @@ pub const Emitter = struct {
     }
 
     /// The channel endpoint an expression evaluates to, if any: a local (a `for` binding
-    /// included), or a struct field, tuple field or array or List element of one at any
-    /// depth, whose declared type resolves to an endpoint (an alias included), else the
+    /// included, a Map's `(k, v)` too), or a struct field, tuple field or array, slice or
+    /// List element of one at any depth, whose declared type resolves to an endpoint (an alias included), else the
     /// type checker's reading of the expression.
     fn channelEndpointOf(self: *Emitter, expr: ast.Expr) ?ChannelTypeInfo {
         if (self.localPathType(expr)) |ty| {
@@ -7826,7 +7826,7 @@ pub const Emitter = struct {
     }
 
     /// The semantic type of a local or of a field or index path rooted at one (`w.tx`,
-    /// `pair.0`, `o.w.tx`, `txs[0]`, `ws[0].tx`), from the types recorded when the locals
+    /// `pair.0`, `o.w.tx`, `txs[0]`, `s[0]`, `ws[0].tx`), from the types recorded when the locals
     /// were declared.
     fn localPathType(self: *Emitter, expr: ast.Expr) ?types.Type {
         switch (expr) {
