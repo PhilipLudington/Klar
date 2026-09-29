@@ -4316,15 +4316,19 @@ pub const Emitter = struct {
 
     /// Emit an expression the checker typed with `checkExprWithHint(expr, hint)`.
     /// The hint reaches exactly the expression kinds the checker hints (a literal, a bare
-    /// `None`, a call for Ok/Err, a tuple, through parentheses) and nothing nested inside
-    /// them, so `list.push(4000000000)` into a `List#[u32]` emits an i32 constant while an
-    /// index literal in `push(xs.get(0)!)` keeps its own i32 width. Every other kind is
-    /// emitted with no hint, whatever the enclosing statement set.
+    /// `None`, an Ok/Err/Some/None call, a tuple, through parentheses) and nothing nested
+    /// inside them, so `list.push(4000000000)` into a `List#[u32]` emits an i32 constant while
+    /// an index literal in `push(xs.get(0)!)` or an argument in `push(widen(3))` keeps its
+    /// own width. Every other kind is emitted with no hint, whatever the statement set.
     fn emitExprWithHint(self: *Emitter, expr: ast.Expr, hint: ?types.Type) EmitError!llvm.ValueRef {
         // Parentheses pass the hint to what they enclose, as checkExprWithHint does.
         if (expr == .grouped) return self.emitExprWithHint(expr.grouped.expr, hint);
         const hinted = switch (expr) {
-            .literal, .call, .tuple_literal => true,
+            .literal, .tuple_literal => true,
+            // Only the constructors read the hint; a user call's arguments would take it too.
+            .call => |c| c.callee == .identifier and for ([_][]const u8{ "Ok", "Err", "Some", "None" }) |ctor| {
+                if (std.mem.eql(u8, c.callee.identifier.name, ctor)) break true;
+            } else false,
             .identifier => |id| std.mem.eql(u8, id.name, "None"),
             else => false,
         };

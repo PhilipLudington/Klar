@@ -2106,10 +2106,11 @@ pointer (SIGABRT). The checker typed each literal as the element type through
 the same gap. `MallocScribble=1` makes the crash likely: 22 of 40 runs failed.
 
 **Fix:** `emitExprWithHint` (`src/codegen/emit.zig`) mirrors `checkExprWithHint`: the hint
-reaches a literal, a bare `None`, a call and a tuple (through parentheses) and nothing nested
-inside them. `List.push` passes the list's element type, `Sender.send` the channel's
-(`getSenderElementType`), and tuple elements their own element type, which also stops a
-tuple element's hint leaking into an index literal inside it. The integration binary then
+reaches a literal, a bare `None`, an `Ok`/`Err`/`Some`/`None` call and a tuple (through
+parentheses) and nothing nested inside them. `List.push` passes the list's element type,
+`Sender.send` the channel's (`getSenderElementType`), and tuple elements their own element
+type, which also stops a tuple element's hint leaking into an index literal or a user
+call's arguments inside it. The integration binary then
 passed 60 of 60 runs under `MallocScribble=1`.
 
 **Test:** `test/native/list_push_literal_width.kl`, `test/native/channel_send_literal_width.kl`,
