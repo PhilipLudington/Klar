@@ -2226,9 +2226,9 @@ wider slot (Bug 79's cause).
 
 ---
 
-## [ ] Bug 83: `send` on a `Sender#[T]` function parameter emits no code, so the receiver blocks forever
+## [x] Bug 83: `send` on a `Sender#[T]` function parameter emits no code, so the receiver blocks forever
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** Native channels — `isSenderExpr` / `getSenderElementType` in `src/codegen/emit.zig`
 
@@ -2251,11 +2251,21 @@ binary hangs until it is killed.
 
 **Found by:** /qa-review on fix/bug-79-integration-crash, 2026-09-29 — GenA — reviewer's evidence (probe `scratch/qa79a/send_param.kl`, IR and hang), not re-read.
 
+**Fix:** Only a `let` recorded the channel fields (`is_sender`, `is_receiver`,
+`channel_element_type`) on its local; a function parameter and a `var` of the same type did
+not, and the checker fallback in `isSenderExpr` cannot see a parameter once its function
+has been checked. Both now take them from `getChannelTypeInfo(type_)`, as the `let` does
+(`src/codegen/emit.zig`). A `var Sender` hung the same way and is fixed with it. Methods,
+generic functions and closures taking a `Sender` fail earlier, at LLVM verification: see
+Bug 85.
+
+**Test:** `test/native/channel_param_endpoints.kl`
+
 ---
 
-## [ ] Bug 84: A bare `None` in a tuple element or a `push` argument is emitted as `i32 0`
+## [x] Bug 84: A bare `None` in a tuple element or a `push` argument is emitted as `i32 0`
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** contextual literal width — `emitExprWithHint` in `src/codegen/emit.zig`, the
 codegen side of the checker's `checkExprWithHint`: `List.push`, `Sender.send`, tuple
@@ -2278,3 +2288,130 @@ leaves the payload uninitialized; the tag reads 0 only by luck.
 and after Bug 79's fix.
 
 **Found by:** /qa-review fix-check on fix/bug-79-integration-crash, 2026-09-29 — GenA — reviewer's evidence (probes `scratch/qa79a/fc_none.kl`, `fc_pushnone.ll`), not re-read.
+
+**Fix:** `emitIdentifier` (`src/codegen/emit.zig`) emits a bare `None` that is not a local
+as `emitNone` of the hinted optional when `expected_type` is an optional, as `None()` does.
+The tuple is now built as `{ {i1, i64}, i32 }` and `push(None)` stores the whole `{i1, i64}`.
+The push half has no runtime symptom (the 4-byte zero also zeroed the tag); it is checked
+in the IR only.
+
+**Test:** `test/native/none_hint_width.kl`
+
+---
+
+## [ ] Bug 85: A method, generic function or closure taking a `Sender#[T]` fails LLVM verification
+
+**Status:** Open
+
+**System:** Native channels — the lowering of a `Sender#[T]`/`Receiver#[T]` parameter type
+outside a plain function's prototype, `src/codegen/emit.zig`
+
+**Deferred:** after the current milestone. A valid program fails to build rather than
+running wrong, and a plain function parameter (fixed in Bug 83) works; no Phase 0
+deliverable waits on it.
+
+**Description:** A plain function lowers a `Sender#[i64]` parameter to `ptr`. A method
+prototype lowers it to `i32`, a monomorphized generic function to `{ ptr }` while its call
+site passes `ptr`, and a closure's call site types the argument `i32`. Each call then fails
+"Call parameter type does not match function signature".
+
+**Steps to reproduce:**
+1. `impl Pump { fn feed(self: Self, tx: Sender#[i64]) -> void { tx.send(1) } }`, or
+   `fn g#[T](tx: Sender#[T], v: T) -> void { tx.send(v) }` called as `g#[i64](tx, x)`, or
+   `let f: fn(Sender#[i64]) -> void = |s: Sender#[i64]| -> void { s.send(9) }` then `f(tx)`.
+2. `klar build` it.
+
+**Expected:** It builds, and the value arrives on the receiver.
+
+**Actual:** `LLVM Module verification failed: Call parameter type does not match function
+signature!` with `call void @Pump_feed({ i64 } %p, ptr %tx)` (declared `i32`),
+`call void @"produce_generic$i64"(ptr %tx, …)` (declared `{ ptr }`), and
+`call i32 %fn.ptr(ptr %env.ptr, ptr %tx)`.
+
+**Found by:** /continue-plan on fix/bug-83-sender-param, 2026-09-29 — Builder — reproduced
+(a first cut of `test/native/channel_param_endpoints.kl` with all three cases).
+
+---
+
+## [ ] Bug 86: `send` on a struct-field or tuple-field `Sender` emits no code, so the receiver blocks
+
+**Status:** Open
+
+**System:** Native channels — `isSenderExpr` / `getSenderElementType` in `src/codegen/emit.zig`
+
+**Description:** `isSenderExpr` (`src/codegen/emit.zig:31095`) and `isReceiverExpr` (`:31110`)
+recognise a local marked `is_sender`/`is_receiver`, then ask the checker. A target that is not
+a bare identifier, such as a struct field `w.tx.send(v)` or a tuple field `pair.0.send(v)`, is
+neither, so the send falls through and nothing is emitted. This happens in `main` as well as
+in a function, and it is Bug 83's mechanism on a different target.
+
+**Steps to reproduce:**
+1. `struct W { tx: Sender#[i64] }`, build `w` from `channel#[i64]()`'s sender, then
+   `w.tx.send(7)` followed by `rx.recv()`.
+2. `klar build` and run it.
+
+**Expected:** `recv` returns 7.
+
+**Actual:** The send emits only the field GEP and load. With a later `send(1)`, `recv` reads
+1 (probes exit 1). Without one, `recv` blocks forever.
+
+**Found by:** /qa-review on fix/bug-83-sender-param, 2026-09-29 — GenA — reviewer's evidence
+(probes `scratch/qa83/struct_field_main.kl`, `param_recv_via_field.kl`, `struct_field_sender.kl`), not re-read.
+
+---
+
+## [ ] Bug 87: An aliased channel endpoint type is not a channel endpoint — `send` hangs or fails verification
+
+**Status:** Open
+
+**System:** Native channels — `isSenderExpr` / `getSenderElementType` in `src/codegen/emit.zig`
+
+**Description:** `getChannelTypeInfo` (`src/codegen/emit.zig:7786-7803`) counts only a literal
+`generic_apply` of `Sender`/`Receiver` as a channel type. An alias (`type Tx = Sender#[i64]`)
+is not resolved, so a `let` of that type gets no channel fields and a parameter of that type
+is lowered as `i32`. Since Bug 83's fix, parameters and `var`s go through the same helper
+and share the gap.
+
+**Steps to reproduce:**
+1. `type Tx = Sender#[i64]`, then `let tx: Tx = pair.0`, `tx.send(4000000000)`, `rx.recv()`.
+2. Separately, `fn produce(tx: Tx) -> void { tx.send(1) }` called with the sender.
+3. `klar build` and run each one.
+
+**Expected:** The value arrives, as it does with `Sender#[i64]` written out.
+
+**Actual:** The `let` case hangs (`timeout 5` exit 124). The parameter case fails LLVM
+verification with `call void @produce(ptr %tx3)`, where the function is declared `i32`.
+
+**Found by:** /qa-review on fix/bug-83-sender-param, 2026-09-29 — GenA — reviewer's evidence
+(probes `scratch/qa83/alias_let.kl`, `alias_param.kl`), not re-read.
+
+---
+
+## [ ] Bug 88: A bare `None` passed as a user-function argument is emitted as `i32 0`
+
+**Status:** Open
+
+**System:** contextual literal width — `emitExprWithHint` in `src/codegen/emit.zig`, the
+codegen side of the checker's `checkExprWithHint`: `List.push`, `Sender.send`, tuple
+elements
+
+**Deferred:** after the current milestone. The program fails to build rather than running
+wrong, and `Some`/typed locals work around it.
+
+**Description:** Call arguments are not hinted with their parameter types, so a bare `None`
+argument reaches `emitIdentifier` (`src/codegen/emit.zig:4511-4517`) with no optional hint
+and is emitted as the `i32 0` placeholder. Bug 84's fix covers only hinted sites.
+`let n: ?i64 = f(None)` works only because the statement's hint happens to match the
+parameter's type.
+
+**Steps to reproduce:**
+1. `fn pick(a: ?i32) -> i64 { ... }`, then `let x: i64 = pick(None)`.
+2. `klar build` it.
+
+**Expected:** It builds, and `pick` receives none.
+
+**Actual:** LLVM verification fails with `call i64 @pick(i32 0)`, where `pick` is declared to
+take `{ i1, i32 }`.
+
+**Found by:** /qa-review on fix/bug-83-sender-param, 2026-09-29 — GenA — reviewer's evidence
+(probe `scratch/qa83/pre_nest_call.kl`), not re-read.
