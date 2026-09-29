@@ -2064,29 +2064,33 @@ test checks the wrapper's exit code and `.test-results.json` counts.
 
 ---
 
-## [ ] Bug 79: Module test `integration` aborted once with exit 134 and no output
+## [ ] Bug 79: Native `integration` module test crashes intermittently (SIGABRT or SIGSEGV, ~3% of runs)
 
 **Status:** Open
 
 **System:** stdlib integration — `test/module/integration/main.kl` and the stdlib modules it
 composes (json, toml, path, string_builder, file); cause not yet located
 
-**Deferred:** after the current milestone. Seen once in 82 runs and not reproduced since, so
-it does not block a phase; a second sighting makes it a crash to reproduce.
-
-**Description:** In one `./run-tests.sh` run the natively built integration binary aborted
-(exit 134, SIGABRT) before printing anything. The test writes and deletes the fixed paths
-`/tmp/klar_integration_test.json` and `/tmp/klar_integration_manifest.json`, so a concurrent
-run from another checkout could race on them; that is a guess, not a finding.
+**Description:** The natively built integration binary sometimes dies before printing
+anything, with SIGABRT (exit 134) or SIGSEGV (exit 11). The same binary passes on most runs,
+so the crash depends on something that varies between runs (heap addresses, uninitialized
+memory, timing), not on the input. The test writes and deletes the fixed paths
+`/tmp/klar_integration_test.json` and `/tmp/klar_integration_manifest.json`, and the first
+sighting guessed that another checkout raced on them. The second sighting rules that out as
+the lead: it reproduced with no other Klar test run live.
 
 **Steps to reproduce:**
-1. `./run-tests.sh` (or `./scripts/run-module-tests.sh`), repeated.
+1. `./zig-out/bin/klar build test/module/integration/main.kl -o <bin>`
+2. Run `<bin>` 200 times and count nonzero exits.
 
 **Expected:** `integration` exits 0 on every run.
 
-**Actual:** On `fix/gc-reachability` at `225f232`, 2026-09-29: `✗ integration (expected: 0,
-got: 134)`, empty output. The same source, rebuilt, then exited 0 in 80 direct runs, and a
-full `./run-tests.sh` rerun on the same commit passed 2158/2158.
+**Actual:** First sighting, on `fix/gc-reachability` at `225f232`, 2026-09-29:
+`✗ integration (expected: 0, got: 134)`, empty output. That rebuilt binary then exited 0 in
+80 direct runs. Second sighting, on `plan/protect-main` at `1565e9b` plus a PLAN.md-only
+edit, 2026-09-29: the same `./run-tests.sh` failure (2161/2162). The rebuilt binary then
+crashed in **6 of 200** direct runs (exit 134 four times, exit 11 twice), with no other Klar
+test run live. The next full `./run-tests.sh` passed 2162/2162.
 
 **Found by:** Builder on `fix/gc-reachability`, 2026-09-29, re-gating PR 43.
 
