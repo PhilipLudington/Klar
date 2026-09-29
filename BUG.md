@@ -2149,3 +2149,76 @@ from the results files.
 
 **Found by:** /qa-review on ci/llvm-21-everywhere, 2026-09-29 — GenA; verified by reading
 `run-tests.sh:55-64` and `run-tests.sh:98`.
+
+---
+
+## [ ] Bug 81: `let x: i64 = xs.get(0)!` fails LLVM verification — a declaration's type reaches a nested index literal
+
+**Status:** Open
+
+**System:** contextual literal width — `emitExprWithHint` in `src/codegen/emit.zig`, the
+codegen side of the checker's `checkExprWithHint`: `List.push`, `Sender.send`, tuple
+elements
+
+**Deferred:** after the current milestone. A valid program fails to build rather than
+running wrong, and writing the index as a variable avoids it; no Phase 0 deliverable waits
+on it.
+
+**Description:** `let_decl`, `var_decl` and `return` (`src/codegen/emit.zig`, the
+`self.expected_type = self.resolveExpectedType(decl.type_)` and
+`self.expected_type = self.current_return_klar_type` sites) set `expected_type` for the
+whole statement, so every integer literal inside the initializer takes the declared type.
+The checker hints only the top expression (`checkExprWithHint`). An index literal inside
+`xs.get(0)!` is emitted as i64 against the list's i32 length and the module fails
+verification. Bug 79's fix added `emitExprWithHint`, which hints exactly what the checker
+hints; these three sites still set the type by scope.
+
+**Steps to reproduce:**
+1. A file with `var xs: List#[i64] = List.new#[i64]()`, one push, then
+   `let w0: i64 = xs.get(0)!`.
+2. `klar build` it.
+
+**Expected:** It builds; `w0` is the first element.
+
+**Actual:** `LLVM Module verification failed: Both operands to ICmp instruction are not of
+the same type! %get.idx_lt_len = icmp slt i64 0, i32 %get.current_len`, no binary, and
+`klar build` exits 0 (Bug 49).
+
+**Fix direction:** route the three statement sites' value through `emitExprWithHint`;
+check what else reads `expected_type` inside a declaration's value (array and struct
+literals, Ok/Err payloads) before narrowing it.
+
+**Found by:** Builder on fix/bug-79-integration-crash, 2026-09-29, writing Bug 79's test.
+
+---
+
+## [ ] Bug 82: `List.set`, `Map.insert` and `Set.insert`/`contains` refuse an integer literal that `List.push` accepts
+
+**Status:** Open
+
+**System:** contextual literal width — `emitExprWithHint` in `src/codegen/emit.zig`, the
+codegen side of the checker's `checkExprWithHint`: `List.push`, `Sender.send`, tuple
+elements
+
+**Deferred:** after the current milestone. The checker refuses the program with a clear
+message and `.as#[T]` on the literal works around it; nothing runs wrong.
+
+**Description:** `List.push` and `Sender.send` check their argument with
+`checkExprWithHint(arg, element_type)`, so `bytes.push(255)` into a `List#[u8]` types 255
+as u8. `List.set`'s value, `Map.insert`'s key and value, and `Set.insert`/`contains`/`remove`
+use plain `checkExpr` (`src/checker/method_calls.zig`, e.g. the `set()` branch at ~1353), so
+the same literal is an i32 and the call is refused. Giving them the hint also needs their
+codegen argument to go through `emitExprWithHint`, or the literal is emitted at i32 into a
+wider slot (Bug 79's cause).
+
+**Steps to reproduce:**
+1. `var c: List#[u8] = List.new#[u8]()`, `c.push(1)`, `c.set(0, 255)`; and
+   `var s: Set#[i64] = Set.new#[i64]()`, `s.insert(3)`.
+2. `klar build` it.
+
+**Expected:** It builds, as `c.push(255)` does.
+
+**Actual:** `set() value type mismatch`, `insert() value type mismatch` (Map),
+`insert() element type mismatch` and `contains() element type mismatch` (Set).
+
+**Found by:** Builder on fix/bug-79-integration-crash, 2026-09-29, writing Bug 79's test.
