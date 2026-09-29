@@ -2044,6 +2044,7 @@ pub const Emitter = struct {
                     .is_set = set_info != null,
                     .set_element_type = set_info,
                     .is_string_data = is_string_data,
+                    .semantic_type = self.resolveMethodParamType(param.type_, struct_name),
                 }) catch return EmitError.OutOfMemory;
             }
 
@@ -7549,6 +7550,26 @@ pub const Emitter = struct {
         }
     }
 
+    /// A method parameter's declared type, with `Self` (or `&Self`) read as the impl's
+    /// struct, so a field path rooted at `self` resolves as one rooted at a plain parameter.
+    fn resolveMethodParamType(self: *Emitter, type_expr: ast.TypeExpr, struct_name: []const u8) ?types.Type {
+        switch (type_expr) {
+            .named => |n| if (std.mem.eql(u8, n.name, "Self")) {
+                return self.resolveTypeExprDirect(.{ .named = .{ .name = struct_name, .span = n.span } });
+            },
+            .reference => |r| if (r.inner == .named and std.mem.eql(u8, r.inner.named.name, "Self")) {
+                var ref: ast.ReferenceType = .{
+                    .inner = .{ .named = .{ .name = struct_name, .span = r.inner.named.span } },
+                    .mutable = r.mutable,
+                    .span = r.span,
+                };
+                return self.resolveTypeExprDirect(.{ .reference = &ref });
+            },
+            else => {},
+        }
+        return self.resolveTypeExprDirect(type_expr);
+    }
+
     /// Check if a type expression is a primitive string type.
     fn isTypeString(self: *Emitter, type_expr: ast.TypeExpr) bool {
         _ = self;
@@ -7801,6 +7822,10 @@ pub const Emitter = struct {
             .field => |f| {
                 var owner = self.localPathType(f.object) orelse return null;
                 if (owner == .reference) owner = owner.reference.inner;
+                if (owner == .applied) {
+                    const concrete = self.concreteStructOfApplied(owner) orelse return null;
+                    owner = .{ .struct_ = concrete };
+                }
                 switch (owner) {
                     .struct_ => |st| {
                         for (st.fields) |field| {
@@ -7818,6 +7843,20 @@ pub const Emitter = struct {
             },
             else => return null,
         }
+    }
+
+    /// The monomorphized struct an applied generic type (`Holder#[i32]`) names, whose
+    /// fields carry the substituted types.
+    fn concreteStructOfApplied(self: *Emitter, ty: types.Type) ?*types.StructType {
+        const tc = self.type_checker orelse return null;
+        var name = std.ArrayListUnmanaged(u8).empty;
+        defer name.deinit(self.allocator);
+        self.appendCheckerTypeNameForMangling(&name, ty) catch return null;
+        var monos = tc.getMonomorphizedStructs();
+        while (monos.next()) |mono| {
+            if (std.mem.eql(u8, mono.mangled_name, name.items)) return mono.concrete_type;
+        }
+        return null;
     }
 
     /// Resolve a type expression to a types.Type for use as expected_type context.
@@ -38626,6 +38665,7 @@ pub const Emitter = struct {
                 .is_set = concrete_param_type == .set,
                 .set_element_type = set_element_type,
                 .is_string_data = is_string_data,
+                .semantic_type = concrete_param_type,
             }) catch return EmitError.OutOfMemory;
         }
 
@@ -38863,6 +38903,7 @@ pub const Emitter = struct {
                 .is_set = concrete_param_type == .set,
                 .set_element_type = mono_set_element_type,
                 .is_string_data = mono_is_string_data,
+                .semantic_type = concrete_param_type,
             }) catch return EmitError.OutOfMemory;
         }
 

@@ -2363,7 +2363,11 @@ in a function, and it is Bug 83's mechanism on a different target.
 `channelEndpointOf` (`src/codegen/emit.zig`), which reads the declared type of a local or
 of a struct or tuple field path rooted at one (`localPathType`), at any depth, before
 falling back to the checker. The per-local `is_sender`/`is_receiver`/`channel_element_type`
-flags are gone: the local's recorded `semantic_type` carries the same fact.
+flags are gone: the local's recorded `semantic_type` carries the same fact. Impl methods
+(with `Self` read as the impl's struct) and monomorphized functions and methods record it
+for their parameters too, and a field path through a generic struct (`Holder#[i32]`)
+reads the monomorphized struct's fields. Closure parameters do not, since native closures
+cannot yet access a struct parameter's fields at all.
 
 **Test:** `test/native/channel_field_endpoints.kl`
 
