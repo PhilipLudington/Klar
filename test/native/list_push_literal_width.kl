@@ -1,0 +1,45 @@
+// Bug 79: List.push emitted an integer literal at its default width (i32, or i64 above
+// i32 max) instead of the element's width. A narrow literal left the rest of a wider slot
+// as it was; a wide literal wrote past a narrower slot, and at a buffer's last slot past
+// the allocation (the stdlib sha256 init_k heap corruption).
+fn main() -> i32 {
+    // Indexes are variables: a literal index under `let x: i64 =` hits a separate defect.
+    let first: i32 = 0
+    let second: i32 = 1
+    let last: i32 = 7
+    // An i32-range literal into an i64 slot that already holds all-ones bits.
+    var wide: List#[i64] = List.new#[i64]()
+    let ones: i64 = -1.as#[i64]
+    wide.push(ones)
+    let dropped: ?i64 = wide.pop()
+    wide.push(7)
+    let w0: i64 = wide.get(first)!
+    if w0 != 7.as#[i64] {
+        return 1
+    }
+
+    // A literal above i32 max into a u32 list, up to the buffer's last slot.
+    var k: List#[u32] = List.new#[u32]()
+    var i: i32 = 0
+    while i < 8 {
+        k.push(4000000000)
+        i = i + 1
+    }
+    let k7: u32 = k.get(last)!
+    let k7_wide: i64 = k7.as#[i64]
+    let big: i64 = 4000000000
+    if k7_wide != big {
+        return 2
+    }
+
+    // u8 elements keep their values.
+    var b: List#[u8] = List.new#[u8]()
+    b.push(200)
+    b.push(1)
+    let b0: u8 = b.get(first)!
+    let b1: u8 = b.get(second)!
+    if b0 != 200.as#[u8] or b1 != 1.as#[u8] {
+        return 3
+    }
+    return 0
+}

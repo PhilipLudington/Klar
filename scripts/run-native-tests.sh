@@ -128,6 +128,8 @@ get_expected() {
         test_blocks_ignore_runtime_failures) echo 78 ;;
         list_last) echo 42 ;;
         list_pop) echo 42 ;;
+        list_push_literal_width) echo 0 ;;  # push stores a literal at the element's width (Bug 79)
+        channel_send_literal_width) echo 0 ;;  # send stores a literal at the element's width (Bug 79)
         list_string_drop) echo 42 ;;
         list_index_assign) echo 42 ;;
         list_nested_basic) echo 42 ;;
