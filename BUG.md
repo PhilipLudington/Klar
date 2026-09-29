@@ -2296,3 +2296,37 @@ The push half has no runtime symptom (the 4-byte zero also zeroed the tag); it i
 in the IR only.
 
 **Test:** `test/native/none_hint_width.kl`
+
+---
+
+## [ ] Bug 85: A method, generic function or closure taking a `Sender#[T]` fails LLVM verification
+
+**Status:** Open
+
+**System:** Native channels — the lowering of a `Sender#[T]`/`Receiver#[T]` parameter type
+outside a plain function's prototype, `src/codegen/emit.zig`
+
+**Deferred:** after the current milestone. A valid program fails to build rather than
+running wrong, and a plain function parameter (fixed in Bug 83) works; no Phase 0
+deliverable waits on it.
+
+**Description:** A plain function lowers a `Sender#[i64]` parameter to `ptr`. A method
+prototype lowers it to `i32`, a monomorphized generic function to `{ ptr }` while its call
+site passes `ptr`, and a closure's call site types the argument `i32`. Each call then fails
+"Call parameter type does not match function signature".
+
+**Steps to reproduce:**
+1. `impl Pump { fn feed(self: Self, tx: Sender#[i64]) -> void { tx.send(1) } }`, or
+   `fn g#[T](tx: Sender#[T], v: T) -> void { tx.send(v) }` called as `g#[i64](tx, x)`, or
+   `let f: fn(Sender#[i64]) -> void = |s: Sender#[i64]| -> void { s.send(9) }` then `f(tx)`.
+2. `klar build` it.
+
+**Expected:** It builds, and the value arrives on the receiver.
+
+**Actual:** `LLVM Module verification failed: Call parameter type does not match function
+signature!` with `call void @Pump_feed({ i64 } %p, ptr %tx)` (declared `i32`),
+`call void @"produce_generic$i64"(ptr %tx, …)` (declared `{ ptr }`), and
+`call i32 %fn.ptr(ptr %env.ptr, ptr %tx)`.
+
+**Found by:** /continue-plan on fix/bug-83-sender-param, 2026-09-29 — Builder — reproduced
+(a first cut of `test/native/channel_param_endpoints.kl` with all three cases).
