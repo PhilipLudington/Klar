@@ -2222,3 +2222,30 @@ wider slot (Bug 79's cause).
 `insert() element type mismatch` and `contains() element type mismatch` (Set).
 
 **Found by:** Builder on fix/bug-79-integration-crash, 2026-09-29, writing Bug 79's test.
+
+---
+
+## [ ] Bug 83: `send` on a `Sender#[T]` function parameter emits no code, so the receiver blocks forever
+
+**Status:** Open
+
+**System:** Native channels — `isSenderExpr` / `getSenderElementType` in `src/codegen/emit.zig`
+
+**Description:** The send dispatch (`src/codegen/emit.zig:12370-12388`) recognises a sender
+through `isSenderExpr` (`:31070`), which looks for a local marked `is_sender` and then asks
+the checker. A `Sender#[T]` that arrives as a function parameter matches neither, so the
+`send` call falls through and nothing is emitted: the function body loads `%tx` and returns.
+The receiver never gets a value and `recv()` blocks forever. `getSenderElementType` uses
+the same two-step lookup and would fail the same way once the dispatch is fixed.
+
+**Steps to reproduce:**
+1. `fn produce(tx: Sender#[i64]) -> void { tx.send(7) }`, and in `main` create a channel,
+   call `produce(tx)`, then `rx.recv()`.
+2. `klar build` it with `--emit-llvm` and run it.
+
+**Expected:** `@produce` calls the channel send, and `recv()` returns 7.
+
+**Actual:** `define void @produce(ptr %0)` contains only `load ptr %tx` and `ret void`; the
+binary hangs until it is killed.
+
+**Found by:** /qa-review on fix/bug-79-integration-crash, 2026-09-29 — GenA — reviewer's evidence (probe `scratch/qa79a/send_param.kl`, IR and hang), not re-read.
