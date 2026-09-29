@@ -1,14 +1,20 @@
 // Skip: windows (pthread not available on MSVC)
 // Bug 79: Sender.send emitted an integer literal at i32 and copied the channel's element
 // size out of it, so an i64 channel received 4 bytes of the literal and 4 of stack.
+fn widen(x: i32) -> i64 {
+    return x.as#[i64]
+}
+
 fn main() -> i32 {
     let pair: (Sender#[i64], Receiver#[i64]) = channel_create#[i64](4)
     let tx: Sender#[i64] = pair.0
     let rx: Receiver#[i64] = pair.1
     tx.send(7)
     tx.send(4000000000)
+    tx.send(widen(3))
     let v1: ?i64 = rx.recv()
     let v2: ?i64 = rx.recv()
+    let v3: ?i64 = rx.recv()
     tx.close()
     let a: i64 = v1 ?? 0.as#[i64]
     let b: i64 = v2 ?? 0.as#[i64]
@@ -18,6 +24,10 @@ fn main() -> i32 {
     let big: i64 = 4000000000
     if b != big {
         return 2
+    }
+    let c: i64 = v3 ?? 0.as#[i64]
+    if c != 3.as#[i64] {
+        return 3
     }
     return 0
 }

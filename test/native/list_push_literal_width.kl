@@ -18,18 +18,50 @@ fn main() -> i32 {
         return 1
     }
 
-    // A literal above i32 max into a u32 list, up to the buffer's last slot.
-    var k: List#[u32] = List.new#[u32]()
-    var i: i32 = 0
-    while i < 8 {
-        k.push(4000000000)
-        i = i + 1
+    // A literal above i32 max into u32 lists. Every 32-byte buffer is allocated in list
+    // order, even lists taking the literal and odd lists all-ones sentinels, so an 8-byte
+    // store into an even list's last slot zeroes its neighbour's first slot.
+    let n: i32 = 32
+    let u32_ones: u32 = 4294967295
+    var lists: List#[List#[u32]] = List.new#[List#[u32]]()
+    var j: i32 = 0
+    while j < n {
+        lists.push(List.new#[u32]())
+        j = j + 1
     }
+    var r: i32 = 0
+    while r < 8 {
+        j = 0
+        while j < n {
+            var l: List#[u32] = lists.get(j)!
+            if j % 2 == 0 {
+                l.push(4000000000)
+            } else {
+                l.push(u32_ones)
+            }
+            j = j + 1
+        }
+        r = r + 1
+    }
+    let k: List#[u32] = lists.get(first)!
     let k7: u32 = k.get(last)!
     let k7_wide: i64 = k7.as#[i64]
     let big: i64 = 4000000000
     if k7_wide != big {
         return 2
+    }
+    j = 1
+    while j < n {
+        let s: List#[u32] = lists.get(j)!
+        var i: i32 = 0
+        while i < 8 {
+            let v: u32 = s.get(i)!
+            if v != u32_ones {
+                return 4
+            }
+            i = i + 1
+        }
+        j = j + 2
     }
 
     // u8 elements keep their values.
