@@ -131,6 +131,8 @@ get_expected() {
         list_push_literal_width) echo 0 ;;  # push stores a literal at the element's width (Bug 79)
         channel_send_literal_width) echo 0 ;;  # send stores a literal at the element's width (Bug 79)
         hint_reach_literal_width) echo 0 ;;  # a hint never reaches a nested literal (Bug 79)
+        channel_param_endpoints) echo 0 ;;  # send/recv/close through a Sender/Receiver parameter (Bug 83)
+        none_hint_width) echo 0 ;;  # a bare None under a tuple or push hint takes the optional's layout (Bug 84)
         list_string_drop) echo 42 ;;
         list_index_assign) echo 42 ;;
         list_nested_basic) echo 42 ;;

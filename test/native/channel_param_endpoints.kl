@@ -1,0 +1,51 @@
+// Skip: windows (pthread not available on MSVC)
+// Bug 83: a Sender or Receiver that arrived as a function parameter was not recognised as a
+// channel endpoint, so `send` emitted nothing and `recv` returned no channel value. Each
+// send through a parameter is followed by one through a local, so a lost send reads the
+// local's value instead of hanging.
+fn produce(tx: Sender#[i64]) -> void {
+    tx.send(4000000000)
+}
+
+fn consume(rx: Receiver#[i64]) -> i64 {
+    let v: ?i64 = rx.recv()
+    return v ?? 0.as#[i64]
+}
+
+fn finish(tx: Sender#[i64]) -> void {
+    tx.close()
+}
+
+fn main() -> i32 {
+    let pair: (Sender#[i64], Receiver#[i64]) = channel_create#[i64](8)
+    let tx: Sender#[i64] = pair.0
+    let rx: Receiver#[i64] = pair.1
+
+    // Sender parameter, with a literal wider than i32 (the element type comes from the
+    // parameter's declared type).
+    produce(tx)
+    tx.send(1)
+    let big: i64 = 4000000000
+    let a: ?i64 = rx.recv()
+    if (a ?? 0.as#[i64]) != big {
+        return 1
+    }
+    let one: ?i64 = rx.recv()
+    if (one ?? 0.as#[i64]) != 1.as#[i64] {
+        return 2
+    }
+
+    // Receiver parameter.
+    tx.send(5)
+    if consume(rx) != 5.as#[i64] {
+        return 3
+    }
+
+    // close through a Sender parameter: recv on the empty channel returns None.
+    finish(tx)
+    let closed: ?i64 = rx.recv()
+    if closed != None {
+        return 4
+    }
+    return 0
+}
