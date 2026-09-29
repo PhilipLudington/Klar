@@ -5,7 +5,8 @@ This guide covers building the Klar compiler from source.
 ## Prerequisites
 
 - **Zig 0.15+** - The compiler is written in Zig
-- **LLVM 17+** - Required for native code generation
+- **LLVM 21** - Required for native code generation. CI builds and tests with LLVM 21 on
+  every platform; other versions are untested.
 - **Git** - To clone the repository
 
 ### Installing Zig
@@ -39,19 +40,21 @@ LLVM is required only for `klar build` (native compilation). Without LLVM, the c
 
 ```bash
 # macOS (Homebrew) — includes development headers
-brew install llvm@17
+brew install llvm@21
 
 # Ubuntu/Debian — must install -dev package for headers
-apt install llvm-17 llvm-17-dev
+apt install llvm-21 llvm-21-dev
 
 # Windows — see "Windows Setup" section below
 ```
 
-The build system auto-detects LLVM in these locations:
-- macOS: `/opt/homebrew/opt/llvm` (ARM64), `/usr/local/opt/llvm` (x86_64)
-- Linux: `/usr/include/llvm-c/`, `/usr/local/include/llvm-c/`
+The build system auto-detects LLVM in these locations, in this order:
+- `LLVM_PREFIX` environment variable, when set (CI sets it on every job)
+- macOS: `/opt/homebrew/opt/llvm` (ARM64), `/usr/local/opt/llvm` (x86_64), then
+  `llvm@21` down to `llvm@14` under either
+- Linux: `/usr/include/llvm-c/`, `/usr/local/include/llvm-c/`, then `/usr/lib/llvm-21`
+  down to `/usr/lib/llvm-14`
 - Windows: `C:\Program Files\LLVM`, `C:\ProgramData\chocolatey\lib\llvm`
-- All platforms: custom path via the `LLVM_PREFIX` environment variable
 
 ## Building Klar
 
@@ -101,7 +104,9 @@ The compiler builds in VM-only mode when LLVM development headers are not found.
 The standard LLVM Windows installer (`winget install LLVM.LLVM`) does not include the C API development headers (`llvm-c/Core.h`) needed for native code generation. To enable `klar build` on Windows, you need LLVM built with development headers:
 
 **Option 1: Set LLVM_PREFIX**
-If you have a custom LLVM build with headers:
+If you have an LLVM 21 build with headers, such as the one CI uses
+(`llvm-21.1.1-windows-amd64-msvc17-msvcrt.7z` from
+[vovkos/llvm-package-windows](https://github.com/vovkos/llvm-package-windows/releases/tag/llvm-21.1.1)):
 ```bash
 set LLVM_PREFIX=C:\path\to\llvm
 zig build

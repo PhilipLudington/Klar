@@ -60,6 +60,12 @@ Comprehensive language documentation is available in the `docs/` directory:
 # DO NOT run `zig build` or `zig build test` directly
 ```
 
+**Supported LLVM: 21.** CI builds every job with LLVM 21 (apt `llvm-21-dev`, brew
+`llvm@21`, vovkos `llvm-21.1.1` on Windows), sets `LLVM_PREFIX`, and fails at "Check LLVM
+version" (`scripts/check-llvm-version.sh 21`) on any other major. Locally, `build.zig`
+takes `LLVM_PREFIX` first, then Homebrew's unversioned `llvm`, whose version moves with
+`brew upgrade`.
+
 ## Klar Command Rules
 
 **NEVER** use `./zig-out/bin/klar` directly in Bash commands. Always use the corresponding skill:
