@@ -1,0 +1,85 @@
+// Skip: windows (pthread not available on MSVC)
+// Bug 90: a Sender or Receiver reached by an index (`txs[0]`) or bound by a `for` loop was
+// not recognised as a channel endpoint, so `send` emitted nothing and `recv` returned no
+// channel value. Each send through an index or a loop binding is followed by one through a
+// local, so a lost send reads the local's value instead of hanging.
+struct Fleet { txs: [Sender#[i64]; 1] }
+
+struct Worker { tx: Sender#[i64] }
+
+fn main() -> i32 {
+    let pair: (Sender#[i64], Receiver#[i64]) = channel_create#[i64](8)
+    let tx: Sender#[i64] = pair.0
+    let rx: Receiver#[i64] = pair.1
+
+    // An array element.
+    let txs: [Sender#[i64]; 1] = [tx]
+    txs[0].send(4000000001)
+    tx.send(1)
+    let a: ?i64 = rx.recv()
+    if (a ?? 0.as#[i64]) != 4000000001.as#[i64] {
+        return 1
+    }
+    let a_rest: ?i64 = rx.recv()
+
+    // A Receiver array element, read at the element's width.
+    let rxs: [Receiver#[i64]; 1] = [rx]
+    tx.send(4000000002)
+    let b: ?i64 = rxs[0].recv()
+    if (b ?? 0.as#[i64]) != 4000000002.as#[i64] {
+        return 2
+    }
+
+    // A `for` binding over an array.
+    for t: Sender#[i64] in txs {
+        t.send(4000000003)
+    }
+    tx.send(1)
+    let c: ?i64 = rx.recv()
+    if (c ?? 0.as#[i64]) != 4000000003.as#[i64] {
+        return 3
+    }
+    let c_rest: ?i64 = rx.recv()
+
+    // A List element.
+    var list: List#[Sender#[i64]] = List.new#[Sender#[i64]]()
+    list.push(tx)
+    list[0].send(4000000004)
+    tx.send(1)
+    let d: ?i64 = rx.recv()
+    if (d ?? 0.as#[i64]) != 4000000004.as#[i64] {
+        return 4
+    }
+    let d_rest: ?i64 = rx.recv()
+
+    // A `for` binding over a List.
+    for t: Sender#[i64] in list {
+        t.send(4000000005)
+    }
+    tx.send(1)
+    let e: ?i64 = rx.recv()
+    if (e ?? 0.as#[i64]) != 4000000005.as#[i64] {
+        return 5
+    }
+    let e_rest: ?i64 = rx.recv()
+
+    // An index of a field.
+    let fleet: Fleet = Fleet { txs: txs }
+    fleet.txs[0].send(4000000006)
+    tx.send(1)
+    let f: ?i64 = rx.recv()
+    if (f ?? 0.as#[i64]) != 4000000006.as#[i64] {
+        return 6
+    }
+    let f_rest: ?i64 = rx.recv()
+
+    // A field of an element.
+    let ws: [Worker; 1] = [Worker { tx: tx }]
+    ws[0].tx.send(4000000007)
+    tx.send(1)
+    let g: ?i64 = rx.recv()
+    if (g ?? 0.as#[i64]) != 4000000007.as#[i64] {
+        return 7
+    }
+    return 0
+}

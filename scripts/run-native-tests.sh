@@ -134,6 +134,7 @@ get_expected() {
         channel_param_endpoints) echo 0 ;;  # send/recv/close through a Sender/Receiver parameter (Bug 83)
         channel_field_endpoints) echo 0 ;;  # send/recv through a struct or tuple field (Bug 86)
         channel_alias_endpoints) echo 0 ;;  # send/recv through an aliased endpoint type (Bug 87)
+        channel_index_endpoints) echo 0 ;;  # send/recv through an index or a for binding (Bug 90)
         none_hint_width) echo 0 ;;  # a bare None under a tuple or push hint takes the optional's layout (Bug 84)
         list_string_drop) echo 42 ;;
         list_index_assign) echo 42 ;;
