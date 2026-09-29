@@ -194,3 +194,42 @@ case like the ci.yml scan that asserts the first element of both `versions` arra
 `build.zig` is `"21"`.
 
 **Found by:** /qa-review on ci/llvm-21-everywhere, 2026-09-29 — TestCov — reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 11: The contextual literal hint is untested for `None`, `Ok`/`Err`, tuples, grouping and the sender fallback
+
+**Kind:** test-gap
+**Where:** `src/codegen/emit.zig` `emitExprWithHint` (~4317-4319), `getSenderElementType` (~31242); `test/native/channel_send_literal_width.kl:8`
+**Due when:** touching `emitExprWithHint` in `src/codegen/emit.zig` · touching `test/native/channel_send_literal_width.kl`
+
+**Description:** Bug 79's tests pin a literal pushed or sent at the element width. They do not
+pin: `None` pushed into `List#[?i64]`, `Ok(5)` into `List#[Result#[i64, string]]`, `(1, 2)`
+into `List#[(i64, u8)]`, the `.grouped` recursion (`k.push((4000000000))` into `List#[u32]`),
+or `getSenderElementType`'s checker fallback for a sender that is not a local
+(`pair.0.send(7)`). The channel test's pre-fix red depends on non-zero stack garbage above a
+4-byte temporary (it was red 3 of 3 on 2026-09-29).
+
+**Payment:** One native test that pushes and reads back `None`, `Ok(5)` and a tuple under an
+element hint, plus `pair.0.send(7)` on a `Sender#[i64]`. For grouping and the channel case,
+an `--emit-llvm` check (`store i32` for the u32 push, `i64 7` for the send), or a helper
+that dirties its stack frame with `-1` before the send.
+
+**Found by:** /qa-review on fix/bug-79-integration-crash, 2026-09-29 — TestCov — reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 12: `BUG.md` is over the 2000-line navigation ceiling
+
+**Kind:** extraction
+**Where:** `BUG.md` (2224 raw lines on 2026-09-29)
+**Due when:** touching `BUG.md` and it is over 2500 raw lines · the next ledger-format change
+
+**Description:** The ledger only grows. Closed entries make up most of it, and every review
+of a branch that files or closes a bug measures it again as file growth.
+
+**Payment:** Move closed (`## [x]`) entries into `docs/history/BUG-closed.md`, keeping their
+numbers, and leave a one-line pointer at the top of `BUG.md`. Confirm first that AirTower's
+bug badge reads only open entries.
+
+**Found by:** /qa-review WATCH [file-growth], seen on ci-baseline-zig-016, ci-upgrade-runners-actions and fix/bug-79-integration-crash (2026-09-27 to 2026-09-29) — Growth — reviewer's reading, not re-verified.

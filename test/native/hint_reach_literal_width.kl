@@ -1,0 +1,43 @@
+// Bug 79: a contextual type hint reaches only a literal, an Ok/Err/Some/None call or a
+// tuple (through parentheses), never a literal nested inside another expression.
+// An index literal under an i64 hint was emitted as i64 and failed LLVM verification.
+fn widen(x: i32) -> i64 {
+    return x.as#[i64]
+}
+
+fn main() -> i32 {
+    var src: List#[i64] = List.new#[i64]()
+    let five: i64 = 5.as#[i64]
+    src.push(five)
+
+    // push's hint is the element type; the index literal inside get() stays i32.
+    var dst: List#[i64] = List.new#[i64]()
+    dst.push(src.get(0)!)
+    let first: i32 = 0
+    let d0: i64 = dst.get(first)!
+    if d0 != five {
+        return 1
+    }
+
+    // A tuple element gets its own hint; a call inside it keeps its own literal widths.
+    let pair: (i64, i64) = (src.get(0)!, 6)
+    if pair.0 != five {
+        return 2
+    }
+    if pair.1 != 6.as#[i64] {
+        return 3
+    }
+
+    // A user call gets no hint; its literal arguments keep the parameter types.
+    dst.push(widen(3))
+    let second: i32 = 1
+    let d1: i64 = dst.get(second)!
+    if d1 != 3.as#[i64] {
+        return 4
+    }
+    let called: (i64, i32) = (widen(8), 9)
+    if called.0 != 8.as#[i64] or called.1 != 9 {
+        return 5
+    }
+    return 0
+}
