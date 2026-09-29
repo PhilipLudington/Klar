@@ -70,6 +70,12 @@ in user programs first, then checker/contract correctness, then tooling, then de
       lists `deletion` and `non_fast_forward` and nothing else)
 
 **Crashes and wrong results in running programs**
+- [ ] Native channels — Bug 90: a `Sender` reached by an index (`txs[0].send(v)`) or a `for`
+      binding is not an endpoint; the send is dropped and the receiver hangs,
+      `src/codegen/emit.zig:7795-7823`. (qa-review 2026-09-29)
+- [ ] native codegen — Bug 89: a non-channel type alias lowers to `i32` in `namedTypeToLLVM`
+      (`src/codegen/emit.zig:7418-7433`): `type Id = i64` parameters fail verification and
+      `type P = (i64, i64)` then `pair.0` segfaults the compiler. (qa-review 2026-09-29)
 - [x] Native channels — Bugs 86 + 87: a `Sender` reached through a struct or tuple field
       (`w.tx.send(v)`, `src/codegen/emit.zig:31095`), or declared through a type alias
       (`getChannelTypeInfo`, `:7786`), is not recognised as an endpoint. The send is dropped
