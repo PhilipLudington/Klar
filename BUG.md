@@ -1894,3 +1894,102 @@ for `MIN / -1`. x86 raises SIGFPE; aarch64 returns 0. The VM returns `DivisionBy
 arm64, 2026-09-27).
 
 **Found by:** /qa-review on ci/baseline-zig-016, 2026-09-27 — GenA2; verified by probe.
+
+---
+
+## [x] Bug 76: `klar build -c -o <path>` fails when the path is on another filesystem — the freestanding tests are red on Ubuntu 26.04
+
+**Status:** Fixed
+
+**System:** file move — `compat.Dir.rename` (`src/compat.zig`), called by `buildNative`'s
+`-c -o` path (`src/main.zig`)
+
+**Description:** `-c` emits the object under `build/` and then renames it to the `-o` path.
+`compat.Dir.rename` is a bare `renameat`, which fails with `EXDEV` when the two paths are on
+different filesystems, and it maps `EXDEV` to `Unexpected`. Ubuntu 26.04 mounts `/tmp` as
+tmpfs, so every `-c -o /tmp/…` build fails there.
+
+**Steps to reproduce:**
+1. Mount a RAM disk: `diskutil erasevolume HFS+ KlarXdev $(hdiutil attach -nomount ram://20480)`.
+2. `klar build test/native/freestanding/bare_metal_target.kl --target aarch64-none-elf
+   --freestanding -c -o /Volumes/KlarXdev/b.o`.
+
+**Expected:** The object file lands at `/Volumes/KlarXdev/b.o`.
+
+**Actual:** `Failed to rename object file: Unexpected`, and no file. In CI run 36301572227
+(PR 45's first run on `ubuntu-26.04`) the gate's freestanding tests failed this way, 2 of 2.
+
+**Found by:** PR 45's CI run 36301572227 (2026-09-27); reproduced locally on a RAM disk
+2026-09-28.
+
+**Fix:** `compat.Dir.rename` tries the rename first. When it fails with `CrossDevice`
+(`EXDEV`, or `NOT_SAME_DEVICE` from Windows `dirRename`), it copies the file to the
+destination and deletes the source (`copyThenDelete`), as `mv` does. Only a cross-filesystem
+move stops being atomic. Every caller goes through this one path: `buildNative`'s `-c -o`,
+and the same-directory temp-file rename in `src/main.zig`, which never crosses filesystems.
+
+**Test:** `src/compat.zig`, test "Dir.rename moves a file onto another filesystem" (runs the
+cross-device case on Linux via `/dev/shm`, and on macOS when a RAM disk is mounted at
+`/Volumes/KlarXdev`).
+
+---
+
+## [ ] Bug 77: A failed `klar build` prints its error and exits 0
+
+**Status:** Open
+
+**System:** CLI build errors — `buildNative` in `src/main.zig`, the `try stderr.writeAll(msg);
+return;` failure paths
+
+**Deferred:** after the current milestone. Every test script that builds also checks for the
+output file, so a failure is still caught in CI; a user script that trusts the exit code is
+not.
+
+**Description:** `buildNative` reports a failure by writing to stderr and returning from a
+`!void` function, so `main` sees success. `src/main.zig` has about 80 such paths. The `-c -o`
+rename failure also leaves the object file in the current directory.
+
+**Steps to reproduce:**
+1. Mount a RAM disk at `/Volumes/KlarXdev` and check out a tree before Bug 76's fix.
+2. `klar build test/native/freestanding/bare_metal_target.kl --target aarch64-none-elf
+   --freestanding -c -o /Volumes/KlarXdev/b.o; echo $?`.
+
+**Expected:** A nonzero exit status.
+
+**Actual:** `Failed to rename object file: Unexpected`, exit status 0, and
+`bare_metal_target.o` left in the current directory (seen 2026-09-28 while reproducing
+Bug 76).
+
+**Found by:** Builder on `ci/upgrade-runners-actions`, 2026-09-28, while reproducing Bug 76.
+
+---
+
+## [x] Bug 78: `run-unit-tests.sh` counts a skipped Zig test as a failure — the Windows job is red on a skip
+
+**Status:** Fixed
+
+**Description:** The wrapper reads `N/M tests passed` from `zig build test --summary all` and
+sets `failed = M - N`. Zig counts a test that returns `error.SkipZigTest` in `M` but not in
+`N`, so one skip made the wrapper report one failure and exit 1 while `zig build test`
+itself succeeded. Bug 76's test skips on Windows, which exposed it.
+
+**Steps to reproduce:**
+1. Put a stub `zig` first on `PATH` that prints
+   `Build Summary: 4/4 steps succeeded; 293/294 tests passed (1 skipped)` and exits 0.
+2. `./scripts/run-unit-tests.sh`.
+
+**Expected:** `All 293 tests passed (1 skipped)`, exit 0.
+
+**Actual:** `1/294 tests failed`, exit 1. CI run 36473776418, Windows (full suite): "run test
+293 pass, 1 skip", then "✗ Unit Tests failed".
+
+**Found by:** CI run 36473776418 on `ci/upgrade-runners-actions`, 2026-09-28.
+
+**Fix:** The wrapper reads the skip count from the parenthesis after `tests passed` only and
+sets `failed = M - N - K` (`scripts/run-unit-tests.sh`). The summary line names the skips.
+The first fix matched the first `(K skipped)` on the line, so a skipped build step or a
+`(1 skipped, 1 failed)` test count still miscounted (qa-review 2026-09-28).
+
+**Test:** `scripts/test-run-unit-tests.sh`, run by `run-tests.sh`: a stub `zig` prints real
+Zig 0.16 summary lines (no skips, a skip, a skip beside a failure, a skipped step) and the
+test checks the wrapper's exit code and `.test-results.json` counts.

@@ -18,7 +18,12 @@ if echo "$TEST_OUTPUT" | grep -qE '[0-9]+/[0-9]+ tests passed'; then
     # Format: "181/181 tests passed"
     PASSED=$(echo "$TEST_OUTPUT" | grep -oE '[0-9]+/[0-9]+ tests passed' | grep -oE '^[0-9]+')
     TOTAL=$(echo "$TEST_OUTPUT" | grep -oE '[0-9]+/[0-9]+ tests passed' | grep -oE '/[0-9]+' | tr -d '/')
-    FAILED=$((TOTAL - PASSED))
+    # Zig counts a skipped test (error.SkipZigTest) in the total but not in
+    # "passed": "293/294 tests passed (1 skipped)". A skip is not a failure (Bug 78).
+    # Only the parenthesis after "tests passed": the steps segment has its own
+    # "(N skipped)", and failures follow as "(1 skipped, 1 failed)".
+    SKIPPED=$(echo "$TEST_OUTPUT" | grep -oE 'tests passed \([^)]*\)' | head -1 | grep -oE '[0-9]+ skipped' | grep -oE '[0-9]+')
+    FAILED=$((TOTAL - PASSED - ${SKIPPED:-0}))
 elif echo "$TEST_OUTPUT" | grep -qE '[0-9]+ passed'; then
     # Format: "X passed"
     PASSED=$(echo "$TEST_OUTPUT" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' || echo "0")
@@ -56,7 +61,7 @@ EOF
 
 # Print summary
 if [ $FAILED -eq 0 ]; then
-    echo "All $PASSED tests passed"
+    echo "All $PASSED tests passed${SKIPPED:+ ($SKIPPED skipped)}"
 else
     echo "$FAILED/$TOTAL tests failed"
     echo "$TEST_OUTPUT"

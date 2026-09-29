@@ -138,3 +138,41 @@ exit for them. Use `timeout -k 5`. Add a script-level check that runs a hanging 
 `NATIVE_TEST_TIMEOUT=1` and expects one FAILED entry reading "timed out".
 
 **Found by:** /qa-review on ci/baseline-zig-016, 2026-09-27 — GenA2, TestCov2 — reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 8: A late nightly can skip a commit that no nightly has tested
+
+**Kind:** latent-defect
+**Where:** `.github/workflows/ci.yml` `changes` job (the `age -lt 90000` check)
+**Due when:** touching `.github/workflows/ci.yml` · a nightly is found skipped while `main` has an untested commit
+
+**Description:** The job's comment says a nightly skips "when main has not moved since the
+last one", but the code skips whenever main's head commit is 25 h old or older. A commit
+merged just after one nightly, followed by a scheduled run GitHub starts more than about an
+hour late, is never tested. `nightly-ci.sh` passes over the skipped runs and keeps reporting
+the older green sha.
+
+**Payment:** Compare `HEAD` with the `head_sha` of the last scheduled run that ran the gate
+(`gh api repos/{owner}/{repo}/actions/workflows/ci.yml/runs?event=schedule`), or widen the
+window to about 48 h, since testing one commit twice costs nothing. Repro still needed: a
+scheduled run that starts 25 h or more after a merge.
+
+**Found by:** /qa-review on ci/upgrade-runners-actions, 2026-09-28 — GenA — reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 9: `src/compat.zig` is over the 1000-line limit
+
+**Kind:** extraction
+**Where:** `src/compat.zig` (1004 code lines, 1238 raw)
+**Due when:** touching `src/compat.zig`
+
+**Description:** Six commits in three days took the POSIX compat shim past the limit, every
+one of them an addition.
+
+**Payment:** Move the process cluster (`posixFork`, `posixExecve`, `posixWaitpid`, `Child`,
+about 145 lines, roughly lines 1044–1188) to `src/compat_process.zig`, following the
+`compat_windows.zig` sibling pattern.
+
+**Found by:** /qa-review on ci/upgrade-runners-actions, 2026-09-28 — Growth — reviewer's reading, not re-verified.

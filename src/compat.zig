@@ -621,7 +621,20 @@ pub const Dir = struct {
         }
     }
 
+    /// Moves a file. Within one filesystem it is an atomic rename. Across
+    /// filesystems, where rename(2) fails with EXDEV (NOT_SAME_DEVICE on
+    /// Windows), it copies the file and then deletes the source, as `mv` does,
+    /// so it is not atomic there (Bug 76: `-c -o /tmp/x.o` with /tmp on tmpfs).
     pub fn rename(self: Dir, old_sub_path: []const u8, new_sub_path: []const u8) RenameError!void {
+        self.renameSameFs(old_sub_path, new_sub_path) catch |err| switch (err) {
+            error.CrossDevice => return self.copyThenDelete(old_sub_path, new_sub_path),
+            error.FileNotFound => return RenameError.FileNotFound,
+            error.AccessDenied => return RenameError.AccessDenied,
+            error.Unexpected => return RenameError.Unexpected,
+        };
+    }
+
+    fn renameSameFs(self: Dir, old_sub_path: []const u8, new_sub_path: []const u8) (RenameError || error{CrossDevice})!void {
         if (comptime is_windows) return win.dirRename(self.handle, old_sub_path, new_sub_path);
         var old_buf: [4096]u8 = undefined;
         var new_buf: [4096]u8 = undefined;
@@ -633,9 +646,39 @@ pub const Dir = struct {
             switch (errno) {
                 .NOENT => return RenameError.FileNotFound,
                 .ACCES, .PERM => return RenameError.AccessDenied,
+                .XDEV => return error.CrossDevice,
                 else => return RenameError.Unexpected,
             }
         }
+    }
+
+    /// The cross-filesystem half of `rename`. Copies to a fresh temp file beside
+    /// the destination and renames it over the destination, so an existing
+    /// destination is replaced whole (whatever its mode) and survives a failed copy.
+    fn copyThenDelete(self: Dir, old_sub_path: []const u8, new_sub_path: []const u8) RenameError!void {
+        var tmp_buf: [4096]u8 = undefined;
+        const tmp_sub_path = std.fmt.bufPrint(&tmp_buf, "{s}.klar-move-{d}", .{ new_sub_path, nanoTimestamp() }) catch return RenameError.Unexpected;
+        self.copyFile(old_sub_path, self, tmp_sub_path, .{}) catch |err| {
+            self.deleteFile(tmp_sub_path) catch {};
+            return mapMoveErr(err);
+        };
+        self.renameSameFs(tmp_sub_path, new_sub_path) catch |err| {
+            self.deleteFile(tmp_sub_path) catch {};
+            return mapMoveErr(err);
+        };
+        self.deleteFile(old_sub_path) catch |err| {
+            // The move is not atomic here; the destination already holds the file.
+            self.deleteFile(new_sub_path) catch {};
+            return mapMoveErr(err);
+        };
+    }
+
+    fn mapMoveErr(err: anyerror) RenameError {
+        return switch (err) {
+            error.FileNotFound => RenameError.FileNotFound,
+            error.AccessDenied => RenameError.AccessDenied,
+            else => RenameError.Unexpected,
+        };
     }
 
     pub fn deleteTree(self: Dir, sub_path: []const u8) !void {
@@ -1175,4 +1218,98 @@ test "Child spawns a program found on PATH and reports its exit code" {
     var child = Child.init(argv, std.testing.allocator);
     const term = try child.spawnAndWait();
     try std.testing.expectEqual(Child.Term{ .Exited = 3 }, term);
+}
+
+test "Dir.rename moves a file onto another filesystem" {
+    // Pins Bug 76: rename(2) fails with EXDEV across filesystems, so
+    // `klar build -c -o /tmp/x.o` failed wherever /tmp is its own mount (tmpfs
+    // on Ubuntu 26.04). /dev/shm is tmpfs on every Linux runner. On macOS, mount
+    // a RAM disk at /Volumes/KlarXdev to run the cross-device case:
+    //   diskutil erasevolume HFS+ KlarXdev $(hdiutil attach -nomount ram://20480)
+    // An absent candidate is passed over; one on the same filesystem still passes.
+    if (is_windows) return error.SkipZigTest;
+    const dir = cwd();
+    const candidates = [_][]const u8{ "/dev/shm", "/tmp", "/Volumes/KlarXdev" };
+    var name_buf: [64]u8 = undefined;
+    const name = try std.fmt.bufPrint(&name_buf, "klar-bug76-{d}.tmp", .{std.c.getpid()});
+    var tried: usize = 0;
+    for (candidates) |candidate| {
+        dir.access(candidate, .{}) catch continue;
+        var dest_buf: [256]u8 = undefined;
+        const dest = try std.fmt.bufPrint(&dest_buf, "{s}/{s}", .{ candidate, name });
+        try dir.writeFile(.{ .sub_path = name, .data = "bug76" });
+        defer dir.deleteFile(name) catch {};
+        defer dir.deleteFile(dest) catch {};
+        try dir.rename(name, dest);
+        try std.testing.expectError(error.FileNotFound, dir.access(name, .{}));
+        const got = try dir.readFileAlloc(std.testing.allocator, dest, 64);
+        defer std.testing.allocator.free(got);
+        try std.testing.expectEqualStrings("bug76", got);
+        tried += 1;
+    }
+    if (tried == 0) return error.SkipZigTest;
+}
+
+test "Dir.copyThenDelete onto a longer existing file leaves only the source's bytes" {
+    // Pins qa-review 2026-09-28 finding 1: on macOS createFile never sets O_TRUNC
+    // (Bug 68), so the cross-device copy kept the old destination's tail.
+    if (is_windows) return error.SkipZigTest;
+    const dir = cwd();
+    var src_buf: [64]u8 = undefined;
+    var dest_buf: [64]u8 = undefined;
+    const src = try std.fmt.bufPrint(&src_buf, "klar-xdev-src-{d}.tmp", .{std.c.getpid()});
+    const dest = try std.fmt.bufPrint(&dest_buf, "klar-xdev-dest-{d}.tmp", .{std.c.getpid()});
+    defer dir.deleteFile(src) catch {};
+    defer dir.deleteFile(dest) catch {};
+    try dir.writeFile(.{ .sub_path = dest, .data = "OLD DESTINATION, LONGER THAN THE SOURCE" });
+    try dir.writeFile(.{ .sub_path = src, .data = "new" });
+    try dir.copyThenDelete(src, dest);
+    const got = try dir.readFileAlloc(std.testing.allocator, dest, 128);
+    defer std.testing.allocator.free(got);
+    try std.testing.expectEqualStrings("new", got);
+    try std.testing.expectError(error.FileNotFound, dir.access(src, .{}));
+}
+
+test "Dir.copyThenDelete replaces a read-only destination, as rename does" {
+    // Pins qa-review 2026-09-28 finding 3: a failed create deleted the existing
+    // destination and reported Unexpected. rename(2) replaces it regardless of its mode.
+    if (is_windows or std.c.geteuid() == 0) return error.SkipZigTest;
+    const dir = cwd();
+    var src_buf: [64]u8 = undefined;
+    var dest_buf: [64]u8 = undefined;
+    const src = try std.fmt.bufPrint(&src_buf, "klar-xdev-ro-src-{d}.tmp", .{std.c.getpid()});
+    const dest = try std.fmt.bufPrint(&dest_buf, "klar-xdev-ro-dest-{d}.tmp", .{std.c.getpid()});
+    defer dir.deleteFile(src) catch {};
+    defer dir.deleteFile(dest) catch {};
+    try dir.writeFile(.{ .sub_path = dest, .data = "read-only" });
+    var zbuf: [4096]u8 = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), std.c.chmod(try tmpZPath(&zbuf, dest), 0o444));
+    try dir.writeFile(.{ .sub_path = src, .data = "replacement" });
+    try dir.copyThenDelete(src, dest);
+    const got = try dir.readFileAlloc(std.testing.allocator, dest, 128);
+    defer std.testing.allocator.free(got);
+    try std.testing.expectEqualStrings("replacement", got);
+}
+
+test "Dir.copyThenDelete into an unwritable directory is AccessDenied and keeps the source" {
+    // Pins qa-review 2026-09-28 finding 3: copy errors collapsed to Unexpected.
+    if (is_windows or std.c.geteuid() == 0) return error.SkipZigTest;
+    const dir = cwd();
+    var src_buf: [64]u8 = undefined;
+    var sub_buf: [64]u8 = undefined;
+    var dest_buf: [128]u8 = undefined;
+    const src = try std.fmt.bufPrint(&src_buf, "klar-xdev-acc-src-{d}.tmp", .{std.c.getpid()});
+    const sub = try std.fmt.bufPrint(&sub_buf, "klar-xdev-acc-dir-{d}", .{std.c.getpid()});
+    const dest = try std.fmt.bufPrint(&dest_buf, "{s}/moved.tmp", .{sub});
+    defer dir.deleteFile(src) catch {};
+    try dir.makeDir(sub);
+    var zbuf: [4096]u8 = undefined;
+    defer {
+        _ = std.c.chmod(tmpZPath(&zbuf, sub) catch unreachable, 0o755);
+        dir.deleteTree(sub) catch {};
+    }
+    try std.testing.expectEqual(@as(c_int, 0), std.c.chmod(try tmpZPath(&zbuf, sub), 0o555));
+    try dir.writeFile(.{ .sub_path = src, .data = "kept" });
+    try std.testing.expectError(error.AccessDenied, dir.copyThenDelete(src, dest));
+    try dir.access(src, .{});
 }

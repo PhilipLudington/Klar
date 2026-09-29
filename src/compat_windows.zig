@@ -186,9 +186,10 @@ pub fn dirDeleteFile(handle: Handle, sub_path: []const u8) compat.DeleteError!vo
     ioDir(handle).deleteFile(io(), sub_path) catch |err| return mapErr(compat.DeleteError, err);
 }
 
-pub fn dirRename(handle: Handle, old_sub_path: []const u8, new_sub_path: []const u8) compat.RenameError!void {
+/// Returns `CrossDevice` across volumes; `compat.Dir.rename` then copies (Bug 76).
+pub fn dirRename(handle: Handle, old_sub_path: []const u8, new_sub_path: []const u8) (compat.RenameError || error{CrossDevice})!void {
     Io.Dir.rename(ioDir(handle), old_sub_path, ioDir(handle), new_sub_path, io()) catch |err|
-        return mapErr(compat.RenameError, err);
+        return mapErr(compat.RenameError || error{CrossDevice}, err);
 }
 
 pub fn dirDeleteTree(handle: Handle, sub_path: []const u8) !void {
