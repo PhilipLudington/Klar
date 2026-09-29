@@ -1,0 +1,71 @@
+// Skip: windows (pthread not available on MSVC)
+// Bug 86: a Sender or Receiver reached through a struct field or a tuple field was not
+// recognised as a channel endpoint, so `send` emitted nothing and `recv` returned no
+// channel value. Each send through a field is followed by one through a local, so a lost
+// send reads the local's value instead of hanging.
+struct Worker { tx: Sender#[i64] }
+
+struct Inbox { rx: Receiver#[i64] }
+
+struct Outer { w: Worker }
+
+fn work(w: Worker) -> void {
+    w.tx.send(4000000002)
+}
+
+fn drain(inbox: Inbox) -> i64 {
+    let v: ?i64 = inbox.rx.recv()
+    return v ?? 0.as#[i64]
+}
+
+fn main() -> i32 {
+    let pair: (Sender#[i64], Receiver#[i64]) = channel_create#[i64](8)
+    let tx: Sender#[i64] = pair.0
+    let rx: Receiver#[i64] = pair.1
+
+    // Struct field, in the function that built the struct.
+    let w: Worker = Worker { tx: tx }
+    w.tx.send(4000000001)
+    tx.send(1)
+    let a: ?i64 = rx.recv()
+    if (a ?? 0.as#[i64]) != 4000000001.as#[i64] {
+        return 1
+    }
+    let a_rest: ?i64 = rx.recv()
+
+    // Struct field of a struct parameter.
+    work(w)
+    tx.send(1)
+    let b: ?i64 = rx.recv()
+    if (b ?? 0.as#[i64]) != 4000000002.as#[i64] {
+        return 2
+    }
+    let b_rest: ?i64 = rx.recv()
+
+    // Tuple fields, both ends.
+    pair.0.send(4000000003)
+    tx.send(1)
+    let c: ?i64 = pair.1.recv()
+    if (c ?? 0.as#[i64]) != 4000000003.as#[i64] {
+        return 3
+    }
+    let c_rest: ?i64 = rx.recv()
+
+    // A field of a field.
+    let o: Outer = Outer { w: w }
+    o.w.tx.send(4000000004)
+    tx.send(1)
+    let d: ?i64 = rx.recv()
+    if (d ?? 0.as#[i64]) != 4000000004.as#[i64] {
+        return 4
+    }
+    let d_rest: ?i64 = rx.recv()
+
+    // A Receiver struct field of a parameter, read at the element's width.
+    let inbox: Inbox = Inbox { rx: rx }
+    tx.send(4000000005)
+    if drain(inbox) != 4000000005.as#[i64] {
+        return 5
+    }
+    return 0
+}
