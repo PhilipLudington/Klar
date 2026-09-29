@@ -77,12 +77,14 @@ in user programs first, then checker/contract correctness, then tooling, then de
       2026-09-29, `plan/protect-main`) (completed 2026-09-29: `List.push` stored a u32
       literal above i32 max as 8 bytes, overflowing `sha256` `init_k`'s buffer; push, send
       and tuple elements now emit a literal at its hinted width)
-- [ ] Native channels — Bug 83: `send` on a `Sender#[T]` function parameter emits no code
+- [x] Native channels — Bug 83: `send` on a `Sender#[T]` function parameter emits no code
       and the receiver blocks forever, `src/codegen/emit.zig:12370`, `:31070`. (qa-review
-      2026-09-29)
-- [ ] contextual literal width — Bug 84: a bare `None` in a tuple element or `push` argument
+      2026-09-29) (completed 2026-09-29: parameters and `var`s record their channel fields
+      as a `let` does)
+- [x] contextual literal width — Bug 84: a bare `None` in a tuple element or `push` argument
       is emitted as `i32 0` (wrong tuple values, an uninitialized optional payload),
-      `src/codegen/emit.zig:~4481`. (qa-review 2026-09-29)
+      `src/codegen/emit.zig:~4481`. (qa-review 2026-09-29) (completed 2026-09-29: a hinted
+      bare `None` is the hinted optional's none value)
 - [ ] Native codegen — Bugs 74 + 75: runtime checks that let undefined behavior through. A
       negative `i8`/`i16` index passes the bounds check (zext) and the GEP sign-extends it
       (`src/codegen/emit.zig:9898`, `:5160`, `:9957`); integer `/` and `%` have no zero or

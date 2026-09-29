@@ -2364,6 +2364,8 @@ pub const Emitter = struct {
             const map_info = self.getMapTypeInfo(param.type_);
             const set_info = self.getSetTypeInfo(param.type_);
             const is_string_data = self.isTypeStringData(param.type_);
+            // A Sender/Receiver parameter is a channel endpoint, as a `let` of that type is.
+            const channel_info = self.getChannelTypeInfo(param.type_);
 
             // Resolve semantic type for type checking (needed for char.to_string(), etc.)
             const semantic_type = self.resolveTypeExprDirect(param.type_);
@@ -2394,6 +2396,9 @@ pub const Emitter = struct {
                 .set_element_type = set_info,
                 .is_string_data = is_string_data,
                 .is_string = is_string,
+                .is_sender = if (channel_info) |ci| ci.is_sender else false,
+                .is_receiver = if (channel_info) |ci| !ci.is_sender else false,
+                .channel_element_type = if (channel_info) |ci| ci.element_type else null,
                 .semantic_type = semantic_type,
                 .is_extern_fn = is_extern_fn,
                 .extern_fn_type = extern_fn_llvm_type,
@@ -2840,6 +2845,8 @@ pub const Emitter = struct {
                 // Check if this is a buffered I/O type
                 const is_buf_reader = self.isTypeBufReader(decl.type_);
                 const is_buf_writer = self.isTypeBufWriter(decl.type_);
+                // A Sender/Receiver `var` is a channel endpoint, as a `let` of that type is.
+                const channel_info = self.getChannelTypeInfo(decl.type_);
                 // Check if this is a CStrOwned type (needs free on drop)
                 const is_cstr_owned = self.isTypeCstrOwned(decl.type_);
                 // Resolve semantic type for pattern matching (Result, Optional, etc.)
@@ -2878,6 +2885,9 @@ pub const Emitter = struct {
                     .is_path = is_path,
                     .is_buf_reader = is_buf_reader,
                     .is_buf_writer = is_buf_writer,
+                    .is_sender = if (channel_info) |ci| ci.is_sender else false,
+                    .is_receiver = if (channel_info) |ci| !ci.is_sender else false,
+                    .channel_element_type = if (channel_info) |ci| ci.element_type else null,
                     .semantic_type = semantic_type,
                     .is_extern_fn = is_extern_fn_var,
                     .extern_fn_type = extern_fn_llvm_type_var,
@@ -4487,6 +4497,15 @@ pub const Emitter = struct {
                 return self.builder.buildLoad(local.ty, local.value, name);
             }
             return local.value;
+        }
+        // A bare `None` under an optional hint (a tuple element, a `push`/`send` argument)
+        // is that optional's none value, as the call form `None()` is.
+        if (std.mem.eql(u8, id.name, "None")) {
+            if (self.expected_type) |et| {
+                if (et == .optional) {
+                    return self.emitNone(self.getOptionalType(self.typeToLLVM(et.optional.*)));
+                }
+            }
         }
         // Check if this is a module-level constant
         if (self.type_checker) |tc| {

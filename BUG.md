@@ -2226,9 +2226,9 @@ wider slot (Bug 79's cause).
 
 ---
 
-## [ ] Bug 83: `send` on a `Sender#[T]` function parameter emits no code, so the receiver blocks forever
+## [x] Bug 83: `send` on a `Sender#[T]` function parameter emits no code, so the receiver blocks forever
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** Native channels — `isSenderExpr` / `getSenderElementType` in `src/codegen/emit.zig`
 
@@ -2251,11 +2251,21 @@ binary hangs until it is killed.
 
 **Found by:** /qa-review on fix/bug-79-integration-crash, 2026-09-29 — GenA — reviewer's evidence (probe `scratch/qa79a/send_param.kl`, IR and hang), not re-read.
 
+**Fix:** Only a `let` recorded the channel fields (`is_sender`, `is_receiver`,
+`channel_element_type`) on its local; a function parameter and a `var` of the same type did
+not, and the checker fallback in `isSenderExpr` cannot see a parameter once its function
+has been checked. Both now take them from `getChannelTypeInfo(type_)`, as the `let` does
+(`src/codegen/emit.zig`). A `var Sender` hung the same way and is fixed with it. Methods,
+generic functions and closures taking a `Sender` fail earlier, at LLVM verification: see
+Bug 85.
+
+**Test:** `test/native/channel_param_endpoints.kl`
+
 ---
 
-## [ ] Bug 84: A bare `None` in a tuple element or a `push` argument is emitted as `i32 0`
+## [x] Bug 84: A bare `None` in a tuple element or a `push` argument is emitted as `i32 0`
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** contextual literal width — `emitExprWithHint` in `src/codegen/emit.zig`, the
 codegen side of the checker's `checkExprWithHint`: `List.push`, `Sender.send`, tuple
@@ -2278,3 +2288,11 @@ leaves the payload uninitialized; the tag reads 0 only by luck.
 and after Bug 79's fix.
 
 **Found by:** /qa-review fix-check on fix/bug-79-integration-crash, 2026-09-29 — GenA — reviewer's evidence (probes `scratch/qa79a/fc_none.kl`, `fc_pushnone.ll`), not re-read.
+
+**Fix:** `emitIdentifier` (`src/codegen/emit.zig`) emits a bare `None` that is not a local
+as `emitNone` of the hinted optional when `expected_type` is an optional, as `None()` does.
+The tuple is now built as `{ {i1, i64}, i32 }` and `push(None)` stores the whole `{i1, i64}`.
+The push half has no runtime symptom (the 4-byte zero also zeroed the tag); it is checked
+in the IR only.
+
+**Test:** `test/native/none_hint_width.kl`
