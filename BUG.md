@@ -2061,3 +2061,31 @@ The first fix matched the first `(K skipped)` on the line, so a skipped build st
 **Test:** `scripts/test-run-unit-tests.sh`, run by `run-tests.sh`: a stub `zig` prints real
 Zig 0.16 summary lines (no skips, a skip, a skip beside a failure, a skipped step) and the
 test checks the wrapper's exit code and `.test-results.json` counts.
+
+---
+
+## [ ] Bug 79: Module test `integration` aborted once with exit 134 and no output
+
+**Status:** Open
+
+**System:** stdlib integration — `test/module/integration/main.kl` and the stdlib modules it
+composes (json, toml, path, string_builder, file); cause not yet located
+
+**Deferred:** after the current milestone. Seen once in 82 runs and not reproduced since, so
+it does not block a phase; a second sighting makes it a crash to reproduce.
+
+**Description:** In one `./run-tests.sh` run the natively built integration binary aborted
+(exit 134, SIGABRT) before printing anything. The test writes and deletes the fixed paths
+`/tmp/klar_integration_test.json` and `/tmp/klar_integration_manifest.json`, so a concurrent
+run from another checkout could race on them; that is a guess, not a finding.
+
+**Steps to reproduce:**
+1. `./run-tests.sh` (or `./scripts/run-module-tests.sh`), repeated.
+
+**Expected:** `integration` exits 0 on every run.
+
+**Actual:** On `fix/gc-reachability` at `225f232`, 2026-09-29: `✗ integration (expected: 0,
+got: 134)`, empty output. The same source, rebuilt, then exited 0 in 80 direct runs, and a
+full `./run-tests.sh` rerun on the same commit passed 2158/2158.
+
+**Found by:** Builder on `fix/gc-reachability`, 2026-09-29, re-gating PR 43.
