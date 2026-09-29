@@ -70,6 +70,11 @@ in user programs first, then checker/contract correctness, then tooling, then de
       lists `deletion` and `non_fast_forward` and nothing else)
 
 **Crashes and wrong results in running programs**
+- [ ] stdlib integration — Bug 79: the natively built `test/module/integration/main.kl`
+      crashes in about 3% of runs (6 of 200: SIGABRT ×4, SIGSEGV ×2) and reddens
+      `./run-tests.sh` on unrelated PRs. Reproduce under a sanitizer or with a heap-poisoning
+      allocator to find the stdlib module or codegen path, then fix. (found: second sighting,
+      2026-09-29, `plan/protect-main`)
 - [ ] Native codegen — Bugs 74 + 75: runtime checks that let undefined behavior through. A
       negative `i8`/`i16` index passes the bounds check (zext) and the GEP sign-extends it
       (`src/codegen/emit.zig:9898`, `:5160`, `:9957`); integer `/` and `%` have no zero or
