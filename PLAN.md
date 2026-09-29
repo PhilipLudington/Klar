@@ -50,7 +50,7 @@ in user programs first, then checker/contract correctness, then tooling, then de
       (Philip, 2026-09-26) (completed 2026-09-28, PR 45: all five jobs green in run
       36476998913 at `e8846bb`, after Bugs 76 and 78; the same PR moves CI to nightly on
       `main` and by hand, off PRs and merges, per the 2026-09-28 decision)
-- [ ] CI — one LLVM version on every build: 21. Today the builds use 17 on Linux and macOS CI
+- [x] CI — one LLVM version on every build: 21. Today the builds use 17 on Linux and macOS CI
       (`apt llvm-17`, `brew llvm@17`), 18.1.8 on Windows CI (vovkos), and 21.1.8 locally
       (Homebrew `llvm`, which `build.zig` `detectLLVMPrefix` finds first). Move Linux to
       `llvm-21-dev` (packaged on Ubuntu 26.04), macOS to `brew install llvm@21`, and Windows
@@ -58,6 +58,8 @@ in user programs first, then checker/contract correctness, then tooling, then de
       and the `LLVM_PREFIX`/PATH lines with it. Done when every job is green on 21 and
       `CLAUDE.md` names 21 as the supported LLVM. Why: a codegen difference that shows up on
       only one platform today could come from LLVM rather than Klar. (Philip, 2026-09-26)
+      (completed 2026-09-29, PR 46: all five jobs green in dispatched run 36530730189 at
+      `5c07a47`, each LLVM job logging `LLVM 21 at <prefix>`; merged as `c79cb8b`)
 
 **Crashes and wrong results in running programs**
 - [ ] Native codegen — Bugs 74 + 75: runtime checks that let undefined behavior through. A
