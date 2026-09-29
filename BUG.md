@@ -2333,9 +2333,9 @@ signature!` with `call void @Pump_feed({ i64 } %p, ptr %tx)` (declared `i32`),
 
 ---
 
-## [ ] Bug 86: `send` on a struct-field or tuple-field `Sender` emits no code, so the receiver blocks
+## [x] Bug 86: `send` on a struct-field or tuple-field `Sender` emits no code, so the receiver blocks
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** Native channels — `isSenderExpr` / `getSenderElementType` in `src/codegen/emit.zig`
 
@@ -2358,11 +2358,20 @@ in a function, and it is Bug 83's mechanism on a different target.
 **Found by:** /qa-review on fix/bug-83-sender-param, 2026-09-29 — GenA — reviewer's evidence
 (probes `scratch/qa83/struct_field_main.kl`, `param_recv_via_field.kl`, `struct_field_sender.kl`), not re-read.
 
+**Fix:** Every channel test (`isSenderExpr`, `isReceiverExpr`, `getSenderElementType`,
+`getReceiverElementType`, and `recv`'s element width) now goes through
+`channelEndpointOf` (`src/codegen/emit.zig`), which reads the declared type of a local or
+of a struct or tuple field path rooted at one (`localPathType`), at any depth, before
+falling back to the checker. The per-local `is_sender`/`is_receiver`/`channel_element_type`
+flags are gone: the local's recorded `semantic_type` carries the same fact.
+
+**Test:** `test/native/channel_field_endpoints.kl`
+
 ---
 
-## [ ] Bug 87: An aliased channel endpoint type is not a channel endpoint — `send` hangs or fails verification
+## [x] Bug 87: An aliased channel endpoint type is not a channel endpoint — `send` hangs or fails verification
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** Native channels — `isSenderExpr` / `getSenderElementType` in `src/codegen/emit.zig`
 
@@ -2384,6 +2393,15 @@ verification with `call void @produce(ptr %tx3)`, where the function is declared
 
 **Found by:** /qa-review on fix/bug-83-sender-param, 2026-09-29 — GenA — reviewer's evidence
 (probes `scratch/qa83/alias_let.kl`, `alias_param.kl`), not re-read.
+
+**Fix:** A local's `semantic_type` is its declared type resolved through the checker, so
+an alias of `Sender#[T]`/`Receiver#[T]` resolves to the endpoint, and `channelEndpointOf`
+(Bug 86's one path) reads it for a `let`, a `var` or a parameter. `namedTypeToLLVM` lowers
+a named alias of an endpoint as `typeExprToLLVM` lowers a spelled-out `Sender#[T]` (the
+pointer), so a parameter of the alias matches its call site. How that pointer relates to
+the `{ ptr }` endpoint layout elsewhere is Bug 85's question, unchanged here.
+
+**Test:** `test/native/channel_alias_endpoints.kl`
 
 ---
 

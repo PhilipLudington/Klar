@@ -367,12 +367,6 @@ pub const Emitter = struct {
         is_buf_writer: bool = false,
         /// For BufWriter#[W], the inner writer type.
         buf_writer_inner_type: ?types.Type = null,
-        /// True if this is a Sender#[T] channel endpoint.
-        is_sender: bool = false,
-        /// True if this is a Receiver#[T] channel endpoint.
-        is_receiver: bool = false,
-        /// For Sender/Receiver, the element type for type-safe send/recv.
-        channel_element_type: ?types.Type = null,
         /// True if this is a ThreadPool type.
         is_thread_pool: bool = false,
         /// Full semantic type for pattern matching (Result, Optional, etc.)
@@ -2364,8 +2358,6 @@ pub const Emitter = struct {
             const map_info = self.getMapTypeInfo(param.type_);
             const set_info = self.getSetTypeInfo(param.type_);
             const is_string_data = self.isTypeStringData(param.type_);
-            // A Sender/Receiver parameter is a channel endpoint, as a `let` of that type is.
-            const channel_info = self.getChannelTypeInfo(param.type_);
 
             // Resolve semantic type for type checking (needed for char.to_string(), etc.)
             const semantic_type = self.resolveTypeExprDirect(param.type_);
@@ -2396,9 +2388,6 @@ pub const Emitter = struct {
                 .set_element_type = set_info,
                 .is_string_data = is_string_data,
                 .is_string = is_string,
-                .is_sender = if (channel_info) |ci| ci.is_sender else false,
-                .is_receiver = if (channel_info) |ci| !ci.is_sender else false,
-                .channel_element_type = if (channel_info) |ci| ci.element_type else null,
                 .semantic_type = semantic_type,
                 .is_extern_fn = is_extern_fn,
                 .extern_fn_type = extern_fn_llvm_type,
@@ -2671,8 +2660,6 @@ pub const Emitter = struct {
                 const is_buf_writer_let = self.isTypeBufWriter(decl.type_);
                 // Check if this is a CStrOwned type (needs free on drop)
                 const is_cstr_owned_let = self.isTypeCstrOwned(decl.type_);
-                // Check if this is a channel endpoint type
-                const channel_info = self.getChannelTypeInfo(decl.type_);
                 // Check if this is a ThreadPool type
                 const is_thread_pool_let = self.isTypeThreadPool(decl.type_);
                 // Resolve semantic type for pattern matching (Result, Optional, etc.)
@@ -2711,9 +2698,6 @@ pub const Emitter = struct {
                     .is_path = is_path_let,
                     .is_buf_reader = is_buf_reader_let,
                     .is_buf_writer = is_buf_writer_let,
-                    .is_sender = if (channel_info) |ci| ci.is_sender else false,
-                    .is_receiver = if (channel_info) |ci| !ci.is_sender else false,
-                    .channel_element_type = if (channel_info) |ci| ci.element_type else null,
                     .is_thread_pool = is_thread_pool_let,
                     .semantic_type = semantic_type,
                     .is_extern_fn = is_extern_fn_let,
@@ -2845,8 +2829,6 @@ pub const Emitter = struct {
                 // Check if this is a buffered I/O type
                 const is_buf_reader = self.isTypeBufReader(decl.type_);
                 const is_buf_writer = self.isTypeBufWriter(decl.type_);
-                // A Sender/Receiver `var` is a channel endpoint, as a `let` of that type is.
-                const channel_info = self.getChannelTypeInfo(decl.type_);
                 // Check if this is a CStrOwned type (needs free on drop)
                 const is_cstr_owned = self.isTypeCstrOwned(decl.type_);
                 // Resolve semantic type for pattern matching (Result, Optional, etc.)
@@ -2885,9 +2867,6 @@ pub const Emitter = struct {
                     .is_path = is_path,
                     .is_buf_reader = is_buf_reader,
                     .is_buf_writer = is_buf_writer,
-                    .is_sender = if (channel_info) |ci| ci.is_sender else false,
-                    .is_receiver = if (channel_info) |ci| !ci.is_sender else false,
-                    .channel_element_type = if (channel_info) |ci| ci.element_type else null,
                     .semantic_type = semantic_type,
                     .is_extern_fn = is_extern_fn_var,
                     .extern_fn_type = extern_fn_llvm_type_var,
@@ -7442,6 +7421,11 @@ pub const Emitter = struct {
                 if (ty == .extern_type) {
                     return self.typeToLLVM(ty);
                 }
+                // An alias of a channel endpoint lowers as a spelled-out `Sender#[T]` does
+                // in `typeExprToLLVM`: the generic_apply pointer.
+                if (channelInfoOfType(ty) != null) {
+                    return llvm.Types.pointer(self.ctx);
+                }
             }
         }
 
@@ -7777,28 +7761,60 @@ pub const Emitter = struct {
         }
     }
 
-    /// Check if a type expression is a Sender#[T] or Receiver#[T] channel type.
+    /// Which end of a channel a value is, and the channel's element type.
     const ChannelTypeInfo = struct {
         is_sender: bool,
         element_type: types.Type,
     };
 
-    fn getChannelTypeInfo(self: *Emitter, type_expr: ast.TypeExpr) ?ChannelTypeInfo {
-        switch (type_expr) {
-            .generic_apply => |g| {
-                if (g.base == .named and g.args.len == 1) {
-                    const base_name = g.base.named.name;
-                    const is_sender = std.mem.eql(u8, base_name, "Sender");
-                    const is_receiver = std.mem.eql(u8, base_name, "Receiver");
-                    if (is_sender or is_receiver) {
-                        if (self.type_checker) |tc| {
-                            const tc_mut = @constCast(tc);
-                            const elem_type = tc_mut.resolveTypeExpr(g.args[0]) catch return null;
-                            return .{ .is_sender = is_sender, .element_type = elem_type };
+    /// The channel endpoint a semantic type is: every channel test reads this.
+    fn channelInfoOfType(ty: types.Type) ?ChannelTypeInfo {
+        return switch (ty) {
+            .sender => |s| .{ .is_sender = true, .element_type = s.element },
+            .receiver => |r| .{ .is_sender = false, .element_type = r.element },
+            else => null,
+        };
+    }
+
+    /// The channel endpoint an expression evaluates to, if any: a local, or a struct or
+    /// tuple field of one at any depth, whose declared type resolves to an endpoint (an
+    /// alias included), else the type checker's reading of the expression.
+    fn channelEndpointOf(self: *Emitter, expr: ast.Expr) ?ChannelTypeInfo {
+        if (self.localPathType(expr)) |ty| {
+            if (channelInfoOfType(ty)) |ci| return ci;
+        }
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            return channelInfoOfType(tc_mut.checkExpr(expr));
+        }
+        return null;
+    }
+
+    /// The semantic type of a local or of a field path rooted at one (`w.tx`, `pair.0`,
+    /// `o.w.tx`), from the types recorded when the locals were declared.
+    fn localPathType(self: *Emitter, expr: ast.Expr) ?types.Type {
+        switch (expr) {
+            .identifier => |id| {
+                const local = self.named_values.get(id.name) orelse return null;
+                return local.semantic_type;
+            },
+            .field => |f| {
+                var owner = self.localPathType(f.object) orelse return null;
+                if (owner == .reference) owner = owner.reference.inner;
+                switch (owner) {
+                    .struct_ => |st| {
+                        for (st.fields) |field| {
+                            if (std.mem.eql(u8, field.name, f.field_name)) return field.type_;
                         }
-                    }
+                        return null;
+                    },
+                    .tuple => |tup| {
+                        const index = std.fmt.parseInt(usize, f.field_name, 10) catch return null;
+                        if (index >= tup.elements.len) return null;
+                        return tup.elements[index];
+                    },
+                    else => return null,
                 }
-                return null;
             },
             else => return null,
         }
@@ -30912,25 +30928,10 @@ pub const Emitter = struct {
         // receiver_ptr is an alloca holding just a ptr (due to tuple destructuring flattening)
         const inner_ptr = self.builder.buildLoad(ptr_type, receiver_ptr, "chr.inner");
 
-        // Determine element LLVM type from the local value flags or type checker
-        var elem_llvm_type: llvm.TypeRef = i32_type; // default
-        if (method.object == .identifier) {
-            if (self.named_values.get(method.object.identifier.name)) |local| {
-                if (local.channel_element_type) |elem_type| {
-                    elem_llvm_type = self.typeToLLVM(elem_type);
-                }
-            }
-        }
-        if (elem_llvm_type == i32_type) {
-            // Fallback to type checker
-            if (self.type_checker) |tc| {
-                const tc_mut = @constCast(tc);
-                const obj_type = tc_mut.checkExpr(method.object);
-                if (obj_type == .receiver) {
-                    elem_llvm_type = self.typeToLLVM(obj_type.receiver.element);
-                }
-            }
-        }
+        const elem_llvm_type: llvm.TypeRef = if (self.getReceiverElementType(method.object)) |elem_type|
+            self.typeToLLVM(elem_type)
+        else
+            i32_type;
 
         // Build Optional type: { i1, T }
         var opt_fields = [_]llvm.TypeRef{ i1_type, elem_llvm_type };
@@ -31073,52 +31074,26 @@ pub const Emitter = struct {
         return llvm.c.LLVMGetUndef(llvm.Types.void_(self.ctx));
     }
 
-    /// The element type `T` of a `Sender#[T]` expression: a local's recorded channel
-    /// element type, else the type checker's.
+    /// The element type `T` of a `Sender#[T]` expression.
     fn getSenderElementType(self: *Emitter, expr: ast.Expr) ?types.Type {
-        if (expr == .identifier) {
-            if (self.named_values.get(expr.identifier.name)) |local| {
-                if (local.is_sender) {
-                    if (local.channel_element_type) |elem_type| return elem_type;
-                }
-            }
-        }
-        if (self.type_checker) |tc| {
-            const tc_mut = @constCast(tc);
-            const expr_type = tc_mut.checkExpr(expr);
-            if (expr_type == .sender) return expr_type.sender.element;
-        }
-        return null;
+        const ci = self.channelEndpointOf(expr) orelse return null;
+        return if (ci.is_sender) ci.element_type else null;
+    }
+
+    /// The element type `T` of a `Receiver#[T]` expression.
+    fn getReceiverElementType(self: *Emitter, expr: ast.Expr) ?types.Type {
+        const ci = self.channelEndpointOf(expr) orelse return null;
+        return if (ci.is_sender) null else ci.element_type;
     }
 
     /// Check if an expression is a Sender type.
     fn isSenderExpr(self: *Emitter, expr: ast.Expr) bool {
-        if (expr == .identifier) {
-            if (self.named_values.get(expr.identifier.name)) |local| {
-                if (local.is_sender) return true;
-            }
-        }
-        if (self.type_checker) |tc| {
-            const tc_mut = @constCast(tc);
-            const expr_type = tc_mut.checkExpr(expr);
-            return expr_type == .sender;
-        }
-        return false;
+        return self.getSenderElementType(expr) != null;
     }
 
     /// Check if an expression is a Receiver type.
     fn isReceiverExpr(self: *Emitter, expr: ast.Expr) bool {
-        if (expr == .identifier) {
-            if (self.named_values.get(expr.identifier.name)) |local| {
-                if (local.is_receiver) return true;
-            }
-        }
-        if (self.type_checker) |tc| {
-            const tc_mut = @constCast(tc);
-            const expr_type = tc_mut.checkExpr(expr);
-            return expr_type == .receiver;
-        }
-        return false;
+        return self.getReceiverElementType(expr) != null;
     }
 
     // ==================== ThreadPool Implementation ====================
