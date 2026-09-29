@@ -47,10 +47,11 @@ if ! ./run-build.sh; then
 fi
 
 # Run all test suites
-# The unit-test wrapper's own parsing (Bug 78) writes no results file, so its
-# failure is added to TOTAL_FAILED below by hand.
+# The unit-test wrapper's own parsing (Bug 78) and the CI LLVM version check write no
+# results file, so each one's failure is added to TOTAL_FAILED below by hand.
 WRAPPER_FAILED=0
 run_suite "Wrapper Tests" "./scripts/test-run-unit-tests.sh" || WRAPPER_FAILED=1
+run_suite "LLVM Check Tests" "./scripts/test-check-llvm-version.sh" || WRAPPER_FAILED=$((WRAPPER_FAILED + 1))
 run_suite "Unit Tests" "./scripts/run-unit-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
 run_suite "Native Tests" "./scripts/run-native-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
 run_suite "App Tests" "./scripts/run-app-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))

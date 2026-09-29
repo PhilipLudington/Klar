@@ -176,3 +176,21 @@ about 145 lines, roughly lines 1044–1188) to `src/compat_process.zig`, followi
 `compat_windows.zig` sibling pattern.
 
 **Found by:** /qa-review on ci/upgrade-runners-actions, 2026-09-28 — Growth — reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 10: The LLVM 21 check misses a non-numeric argument case and `build.zig`'s search order
+
+**Kind:** test-gap
+**Where:** `scripts/test-check-llvm-version.sh`, `scripts/check-llvm-version.sh:14`, `build.zig:177,200`
+**Due when:** touching `scripts/check-llvm-version.sh` · touching `build.zig`
+
+**Description:** Only the missing-argument usage error is tested; a non-numeric major
+(`21.1`, `abc`) should also exit 2. Nothing pins that `build.zig`'s versioned Homebrew and
+`/usr/lib/llvm-N` lists start at `"21"`, the major CI checks.
+
+**Payment:** Add `check "non-numeric major is a usage error" 2 "$WORK/llvm21" 21.1`, and a
+case like the ci.yml scan that asserts the first element of both `versions` arrays in
+`build.zig` is `"21"`.
+
+**Found by:** /qa-review on ci/llvm-21-everywhere, 2026-09-29 — TestCov — reviewer's reading, not re-verified.

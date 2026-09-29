@@ -247,11 +247,11 @@ See [PLAN.md](PLAN.md) for implementation details and roadmap.
 
 ## Building
 
-Requires [Zig](https://ziglang.org/) 0.15+ and LLVM 17+.
+Requires [Zig](https://ziglang.org/) 0.15+ and LLVM 21 (the version CI builds with).
 
 ```bash
 # Install LLVM (macOS)
-brew install llvm
+brew install llvm@21
 
 # Build the compiler
 ./run-build.sh

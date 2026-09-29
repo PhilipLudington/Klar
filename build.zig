@@ -172,9 +172,9 @@ fn detectLLVMPrefix(b: *std.Build) ?[]const u8 {
         return "/usr/local/opt/llvm";
     } else |_| {}
 
-    // macOS - Homebrew versioned (e.g., brew install llvm@17)
+    // macOS - Homebrew versioned (e.g., brew install llvm@21, the supported version)
     {
-        const versions = [_][]const u8{ "20", "19", "18", "17", "16", "15", "14" };
+        const versions = [_][]const u8{ "21", "20", "19", "18", "17", "16", "15", "14" };
         const prefixes = [_][]const u8{ "/opt/homebrew/opt/llvm@", "/usr/local/opt/llvm@" };
         for (prefixes) |prefix| {
             for (versions) |ver| {
@@ -197,7 +197,7 @@ fn detectLLVMPrefix(b: *std.Build) ?[]const u8 {
 
     // Linux - versioned LLVM paths (Ubuntu/Debian: /usr/lib/llvm-XX/)
     {
-        const versions = [_][]const u8{ "20", "19", "18", "17", "16", "15", "14" };
+        const versions = [_][]const u8{ "21", "20", "19", "18", "17", "16", "15", "14" };
         for (versions) |ver| {
             const path = std.fmt.allocPrint(std.heap.page_allocator, "/usr/lib/llvm-{s}/include/llvm-c/Core.h", .{ver}) catch continue;
             if (std.Io.Dir.accessAbsolute(b.graph.io,path, .{})) |_| {

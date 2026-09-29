@@ -2061,3 +2061,66 @@ The first fix matched the first `(K skipped)` on the line, so a skipped build st
 **Test:** `scripts/test-run-unit-tests.sh`, run by `run-tests.sh`: a stub `zig` prints real
 Zig 0.16 summary lines (no skips, a skip, a skip beside a failure, a skipped step) and the
 test checks the wrapper's exit code and `.test-results.json` counts.
+
+---
+
+## [ ] Bug 79: Module test `integration` aborted once with exit 134 and no output
+
+**Status:** Open
+
+**System:** stdlib integration — `test/module/integration/main.kl` and the stdlib modules it
+composes (json, toml, path, string_builder, file); cause not yet located
+
+**Deferred:** after the current milestone. Seen once in 82 runs and not reproduced since, so
+it does not block a phase; a second sighting makes it a crash to reproduce.
+
+**Description:** In one `./run-tests.sh` run the natively built integration binary aborted
+(exit 134, SIGABRT) before printing anything. The test writes and deletes the fixed paths
+`/tmp/klar_integration_test.json` and `/tmp/klar_integration_manifest.json`, so a concurrent
+run from another checkout could race on them; that is a guess, not a finding.
+
+**Steps to reproduce:**
+1. `./run-tests.sh` (or `./scripts/run-module-tests.sh`), repeated.
+
+**Expected:** `integration` exits 0 on every run.
+
+**Actual:** On `fix/gc-reachability` at `225f232`, 2026-09-29: `✗ integration (expected: 0,
+got: 134)`, empty output. The same source, rebuilt, then exited 0 in 80 direct runs, and a
+full `./run-tests.sh` rerun on the same commit passed 2158/2158.
+
+**Found by:** Builder on `fix/gc-reachability`, 2026-09-29, re-gating PR 43.
+
+---
+
+## [ ] Bug 80: `run-tests.sh` passes when a suite script exits nonzero without writing its results file
+
+**Status:** Open
+
+**System:** test wrapper — `run-tests.sh` aggregation
+
+**Deferred:** after the current milestone. No suite has been seen to exit early on a green
+run; every one writes its results file on the paths the gates take today.
+
+**Description:** Each suite line ends `|| TOTAL_FAILED=$((TOTAL_FAILED + 1))`
+(`run-tests.sh:55-64`), but `run-tests.sh:98` reassigns `TOTAL_FAILED` from the JSON
+results files plus `WRAPPER_FAILED`, so those increments are dead stores. A suite that exits
+before writing its results file (`scripts/run-native-tests.sh:23` `zig build || exit 1`,
+`run-module-tests.sh:13`, `run-selfhost-tests.sh:20`, `run-check-tests.sh:16`, or a `set -e`
+abort) counts as 0 failed when the file is missing, or as whatever a stale file from an
+earlier run says. The gate that stands in for CI can then print green.
+
+**Steps to reproduce:**
+1. Make one suite script exit 1 before it writes results (e.g. add `exit 1` at the top of
+   `scripts/run-check-tests.sh`), and delete `.check-test-results.json`.
+2. `./run-tests.sh`.
+
+**Expected:** `TOTAL:` shows at least 1 failed and the script exits 1.
+
+**Actual:** The suite's failure is dropped at line 98; the total and exit status come only
+from the results files.
+
+**Fix direction:** a separate `SUITE_EXIT_FAILED` counter summed at line 98, as
+`WRAPPER_FAILED` already is, with a stub-suite test that pins the exit code.
+
+**Found by:** /qa-review on ci/llvm-21-everywhere, 2026-09-29 — GenA; verified by reading
+`run-tests.sh:55-64` and `run-tests.sh:98`.

@@ -34,8 +34,10 @@ in user programs first, then checker/contract correctness, then tooling, then de
       `zig build -Dtarget=x86_64-windows` and `-Dtarget=aarch64-windows` compile locally and
       both Windows jobs are green. (Philip, 2026-09-26: "get Windows working first")
       (completed 2026-09-27, PR 44)
-- [ ] PR 43 (Bugs 15–17): once the baseline + port PR merges, rebase `fix/gc-reachability`
-      onto `main`, push `--force-with-lease`; it merges when its CI is green.
+- [x] PR 43 (Bugs 15–17): once the baseline + port PR merges, rebase `fix/gc-reachability`
+      onto `main`, push `--force-with-lease`; it merges when its CI is green. (completed
+      2026-09-29: merged as `4584f02` on local gates green at `225f232`, 2158 passed; PRs
+      run no CI since 2026-09-28)
 - [x] CI — upgrade runners and actions: `ubuntu-latest` → `ubuntu-26.04`, `ubuntu-24.04-arm` →
       `ubuntu-26.04-arm`, `macos-latest` → `macos-26` (the baseline run reported
       `macos-26-arm64`, 20260907.0351); `windows-latest` stays;

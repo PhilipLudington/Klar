@@ -8,6 +8,10 @@ on:
     - cron: '0 10 * * *'   # 10:00 UTC
   workflow_dispatch:
 
+# Every job that builds with LLVM uses LLVM 21 (decided 2026-09-26). Each one sets
+# LLVM_PREFIX, so build.zig does not guess, and fails at "Check LLVM version" on any
+# other major.
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -49,7 +53,12 @@ jobs:
           version: 0.16.0
 
       - name: Install LLVM
-        run: sudo apt-get update && sudo apt-get install -y llvm-17 llvm-17-dev
+        run: |
+          sudo apt-get update && sudo apt-get install -y llvm-21 llvm-21-dev
+          echo "LLVM_PREFIX=/usr/lib/llvm-21" >> "$GITHUB_ENV"
+
+      - name: Check LLVM version
+        run: ./scripts/check-llvm-version.sh 21
 
       - name: Build
         run: ./run-build.sh
@@ -69,10 +78,10 @@ jobs:
         include:
           - name: macOS (full suite)
             runner: macos-26
-            llvm_install: brew install llvm@17
+            llvm_install: brew install llvm@21 && echo "LLVM_PREFIX=$(brew --prefix llvm@21)" >> "$GITHUB_ENV"
           - name: Linux ARM64 (full suite)
             runner: ubuntu-26.04-arm
-            llvm_install: sudo apt-get update && sudo apt-get install -y llvm-17 llvm-17-dev
+            llvm_install: sudo apt-get update && sudo apt-get install -y llvm-21 llvm-21-dev && echo "LLVM_PREFIX=/usr/lib/llvm-21" >> "$GITHUB_ENV"
     steps:
       - uses: actions/checkout@v7
 
@@ -83,6 +92,9 @@ jobs:
 
       - name: Install LLVM
         run: ${{ matrix.llvm_install }}
+
+      - name: Check LLVM version
+        run: ./scripts/check-llvm-version.sh 21
 
       - name: Build
         run: ./run-build.sh
@@ -118,18 +130,21 @@ jobs:
         uses: actions/cache@v6
         with:
           path: C:/llvm
-          key: llvm-18.1.8-windows-amd64-msvc17
+          key: llvm-21.1.1-windows-amd64-msvc17
 
       - name: Install LLVM (vovkos pre-built with dev headers)
         if: steps.cache-llvm.outputs.cache-hit != 'true'
         run: |
-          curl -L -o llvm.7z "https://github.com/vovkos/llvm-package-windows/releases/download/llvm-18.1.8/llvm-18.1.8-windows-amd64-msvc17-msvcrt.7z"
+          curl -L --fail -o llvm.7z "https://github.com/vovkos/llvm-package-windows/releases/download/llvm-21.1.1/llvm-21.1.1-windows-amd64-msvc17-msvcrt.7z"
           7z x llvm.7z -oC:/llvm -y
 
       - name: Configure LLVM paths
         run: |
-          echo "LLVM_PREFIX=C:/llvm/llvm-18.1.8-windows-amd64-msvc17-msvcrt" >> $GITHUB_ENV
-          echo "C:/llvm/llvm-18.1.8-windows-amd64-msvc17-msvcrt/bin" >> $GITHUB_PATH
+          echo "LLVM_PREFIX=C:/llvm/llvm-21.1.1-windows-amd64-msvc17-msvcrt" >> $GITHUB_ENV
+          echo "C:/llvm/llvm-21.1.1-windows-amd64-msvc17-msvcrt/bin" >> $GITHUB_PATH
+
+      - name: Check LLVM version
+        run: ./scripts/check-llvm-version.sh 21
 
       - name: Build
         run: ./run-build.sh
