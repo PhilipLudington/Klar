@@ -121,9 +121,16 @@ Assert the new block count (at least 19 today), or grep once per label kind (`ov
 
 ---
 
-## [ ] Debt 7: Native trap tests pass on any exit code, and the timeout branch is untested
+## [x] Debt 7: Native trap tests pass on any exit code, and the timeout branch is untested
 
-**Status:** Open
+**Status:** Paid
+**Paid:** fix/bug-74-75-runtime-checks, 2026-09-30: a test marked `// Expected: trap` passes
+only on SIGILL or SIGTRAP (exit 132 or 133; any non-zero exit on Windows), and
+`array_bounds.kl` and the three `overflow_*.kl` are marked. The run timeout is
+`timeout -k 5`, and exit 137 counts as a timeout as well as 124. `native_timeout_branch`
+runs `test/native/timeout_hang.kl`, which never returns, under a 1-second limit and fails
+unless it is reported as timed out. Seen red with `overflow_add.kl` made non-trapping
+(`+%`) and with the timeout test's 124 changed.
 **Kind:** test-gap
 **Where:** `scripts/run-native-tests.sh:147` (`*) echo -1`), `:62`, `:129-135`; `test/native/overflow_add.kl`, `test/native/array_bounds.kl`
 **Due when:** touching `scripts/run-native-tests.sh`

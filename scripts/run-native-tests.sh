@@ -62,10 +62,19 @@ FAILURES=""
 NATIVE_TEST_TIMEOUT="${NATIVE_TEST_TIMEOUT:-60}"
 RUN_TIMEOUT=""
 if timeout --version >/dev/null 2>&1; then
-    RUN_TIMEOUT="timeout $NATIVE_TEST_TIMEOUT"
+    TIMEOUT_CMD="timeout"
 elif gtimeout --version >/dev/null 2>&1; then
-    RUN_TIMEOUT="gtimeout $NATIVE_TEST_TIMEOUT"
+    TIMEOUT_CMD="gtimeout"
 fi
+# -k: a binary that ignores SIGTERM is killed 5s later instead of hanging the job.
+if [ -n "${TIMEOUT_CMD:-}" ]; then
+    RUN_TIMEOUT="$TIMEOUT_CMD -k 5 $NATIVE_TEST_TIMEOUT"
+fi
+
+# A run timed out: 124 when SIGTERM ended it, 137 when the -k SIGKILL did.
+is_timeout_exit() {
+    [ -n "$RUN_TIMEOUT" ] && { [ "$1" -eq 124 ] || [ "$1" -eq 137 ]; }
+}
 
 # Check if test expects a runtime trap (looks in first 5 lines)
 expects_trap() {
@@ -237,7 +246,7 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
         # Check against expected (if defined)
         expected=$(get_expected "$name")
 
-        if [ -n "$RUN_TIMEOUT" ] && [ $result -eq 124 ]; then
+        if is_timeout_exit $result; then
             echo "✗ $name (timed out after ${NATIVE_TEST_TIMEOUT}s)"
             FAILED=$((FAILED + 1))
             if [ -n "$FAILURES" ]; then
@@ -335,6 +344,41 @@ else
     FAILURES="$FAILURES\"$trap_name: runtime_traps.kl did not compile to LLVM IR\""
 fi
 rm -rf "$trap_dir"
+
+# Timeout branch (Debt 7): a binary that never returns must be reported as timed
+# out, not hang the job or pass. test/native/timeout_hang.kl loops forever; run it
+# under a 1-second limit through the same timeout command and exit test as above.
+if [ -n "$RUN_TIMEOUT" ]; then
+    hang_name="native_timeout_branch"
+    hang_bin="$BUILD_DIR/klar_test_timeout_hang"
+    if $KLAR build "$TEST_DIR/timeout_hang.kl" -o "$hang_bin" 2>/dev/null | grep -q "^Built"; then
+        hang_run="$hang_bin"
+        if [[ "$OS" == "Windows_NT" ]] && [ -f "$hang_bin.exe" ]; then
+            hang_run="$hang_bin.exe"
+        fi
+        $TIMEOUT_CMD -k 5 1 "$hang_run" >/dev/null 2>&1
+        hang_result=$?
+        if is_timeout_exit $hang_result; then
+            echo "✓ $hang_name (hanging binary timed out, exit: $hang_result)"
+            PASSED=$((PASSED + 1))
+        else
+            echo "✗ $hang_name (hanging binary was not reported as timed out, exit: $hang_result)"
+            FAILED=$((FAILED + 1))
+            if [ -n "$FAILURES" ]; then
+                FAILURES="$FAILURES,"
+            fi
+            FAILURES="$FAILURES\"$hang_name: exit $hang_result, not a timeout\""
+        fi
+        rm -f "$hang_bin" "$hang_bin.exe"
+    else
+        echo "✗ $hang_name (timeout_hang.kl did not build)"
+        FAILED=$((FAILED + 1))
+        if [ -n "$FAILURES" ]; then
+            FAILURES="$FAILURES,"
+        fi
+        FAILURES="$FAILURES\"$hang_name: timeout_hang.kl did not build\""
+    fi
+fi
 
 TOTAL=$((PASSED + FAILED))
 
