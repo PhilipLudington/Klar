@@ -2754,3 +2754,39 @@ With `var arr: [i32; 300]` the same line exits 139 or 133 depending on size (pro
 
 **Found by:** Builder on fix/bug-74-75-runtime-checks, 2026-09-30, writing Bug 74's slice
 test; verified by probe.
+
+---
+
+## [ ] Bug 98: `List#[Id]` of a module-private alias crashes the compiler when another module declares its own `Id`
+
+**Status:** Open
+
+**System:** type alias scope — the element-type readers in `src/codegen/emit.zig`
+(`getListTypeInfo` `:7795`, array/slice readers `:7769`, `:7777`, `List.new` `:18353`,
+`Map.new` `:20233-20234`, `:21946`)
+
+**Escaped from:** fix/bug-89-type-alias-lowering (PR 53) — scoped aliases for declared,
+parameter and return types, but not for the element-type readers, and its Fix text says
+every `let` and `var` reads its own module's alias
+
+**Description:** Bug 89's fix substitutes a module's own aliases before the codegen asks the
+checker for a declared type. The readers that get a collection's element type still ask the
+checker directly, and the checker does not keep aliases per module, so when two modules each
+declare `type Id` the element type of `List#[Id]` can be the other module's `Id`.
+
+**Steps to reproduce:**
+1. Module `a`: `type Id = i64`, `pub fn f() -> Id { var xs: List#[Id] = List.new#[Id]();
+   xs.push(5000000000); let k: i32 = 0; return xs[k] }`.
+2. Module `b`: `type Id = i32`, `pub fn b_val() -> Id { return 7 }`.
+3. `main.kl` imports both and returns 42 when `f()` is 5000000000 and `b_val()` is 7.
+4. `klar build main.kl`.
+
+**Expected:** It builds and exits 42.
+
+**Actual:** The compiler crashes with "integer does not fit in destination type" at
+`src/codegen/emit.zig:4472`. It builds and exits 42 without module `b`, with `List#[i64]`,
+or when `b`'s `Id` is also `i64` (probe `scratch/gb89/mod/q/r3_l3/`).
+
+**Found by:** /qa-review fix-check round 3 on fix/bug-89-type-alias-lowering, 2026-09-30 —
+GenB, reply received after PR 53 merged; filed by /qa-review on fix/bug-74-75-runtime-checks
+— reviewer's evidence (probe with three controls), not re-read.
