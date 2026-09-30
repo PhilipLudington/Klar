@@ -2465,12 +2465,16 @@ The second segfaults the compiler in `LLVMStructGetTypeAtIndex` (`emitFieldAcces
 evidence (probes in the review scratchpad), not re-read.
 
 **Fix:** The emitter records every non-generic `type Name = T` under its module
-(`registerTypeAlias`, from `registerAllStructDecls`; a `pub` alias also by bare name, for
-an importer), and `resolveAliasTypeExpr` follows a named type through its aliases.
-`namedTypeToLLVM` lowers an alias as the type expression it names. These sites resolve the
-declared type: the `let` and `var` arms of `emitStmt`, the parameter loops of
-`emitFunction` and `emitImplMethods` (a `ref` parameter's inner type included), a struct
-field's recorded type name, and a cast's target in `emitTypeCast` and `isExprSigned`. The
+(`registerTypeAlias`, from `registerAllStructDecls`), and reads aliases under the module
+whose code it is emitting, a monomorphized generic body included (`decl_alias_scopes`).
+A `pub` alias is also kept by bare name, which is how an importer finds it; two modules
+exporting a `pub` alias of the same name still collide there, the last registered winning.
+`resolveAliasTypeExpr` follows a named type through its aliases, and `namedTypeToLLVM`
+lowers an alias as the type expression it names. These sites resolve the declared type:
+the `let` and `var` arms of `emitStmt`, the parameter loops of `emitFunction` and
+`emitImplMethods` (a `ref` parameter's inner type included), a function's return-value
+hint, a struct field's recorded type name, and a cast's target in `emitTypeCast` and
+`isExprSigned`. The
 struct name, signedness, string, array and collection readers below them see the named
 type. Reading the code turned up the same cause past the LLVM type: a struct alias lost its
 field names (`UnsupportedFeature`), an unsigned alias compared and divided as signed, and a

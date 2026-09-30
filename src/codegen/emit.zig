@@ -176,6 +176,12 @@ pub const Emitter = struct {
     type_aliases: std.StringHashMap(ast.TypeExpr),
     /// `pub` aliases by bare name: the fallback for an alias imported from another module.
     pub_type_aliases: std.StringHashMap(ast.TypeExpr),
+    /// The module prefix `type_aliases` is read under. `setModulePrefix` moves it; a
+    /// monomorphized body sets it to its declaring module's (`decl_alias_scopes`).
+    alias_scope: ?[]const u8 = null,
+    /// Each function and impl method declaration's module prefix, so a generic body
+    /// emitted after every module reads its own module's aliases.
+    decl_alias_scopes: std.AutoHashMap(*const ast.FunctionDecl, ?[]const u8),
     /// Layout calculator for composite types.
     layout_calc: layout.LayoutCalculator,
     /// Counter for generating unique closure names.
@@ -461,6 +467,7 @@ pub const Emitter = struct {
             .struct_types = std.StringHashMap(StructTypeInfo).init(allocator),
             .type_aliases = std.StringHashMap(ast.TypeExpr).init(allocator),
             .pub_type_aliases = std.StringHashMap(ast.TypeExpr).init(allocator),
+            .decl_alias_scopes = std.AutoHashMap(*const ast.FunctionDecl, ?[]const u8).init(allocator),
             .layout_calc = layout.LayoutCalculator.init(allocator, platform),
             .closure_counter = 0,
             .closure_types = std.StringHashMap(ClosureTypeInfo).init(allocator),
@@ -697,6 +704,7 @@ pub const Emitter = struct {
         while (alias_keys.next()) |key| self.allocator.free(key.*);
         self.type_aliases.deinit();
         self.pub_type_aliases.deinit();
+        self.decl_alias_scopes.deinit();
         // Free closure type info allocations
         var cit = self.closure_types.valueIterator();
         while (cit.next()) |info| {
@@ -831,6 +839,7 @@ pub const Emitter = struct {
     /// `stdlib.toml__parse_value` respectively).
     pub fn setModulePrefix(self: *Emitter, prefix: ?[]const u8) void {
         self.current_module_prefix = prefix;
+        self.alias_scope = prefix;
     }
 
     /// Build a module-prefixed function name for non-pub functions.
@@ -1515,6 +1524,10 @@ pub const Emitter = struct {
             switch (decl) {
                 .struct_decl => |s| try self.registerStructDecl(s),
                 .type_alias => |a| try self.registerTypeAlias(a),
+                .function => |f| self.decl_alias_scopes.put(f, self.alias_scope) catch return EmitError.OutOfMemory,
+                .impl_decl => |impl| for (impl.methods) |*m| {
+                    self.decl_alias_scopes.put(m, self.alias_scope) catch return EmitError.OutOfMemory;
+                },
                 else => {},
             }
         }
@@ -1525,7 +1538,7 @@ pub const Emitter = struct {
     /// arguments substituted and is left unrecorded.
     fn registerTypeAlias(self: *Emitter, alias: *ast.TypeAlias) EmitError!void {
         if (alias.type_params.len > 0) return;
-        const key = std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ self.current_module_prefix orelse "", alias.name }) catch return EmitError.OutOfMemory;
+        const key = std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ self.alias_scope orelse "", alias.name }) catch return EmitError.OutOfMemory;
         const slot = self.type_aliases.getOrPut(key) catch {
             self.allocator.free(key);
             return EmitError.OutOfMemory;
@@ -1540,7 +1553,7 @@ pub const Emitter = struct {
     /// The alias `name` names in the module being emitted, else a `pub` alias of that name.
     fn lookupTypeAlias(self: *const Emitter, name: []const u8) ?ast.TypeExpr {
         var buf: [256]u8 = undefined;
-        if (std.fmt.bufPrint(&buf, "{s}::{s}", .{ self.current_module_prefix orelse "", name })) |key| {
+        if (std.fmt.bufPrint(&buf, "{s}::{s}", .{ self.alias_scope orelse "", name })) |key| {
             if (self.type_aliases.get(key)) |aliased| return aliased;
         } else |_| {}
         return self.pub_type_aliases.get(name);
@@ -2002,7 +2015,7 @@ pub const Emitter = struct {
                     .ok_type = ok_type,
                     .err_type = err_type,
                 };
-                self.current_return_klar_type = self.resolveExpectedType(rt);
+                self.current_return_klar_type = self.resolveExpectedType(self.resolveAliasTypeExpr(rt));
             } else {
                 self.current_return_type = null;
                 self.current_return_klar_type = null;
@@ -2249,7 +2262,7 @@ pub const Emitter = struct {
                 .ok_type = ok_type,
                 .err_type = err_type,
             };
-            self.current_return_klar_type = self.resolveExpectedType(rt);
+            self.current_return_klar_type = self.resolveExpectedType(self.resolveAliasTypeExpr(rt));
         } else {
             self.current_return_type = null;
             self.current_return_klar_type = null;
@@ -13333,7 +13346,7 @@ pub const Emitter = struct {
             .ok_type = ok_type,
             .err_type = err_type,
         };
-        self.current_return_klar_type = self.resolveExpectedType(rt);
+        self.current_return_klar_type = self.resolveExpectedType(self.resolveAliasTypeExpr(rt));
 
         // Create entry block for lifted function
         const entry_bb = llvm.appendBasicBlock(self.ctx, lifted_fn, "entry");
@@ -14747,7 +14760,7 @@ pub const Emitter = struct {
                 .ok_type = ok_type,
                 .err_type = err_type,
             };
-            self.current_return_klar_type = self.resolveExpectedType(rt);
+            self.current_return_klar_type = self.resolveExpectedType(self.resolveAliasTypeExpr(rt));
 
             // Create entry block for wrapper function
             const entry_bb = llvm.appendBasicBlock(self.ctx, wrapper_fn, "entry");
@@ -38541,7 +38554,9 @@ pub const Emitter = struct {
             // Skip if this function has no body (extern declaration)
             if (mono.original_decl.body == null) continue;
 
-            // Emit the function body
+            // Emit the function body, reading its declaring module's aliases
+            self.alias_scope = self.decl_alias_scopes.get(mono.original_decl) orelse null;
+            defer self.alias_scope = self.current_module_prefix;
             try self.emitMonomorphizedFunction(mono.*);
         }
     }
@@ -38827,6 +38842,8 @@ pub const Emitter = struct {
             // Skip if this method has no body
             if (mono.original_decl.body == null) continue;
 
+            self.alias_scope = self.decl_alias_scopes.get(mono.original_decl) orelse null;
+            defer self.alias_scope = self.current_module_prefix;
             try self.emitMonomorphizedMethod(mono.*);
         }
     }
