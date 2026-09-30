@@ -4,6 +4,23 @@
 
 enum Color { Red, Green }
 
+struct Holder { items: List#[i32] }
+
+fn make_arr() -> [i32; 3] {
+    return [1, 2, 3]
+}
+
+fn make_slice() -> [i32] {
+    let s: [i32] = [1, 2, 3]
+    return s
+}
+
+fn make_list() -> List#[i32] {
+    var l: List#[i32] = List.new#[i32]()
+    l.push(1)
+    return l
+}
+
 fn slice_read(s: [i32], i: i32) -> i32 {
     return s[i]
 }
@@ -46,5 +63,19 @@ fn main() -> i32 {
     let ok: Result#[i32, i32] = Ok(3)
     let e: i32 = ok.unwrap_err()
     let c: i32 = color_code(Color::Red)
-    return a + s + l + sum + f + u + e + c
+
+    // Index paths other than a plain identifier (Debt 6).
+    var h: Holder = Holder { items: List.new#[i32]() }
+    let hf: i32 = h.items[i]
+    let ma: i32 = make_arr()[i]
+    let ms: i32 = make_slice()[i]
+    let ml: i32 = make_list()[i]
+    let fixed: [i32; 3] = [1, 2, 3]
+    let ra: ref i32 = ref fixed[i]
+    let rd: ref i32 = ref dv[i]
+
+    // Division and remainder (Bug 75).
+    let q: i32 = 10 / i
+    let m: i32 = 10 % i
+    return a + s + l + sum + f + u + e + c + hf + ma + ms + ml + q + m
 }

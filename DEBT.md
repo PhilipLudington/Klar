@@ -99,9 +99,17 @@ reads stdin in the VM, the interpreter or the REPL. Only the LSP's stdin path is
 
 ---
 
-## [ ] Debt 6: `runtime_trap_lowering` reaches 11 of 17 trap sites and passes on any count
+## [x] Debt 6: `runtime_trap_lowering` reaches 11 of 17 trap sites and passes on any count
 
-**Status:** Open
+**Status:** Paid
+**Paid:** fix/bug-74-75-runtime-checks, 2026-09-30: `runtime_traps.kl` also indexes a List
+field through a struct (`h.items[i]`), `make_arr()[i]`, `make_slice()[i]`, `make_list()[i]`,
+`ref fixed[i]` and `ref dv[i]`, and divides with `/` and `%`: 33 failure blocks. The check
+now fails unless each of `bounds.fail`, `list.bounds.fail`, `set.fail`, `overflow_trap`,
+`div.fail`, `unwrap.fail`, `unwrap_err.fail` and `match.failed` appears and the count is at
+least 33 (`TRAP_BLOCK_FLOOR`). Seen red three ways: `emitCheckedIndex` failing into a bare
+`unreachable` (13 of 33 bare), no division check (`div.fail` missing), and one index site
+without its check (32 blocks).
 **Kind:** test-gap
 **Where:** `test/native/runtime_traps.kl`, `scripts/run-native-tests.sh` (`runtime_trap_lowering`)
 **Due when:** touching `test/native/runtime_traps.kl` or a runtime-check block in `src/codegen/emit.zig`

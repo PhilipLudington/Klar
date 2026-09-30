@@ -323,17 +323,34 @@ if [ -f "$trap_ir" ]; then
     ' "$trap_ir")
     trap_total=$(printf '%s\n' "$trap_blocks" | grep -c . || true)
     trap_bare=$(printf '%s\n' "$trap_blocks" | grep -v "call void @llvm.trap()" | grep -c . || true)
-    if [ "$trap_total" -gt 0 ] && [ "$trap_bare" -eq 0 ]; then
+    # Every kind of check must still reach the IR, and the fixture's block count
+    # must not drop: a failure block that disappears is a check that was lost
+    # (Debt 6). Raise the floor when runtime_traps.kl gains a site.
+    TRAP_BLOCK_FLOOR=33
+    trap_missing=""
+    for kind in bounds.fail list.bounds.fail set.fail overflow_trap div.fail unwrap.fail unwrap_err.fail match.failed; do
+        if ! printf '%s\n' "$trap_blocks" | awk -v k="$kind" '{ l = $1; sub(/[0-9]*:$/, "", l); if (l == k) f = 1 } END { exit !f }'; then
+            trap_missing="$trap_missing $kind"
+        fi
+    done
+    if [ "$trap_bare" -eq 0 ] && [ "$trap_total" -ge "$TRAP_BLOCK_FLOOR" ] && [ -z "$trap_missing" ]; then
         echo "✓ $trap_name ($trap_total failure blocks trap)"
         PASSED=$((PASSED + 1))
     else
-        echo "✗ $trap_name ($trap_bare of $trap_total failure blocks do not call llvm.trap)"
+        if [ "$trap_bare" -ne 0 ]; then
+            trap_why="$trap_bare of $trap_total failure blocks do not call llvm.trap"
+        elif [ -n "$trap_missing" ]; then
+            trap_why="no failure block for:$trap_missing"
+        else
+            trap_why="$trap_total failure blocks, fewer than $TRAP_BLOCK_FLOOR"
+        fi
+        echo "✗ $trap_name ($trap_why)"
         printf '%s\n' "$trap_blocks" | grep -v "call void @llvm.trap()" | head -5 | sed 's/^/  /'
         FAILED=$((FAILED + 1))
         if [ -n "$FAILURES" ]; then
             FAILURES="$FAILURES,"
         fi
-        FAILURES="$FAILURES\"$trap_name: $trap_bare of $trap_total failure blocks do not call llvm.trap\""
+        FAILURES="$FAILURES\"$trap_name: $trap_why\""
     fi
 else
     echo "✗ $trap_name (runtime_traps.kl did not compile to LLVM IR)"
