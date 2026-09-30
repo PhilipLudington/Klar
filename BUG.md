@@ -1913,9 +1913,9 @@ out, and the wasm unsupported-feature trap (wasm's `unreachable` always traps).
 
 ---
 
-## [ ] Bug 74: A negative narrow signed index passes the native bounds check — `arr[k]` with an `i8` of -1 reads before the array
+## [x] Bug 74: A negative narrow signed index passes the native bounds check — `arr[k]` with an `i8` of -1 reads before the array
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** native codegen — `src/codegen/emit.zig`, the failure block of every runtime check
 
@@ -1938,11 +1938,25 @@ arm64, 2026-09-27: "read arr[-1] without trapping", exit 7).
 
 **Found by:** /qa-review on ci/baseline-zig-016, 2026-09-27 — GenA2; verified by probe.
 
+**Fix:** One bounds check, `Emitter.emitCheckedIndex`, for every trapping index: the eight
+array and slice read, write and `ref arr[i]` sites, the three List index reads, and
+`List.set` (which List index writes also use). It extends the index by its own signedness
+(sign for a signed index, zero for an unsigned one) to at least 64 bits, compares it
+unsigned against the zero-extended length, and returns that same i64 for the address. The
+unsigned half of the bug went too: a `u8` of 200 was zero-extended for the check and
+sign-extended to -56 by the GEP, so `arr[k] = 42` wrote outside `arr[200]`. An index read
+through a field or element takes its signedness from `isExprSigned`, which calls it signed
+(Bug 95): an unsigned one above its signed maximum now traps instead of misaddressing.
+
+**Test:** `test/native/runtime_checks/index_neg_i8_read.kl`, `index_neg_i8_write.kl`,
+`index_neg_i8_slice.kl` (each `// Expected: trap`), and
+`test/native/runtime_checks/unsigned_index_and_division.kl`.
+
 ---
 
-## [ ] Bug 75: Native integer `/` and `%` have no zero or MIN/-1 check — `10 / 0` returns 0 on arm64
+## [x] Bug 75: Native integer `/` and `%` have no zero or MIN/-1 check — `10 / 0` returns 0 on arm64
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** native codegen — `src/codegen/emit.zig`, the failure block of every runtime check
 
@@ -1962,6 +1976,18 @@ for `MIN / -1`. x86 raises SIGFPE; aarch64 returns 0. The VM returns `DivisionBy
 arm64, 2026-09-27).
 
 **Found by:** /qa-review on ci/baseline-zig-016, 2026-09-27 — GenA2; verified by probe.
+
+**Fix:** One lowering, `Emitter.emitCheckedDivRem`, for integer `/` and `%` and for `/=`
+and `%=` on a local, an array element, a field and a dereference. Before dividing it
+branches to a trapping `div.fail` block when the divisor is zero, or, for a signed
+dividend, when it is MIN and the divisor -1. An unsigned dividend has no MIN / -1 case.
+The four compound sites always emitted `sdiv`/`srem`; they now pass the target's
+signedness, so a `u8` of 200 `/= 3` is 66, not 238. Left unchecked: three internal
+divisions whose divisor is a nonzero constant or a channel capacity.
+
+**Test:** `test/native/runtime_checks/div_by_zero.kl`, `mod_by_zero.kl`,
+`div_assign_by_zero.kl`, `div_min_neg_one.kl`, `mod_min_neg_one.kl` (each
+`// Expected: trap`), and `test/native/runtime_checks/unsigned_index_and_division.kl`.
 
 ---
 

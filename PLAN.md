@@ -104,10 +104,13 @@ in user programs first, then checker/contract correctness, then tooling, then de
       is emitted as `i32 0` (wrong tuple values, an uninitialized optional payload),
       `src/codegen/emit.zig:~4481`. (qa-review 2026-09-29) (completed 2026-09-29: a hinted
       bare `None` is the hinted optional's none value)
-- [ ] Native codegen — Bugs 74 + 75: runtime checks that let undefined behavior through. A
+- [x] Native codegen — Bugs 74 + 75: runtime checks that let undefined behavior through. A
       negative `i8`/`i16` index passes the bounds check (zext) and the GEP sign-extends it
       (`src/codegen/emit.zig:9898`, `:5160`, `:9957`); integer `/` and `%` have no zero or
       MIN/-1 check (`:4570`). One branch; both fail into `emitTrap`. (qa-review 2026-09-27)
+      (completed 2026-09-30: every trapping index check is `emitCheckedIndex`, which checks
+      and addresses with one index extended by its own signedness; every integer `/`, `%`,
+      `/=` and `%=` is `emitCheckedDivRem`, which traps on a zero divisor and signed MIN / -1)
 - [ ] Platform layer — Bugs 68 + 69: `src/compat.zig` hard-codes Linux flag values that are
       wrong on macOS, so `createFile` ignores `truncate`/`exclusive` (`:525-528`; a shorter
       rewrite keeps the old tail) and `deleteTree` never removes directories (`:659`). Replace
