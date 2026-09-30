@@ -1,8 +1,13 @@
 // main.kl - two modules declare a private `type Id` with different targets; each module's
-// code reads its own (qa-review 2026-09-29, Bug 89). Returns 42 on success.
-import scoped.{ from_scoped, big_of }
+// code reads its own, in plain and generic bodies and in return types (qa-review
+// 2026-09-29, Bug 89). Returns 42 on success.
+import scoped.{ from_scoped, big_of, narrow_of, scoped_id }
 
 type Id = i64
+
+fn main_id() -> Id {
+    return 8000000004
+}
 
 fn main() -> i32 {
     let seven: i32 = 7
@@ -15,6 +20,15 @@ fn main() -> i32 {
     }
     if big_of(5) != 5.as#[i64] {
         return 3
+    }
+    if narrow_of(true, seven) != 7 {
+        return 4
+    }
+    if scoped_id() != 7 {
+        return 5
+    }
+    if main_id() != 8000000004.as#[i64] {
+        return 6
     }
     return 42
 }
