@@ -4323,6 +4323,38 @@ pub const Emitter = struct {
             .binary => |b| {
                 return self.isExprSigned(b.left);
             },
+            // A field or element carries its declared type's signedness; the runtime
+            // checks sign- or zero-extend and divide by it (Bugs 74, 75).
+            .field => |f| {
+                if (self.getStructTypeNameFromExpr(f.object)) |struct_name| {
+                    if (self.lookupFieldStructTypeName(struct_name, f.field_name)) |type_name| {
+                        return !isUnsignedIntName(type_name);
+                    }
+                }
+                return true;
+            },
+            .index => |ix| {
+                if (ix.object == .identifier) {
+                    if (self.named_values.get(ix.object.identifier.name)) |local| {
+                        const elem = local.array_element_type orelse local.list_element_type orelse return true;
+                        if (elem == .primitive and elem.primitive.isInteger()) return elem.primitive.isSigned();
+                    }
+                }
+                return true;
+            },
+            .call => |c| {
+                if (c.callee == .identifier) {
+                    if (self.type_checker) |tc| {
+                        if (tc.lookupSymbolAcrossModules(c.callee.identifier.name)) |sym| {
+                            if (sym.type_ == .function) {
+                                const ret = sym.type_.function.return_type;
+                                if (ret == .primitive and ret.primitive.isInteger()) return ret.primitive.isSigned();
+                            }
+                        }
+                    }
+                }
+                return true;
+            },
             else => return true, // Literals and other expressions default to signed
         }
     }
@@ -13407,20 +13439,20 @@ pub const Emitter = struct {
 
     /// Check if a type expression represents a signed type.
     fn isTypeExprSigned(self: *Emitter, type_expr: ast.TypeExpr) bool {
-        _ = self;
         return switch (type_expr) {
-            .named => |n| {
-                // Check for exact unsigned type names
-                if (std.mem.eql(u8, n.name, "u8")) return false;
-                if (std.mem.eql(u8, n.name, "u16")) return false;
-                if (std.mem.eql(u8, n.name, "u32")) return false;
-                if (std.mem.eql(u8, n.name, "u64")) return false;
-                if (std.mem.eql(u8, n.name, "u128")) return false;
-                if (std.mem.eql(u8, n.name, "usize")) return false;
-                return true;
-            },
+            .named => |n| !isUnsignedIntName(n.name),
+            // `*p` of a `ref u8` / `inout u8` reads the pointee's signedness.
+            .reference => |r| self.isTypeExprSigned(self.resolveAliasTypeExpr(r.inner)),
             else => true,
         };
+    }
+
+    fn isUnsignedIntName(name: []const u8) bool {
+        const unsigned_names = [_][]const u8{ "u8", "u16", "u32", "u64", "u128", "usize" };
+        for (unsigned_names) |u| {
+            if (std.mem.eql(u8, name, u)) return true;
+        }
+        return false;
     }
 
     // Runtime function declarations
