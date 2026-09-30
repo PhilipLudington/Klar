@@ -3,6 +3,7 @@
 // 200, divides by 3 to 66, and 128 / 255 is 0 with no false MIN / -1 trap.
 
 struct Holder { b: u8 }
+struct Bytes { a: [u8; 2] }
 
 fn main() -> i32 {
     var big: [i32; 256] = @repeat(0, 256)
@@ -30,5 +31,12 @@ fn main() -> i32 {
     if top.b / all != 0.as#[u8] { return 9 }
     let tops: [u8; 1] = [128.as#[u8]]
     if tops[0] % all != 128.as#[u8] { return 10 }
+
+    let hb: Bytes = Bytes { a: [200.as#[u8], 128.as#[u8]] }
+    if hb.a[0] / 3.as#[u8] != 66.as#[u8] { return 11 }
+    if big[hb.a[0]] != 42 { return 12 }
+    let m: [[u8; 2]; 2] = [[1.as#[u8], 2.as#[u8]], [200.as#[u8], 128.as#[u8]]]
+    if m[1][0] / 3.as#[u8] != 66.as#[u8] { return 13 }
+    if m[1][1] % all != 128.as#[u8] { return 14 }
     return 0
 }
