@@ -2627,3 +2627,65 @@ the "https is not supported, use http://" message never reaches a caller. No tes
 **Found by:** `~/.claude` qa-calibrate trial c3gen, Fixture 4 export of `20a5a3e` (runs
 0929-173800, 0929-174150, 0929-173426); verified at `20a5a3e` and `adde2f0`, filed through
 `.claude/inbox/`, re-read at `2ab1b84` 2026-09-29.
+
+---
+
+## [ ] Bug 95: An unsigned value read through a field, element, `for` binding or call result compares signed natively
+
+**Status:** Open
+
+**System:** native codegen — `isExprSigned` in `src/codegen/emit.zig`
+
+**Deferred:** after the current milestone. Wrong results only when an unsigned value is above
+its signed maximum; locals and parameters compare correctly, and no Phase 0 deliverable
+depends on it.
+
+**Description:** `isExprSigned` (`src/codegen/emit.zig:4272-4273`) knows the signedness of a
+local or parameter, but not of a `u8`/`u32` value reached through a struct field, an array or
+tuple element, a `for` binding or a function's return value. Those compare and divide as
+signed in native code, while the interpreter treats them as unsigned. `u32.to_string()` and
+`"{a}"` print the signed reading too. No type alias is involved.
+
+**Steps to reproduce:**
+1. `struct H { w: u32 }`, `let h: H = H { w: 3000000000 }`, `if h.w < 5.as#[u32] { return 2 }`.
+2. The same with `let arr: [u32; 2] = [3000000000, 1]` and `arr[0] < arr[1]`, a tuple
+   `t.0 < 5.as#[u32]`, `for k: u32 in arr { if k < 1 … }`, and `fn get() -> u8` returning 200
+   compared with `get() < 100.as#[u8]`.
+3. `klar build` and run each; then `klar run --interpret`.
+
+**Expected:** Each comparison is false (exit 0), and `3000000000.as#[u32].to_string()` is
+`"3000000000"`.
+
+**Actual:** Native exits 2 (field), 8 (array), 9 (tuple), 11 (`for`) and 2 (call result);
+the interpreter exits 0. `to_string()` prints `-1294967296`.
+
+**Found by:** /qa-review on fix/bug-89-type-alias-lowering, 2026-09-29 — GenA, GenB (probes
+`scratch/gb89/b_holder_w.kl`, `b_arr.kl`, `b_tup.kl`, `b_forb.kl`, `tostr.kl`,
+`scratch/qa89a/ret_ctl.kl`) — reviewer's evidence, not re-read.
+
+---
+
+## [ ] Bug 96: A field read on a `List` index (`ps[0].y`) fails native build with `UnsupportedFeature`
+
+**Status:** Open
+
+**System:** native codegen — field access in `src/codegen/emit.zig`
+
+**Deferred:** after the current milestone. The build refuses rather than miscompiling, and
+copying the element to a local first works.
+
+**Description:** Reading a field straight off a `List#[Point]` index fails the native build,
+because the chained field reader cannot find the element's struct type. The interpreter runs
+the same program. An alias makes no difference.
+
+**Steps to reproduce:**
+1. `struct Point { x: i64, y: i64 }`, `var ps: List#[Point] = List.new#[Point]()`,
+   `ps.push(Point { x: 1, y: 2 })`, `if ps[0].y != 2 { return 1 }`.
+2. `klar build` the file.
+
+**Expected:** It builds and exits 0.
+
+**Actual:** `Codegen error: UnsupportedFeature`.
+
+**Found by:** /qa-review on fix/bug-89-type-alias-lowering, 2026-09-29 — GenB (probes
+`scratch/gb89/b_listq.kl`, `p_listq.kl`) — reviewer's evidence, not re-read.

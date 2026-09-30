@@ -294,3 +294,25 @@ does not hash), a generic `fn f#[T]` with a `for` binding, `rxl[0].recv()` over
 `List#[Receiver#[i64]]`, and `txs[0].close()` followed by a `recv` that returns `None`.
 
 **Found by:** /qa-review WATCH [test-coverage] on `src/codegen/emit.zig`, seen on fix/bug-83-sender-param, fix/bug-86-channel-field-alias and fix/bug-90-channel-index-for (2026-09-29) — TestCov, GenA — reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 16: `fn main(args: Args)` with `type Args = [String]` may not get the args wrapper
+
+**Kind:** latent-defect
+**Where:** `src/codegen/emit.zig` — `is_main_with_args` and the prototype's slice split (`:1551-1553`, `:1583`)
+**Due when:** touching `is_main_with_args` or the `declareFunctionPrototype` parameter loop in `src/codegen/emit.zig`
+
+**Description:** `is_main_with_args` and the prototype's slice split test
+`func.params[0].type_` by its spelling, while `emitFunction` now tests the alias-resolved
+`param_type`. They agree today because both check `is_main_with_args` first, but a `main`
+whose parameter is an alias of `[String]` would not be recognised as taking args.
+
+**Payment:** Build `type Args = [String]` / `fn main(args: Args) -> i32 { return args.len() }`
+and run it with two arguments. If it does not return 3, resolve the alias in
+`is_main_with_args` with `resolveAliasTypeExpr` and add the program as a native test.
+
+**Found by:** /qa-review WATCH [correctness] on `src/codegen/emit.zig`, promoted at its fifth
+sighting (ci-baseline-zig-016, fix/bug-83-sender-param, fix/bug-86-channel-field-alias,
+fix/bug-90-channel-index-for, fix/bug-89-type-alias-lowering, 2026-09-29) — GenA — reviewer's
+reading, not re-verified.
