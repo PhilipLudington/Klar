@@ -2466,9 +2466,9 @@ evidence (probes in the review scratchpad), not re-read.
 
 ---
 
-## [ ] Bug 90: A channel endpoint reached by an index or a `for` binding is not an endpoint
+## [x] Bug 90: A channel endpoint reached by an index or a `for` binding is not an endpoint
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** Native channels — `isSenderExpr` / `getSenderElementType` in `src/codegen/emit.zig`
 
@@ -2489,6 +2489,15 @@ binding's send is dropped and `recv` reads the sentinel (exit 1).
 
 **Found by:** /qa-review on fix/bug-86-channel-field-alias, 2026-09-29 — GenA — reviewer's
 evidence (probes `arr.kl`, `forl.kl`), not re-read.
+
+**Fix:** `localPathType` (`src/codegen/emit.zig`), the declared-type reader behind Bug 86's
+one path `channelEndpointOf`, now reads an index of an array, a slice or a List as the
+element type, so `txs[0]`, `s[0]` on a slice parameter, `fleet.txs[0]` and `ws[0].tx` resolve
+like any field path. A `for` binding over an array, slice, List or Set records its annotated
+type (which the parser requires) as its `semantic_type`, as a `let` does, and a `for (k, v)`
+over a Map records the Map's key and value types.
+
+**Test:** `test/native/channel_index_endpoints.kl`
 
 ---
 
@@ -2515,3 +2524,56 @@ feature works in all three backends.
 
 **Found by:** /qa-review on fix/bug-86-channel-field-alias, 2026-09-29 — GenB — reviewer's
 evidence (`--interpret` runs of the three channel tests), not re-read.
+
+---
+
+## [ ] Bug 92: Checking `channel_create` leaks the tuple's element slice
+
+**Status:** Open
+
+**System:** type checker — `checkCallImpl` in `src/checker/checker.zig`
+
+**Deferred:** after the current milestone. A debug-allocator leak report at compile time;
+the compiled program is correct and no Phase 0 deliverable depends on it.
+
+**Description:** The `channel_create` case dupes `tuple_elems` with `self.allocator`
+(`src/checker/checker.zig:3880`) and passes it to `type_builder.tupleType`, which copies the
+elements into its own arena (`src/types.zig:809`). The first copy is never freed.
+
+**Steps to reproduce:**
+1. `klar build test/native/channel_index_endpoints.kl` (any program that calls `channel_create`).
+
+**Expected:** No leak report.
+
+**Actual:** `error(DebugAllocator): memory address … leaked`, from `checkCallImpl`.
+
+**Found by:** /qa-review on fix/bug-90-channel-index-for, 2026-09-29 — GenA; verified by
+reading `src/checker/checker.zig:3880` and `src/types.zig:807-811`.
+
+---
+
+## [ ] Bug 93: A `ref` array parameter cannot be indexed
+
+**Status:** Open
+
+**System:** type checker — index and for-iterable checks in `src/checker/`
+
+**Deferred:** after the current milestone. Passing the array by value, or iterating a local,
+works; no Phase 0 deliverable indexes through a `ref` parameter.
+
+**Description:** Indexing a parameter of type `ref [T; N]` types as `?unknown`, so the
+function is rejected. Indexing or iterating a `ref List#[T]` parameter is rejected the same
+way (`cannot index this type`, `cannot iterate over this type`). Codegen already unwraps a
+`.reference` in `elementTypeOf` for channel endpoints, but that path is unreachable until the
+checker accepts the form.
+
+**Steps to reproduce:**
+1. `fn first(xs: ref [i32; 2]) -> i32 { return xs[0] }`, called as `first(ref a)`.
+2. `klar check` the file.
+
+**Expected:** It checks, and `first` returns `a[0]`.
+
+**Actual:** `return type mismatch: expected i32, got ?unknown` at `xs[0]`.
+
+**Found by:** /qa-review on fix/bug-90-channel-index-for, 2026-09-29 — GenA (probe
+`scratch/b90/refparam.kl`); verified with `scratch/rv/refidx.kl`.

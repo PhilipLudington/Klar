@@ -277,3 +277,20 @@ then `tx.send(Some(7))` on a `Sender#[?i64]`, asserting both on the receiving si
 and `map.zig`, before or as part of the Bug 85-87 fixes, so their new code lands there.
 
 **Found by:** /qa-review WATCH [file-growth], seen on ci-baseline-zig-016, fix/bug-79-integration-crash and fix/bug-83-sender-param (2026-09-27 to 2026-09-29) — Growth — reviewer's reading, not re-verified.
+
+## [ ] Debt 15: Channel endpoint paths through a Set loop, a generic `for` binding and a Receiver index are untested
+
+**Kind:** test-gap
+**Where:** `src/codegen/emit.zig` — `emitForLoopSet` binding `semantic_type`, `forBindingType`, `localPathType`'s `.index` arm
+**Due when:** touching `localPathType`, `forBindingType` or the `emitForLoop*` emitters in `src/codegen/emit.zig`
+
+**Description:** `test/native/channel_index_endpoints.kl` pins Sender sends through array and
+List indexes and loops. A `for` over a `Set` of endpoints, a `for t: Sender#[T]` binding inside
+a generic function, a Receiver reached by a List index, and `close()` through an index are
+not covered, so a regression on those paths would pass the suite.
+
+**Payment:** Add cases to `channel_index_endpoints.kl`: a Set loop (or record that a Sender
+does not hash), a generic `fn f#[T]` with a `for` binding, `rxl[0].recv()` over
+`List#[Receiver#[i64]]`, and `txs[0].close()` followed by a `recv` that returns `None`.
+
+**Found by:** /qa-review WATCH [test-coverage] on `src/codegen/emit.zig`, seen on fix/bug-83-sender-param, fix/bug-86-channel-field-alias and fix/bug-90-channel-index-for (2026-09-29) — TestCov, GenA — reviewer's reading, not re-verified.
