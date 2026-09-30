@@ -78,9 +78,9 @@ in user programs first, then checker/contract correctness, then tooling, then de
 - [x] native codegen — Bug 89: a non-channel type alias lowers to `i32` in `namedTypeToLLVM`
       (`src/codegen/emit.zig:7418-7433`): `type Id = i64` parameters fail verification and
       `type P = (i64, i64)` then `pair.0` segfaults the compiler. (qa-review 2026-09-29)
-      (completed 2026-09-29: an alias lowers as the type it names, and every `let`, `var`
-      and parameter resolves its declared type once, so a struct, unsigned or string alias
-      also reads as its target)
+      (completed 2026-09-29: an alias lowers as the type it names, scoped to its module;
+      every `let`, `var`, parameter, struct field and cast target resolves its declared
+      type, so a struct, unsigned or string alias also reads as its target)
 - [x] Native channels — Bugs 86 + 87: a `Sender` reached through a struct or tuple field
       (`w.tx.send(v)`, `src/codegen/emit.zig:31095`), or declared through a type alias
       (`getChannelTypeInfo`, `:7786`), is not recognised as an endpoint. The send is dropped

@@ -3296,7 +3296,9 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
 
     // Register all struct declarations first so their types are available
     // when declaring monomorphized function signatures (for all modules)
-    for (modules_to_emit.items) |mod_to_emit| {
+    // Each module's type aliases are recorded under its own prefix.
+    for (modules_to_emit.items, 0..) |mod_to_emit, i| {
+        emitter.setModulePrefix(module_prefixes.items[i]);
         emitter.registerAllStructDecls(mod_to_emit) catch |err| {
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Codegen error (struct registration): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
@@ -3304,6 +3306,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             return;
         };
     }
+    emitter.setModulePrefix(null);
 
     // Register monomorphized struct types BEFORE emitModule
     // so struct literals can find them

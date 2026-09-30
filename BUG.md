@@ -2464,19 +2464,21 @@ The second segfaults the compiler in `LLVMStructGetTypeAtIndex` (`emitFieldAcces
 **Found by:** /qa-review on fix/bug-86-channel-field-alias, 2026-09-29 — GenA — reviewer's
 evidence (probes in the review scratchpad), not re-read.
 
-**Fix:** The emitter records every non-generic `type Name = T` (`registerTypeAlias`, from
-`registerAllStructDecls`), and `resolveAliasTypeExpr` follows a named type through its
-aliases. `namedTypeToLLVM` lowers an alias as the type expression it names. The `let` and
-`var` arms of `emitStmt`, and the parameter loops of `emitFunction` and `emitImplMethods`
-(a `ref` parameter's inner type included), resolve the declared type once, so the struct
-name, signedness, string, array and collection readers below them see the named type.
-Reading the code turned up the same cause past the LLVM type: a struct alias lost its field
-names (`UnsupportedFeature`), an unsigned alias compared and divided as signed, and a
+**Fix:** The emitter records every non-generic `type Name = T` under its module
+(`registerTypeAlias`, from `registerAllStructDecls`; a `pub` alias also by bare name, for
+an importer), and `resolveAliasTypeExpr` follows a named type through its aliases.
+`namedTypeToLLVM` lowers an alias as the type expression it names. These sites resolve the
+declared type: the `let` and `var` arms of `emitStmt`, the parameter loops of
+`emitFunction` and `emitImplMethods` (a `ref` parameter's inner type included), a struct
+field's recorded type name, and a cast's target in `emitTypeCast` and `isExprSigned`. The
+struct name, signedness, string, array and collection readers below them see the named
+type. Reading the code turned up the same cause past the LLVM type: a struct alias lost its
+field names (`UnsupportedFeature`), an unsigned alias compared and divided as signed, and a
 string alias local read `len()` as 0. The duplicate signedness reader `isTypeSigned` is
-gone, its callers on `isTypeExprSigned`.
+gone, its callers on `isTypeExprSigned`. A generic alias is still unrecorded.
 
 **Test:** `test/native/type_alias_lowering.kl`, `test/native/type_alias_readers.kl`,
-`test/native/type_alias_declarations.kl`
+`test/native/type_alias_declarations.kl`, `test/module/type_alias_scope/`
 
 ---
 

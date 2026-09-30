@@ -171,9 +171,11 @@ pub const Emitter = struct {
 
     /// Cache of LLVM struct types by name.
     struct_types: std.StringHashMap(StructTypeInfo),
-    /// Non-generic `type Name = T` declarations, by name, so a named type that is an alias
-    /// lowers as the type expression it names (`resolveAliasTypeExpr`).
+    /// Non-generic `type Name = T` declarations, keyed `<module prefix>::<name>` (the entry
+    /// module's prefix is empty), so two modules' private `type Id` never collide.
     type_aliases: std.StringHashMap(ast.TypeExpr),
+    /// `pub` aliases by bare name: the fallback for an alias imported from another module.
+    pub_type_aliases: std.StringHashMap(ast.TypeExpr),
     /// Layout calculator for composite types.
     layout_calc: layout.LayoutCalculator,
     /// Counter for generating unique closure names.
@@ -458,6 +460,7 @@ pub const Emitter = struct {
             .umul_overflow_id = null,
             .struct_types = std.StringHashMap(StructTypeInfo).init(allocator),
             .type_aliases = std.StringHashMap(ast.TypeExpr).init(allocator),
+            .pub_type_aliases = std.StringHashMap(ast.TypeExpr).init(allocator),
             .layout_calc = layout.LayoutCalculator.init(allocator, platform),
             .closure_counter = 0,
             .closure_types = std.StringHashMap(ClosureTypeInfo).init(allocator),
@@ -690,7 +693,10 @@ pub const Emitter = struct {
             }
         }
         self.struct_types.deinit();
+        var alias_keys = self.type_aliases.keyIterator();
+        while (alias_keys.next()) |key| self.allocator.free(key.*);
         self.type_aliases.deinit();
+        self.pub_type_aliases.deinit();
         // Free closure type info allocations
         var cit = self.closure_types.valueIterator();
         while (cit.next()) |info| {
@@ -1514,11 +1520,30 @@ pub const Emitter = struct {
         }
     }
 
-    /// Record a non-generic type alias, so every reader of a named type sees the type it
-    /// names. A generic alias needs its arguments substituted and is left unrecorded.
+    /// Record a non-generic type alias under the current module, so the declaration sites
+    /// that call `resolveAliasTypeExpr` see the type it names. A generic alias needs its
+    /// arguments substituted and is left unrecorded.
     fn registerTypeAlias(self: *Emitter, alias: *ast.TypeAlias) EmitError!void {
         if (alias.type_params.len > 0) return;
-        self.type_aliases.put(alias.name, alias.target) catch return EmitError.OutOfMemory;
+        const key = std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ self.current_module_prefix orelse "", alias.name }) catch return EmitError.OutOfMemory;
+        const slot = self.type_aliases.getOrPut(key) catch {
+            self.allocator.free(key);
+            return EmitError.OutOfMemory;
+        };
+        if (slot.found_existing) self.allocator.free(key);
+        slot.value_ptr.* = alias.target;
+        if (alias.is_pub) {
+            self.pub_type_aliases.put(alias.name, alias.target) catch return EmitError.OutOfMemory;
+        }
+    }
+
+    /// The alias `name` names in the module being emitted, else a `pub` alias of that name.
+    fn lookupTypeAlias(self: *const Emitter, name: []const u8) ?ast.TypeExpr {
+        var buf: [256]u8 = undefined;
+        if (std.fmt.bufPrint(&buf, "{s}::{s}", .{ self.current_module_prefix orelse "", name })) |key| {
+            if (self.type_aliases.get(key)) |aliased| return aliased;
+        } else |_| {}
+        return self.pub_type_aliases.get(name);
     }
 
     /// The type expression a named alias stands for, followed through a chain of aliases
@@ -1529,7 +1554,7 @@ pub const Emitter = struct {
         var depth: u32 = 0;
         while (depth < 32) : (depth += 1) {
             if (current != .named) return current;
-            const aliased = self.type_aliases.get(current.named.name) orelse return current;
+            const aliased = self.lookupTypeAlias(current.named.name) orelse return current;
             current = aliased;
         }
         return current;
@@ -4270,7 +4295,7 @@ pub const Emitter = struct {
                 return true;
             },
             .type_cast => |tc| {
-                return self.isTypeExprSigned(tc.target_type);
+                return self.isTypeExprSigned(self.resolveAliasTypeExpr(tc.target_type));
             },
             .grouped => |g| {
                 return self.isExprSigned(g.expr);
@@ -5592,8 +5617,8 @@ pub const Emitter = struct {
         const src_type = llvm.typeOf(value);
         const src_kind = llvm.getTypeKind(src_type);
 
-        // Get target type name
-        const target_type_name: []const u8 = switch (cast.target_type) {
+        // Get target type name (an alias casts to the type it names)
+        const target_type_name: []const u8 = switch (self.resolveAliasTypeExpr(cast.target_type)) {
             .named => |n| n.name,
             else => return value, // Non-named types pass through
         };
@@ -7424,7 +7449,7 @@ pub const Emitter = struct {
         }
 
         // A type alias lowers as the type expression it names.
-        if (self.type_aliases.get(name)) |aliased| {
+        if (self.lookupTypeAlias(name)) |aliased| {
             return self.typeExprToLLVM(self.resolveAliasTypeExpr(aliased)) catch llvm.Types.pointer(self.ctx);
         }
 
@@ -9667,8 +9692,8 @@ pub const Emitter = struct {
             field_types.append(self.allocator, field_llvm_type) catch return EmitError.OutOfMemory;
             field_indices[i] = @intCast(i);
             field_names[i] = field.name;
-            // Extract Klar-level type name for struct/enum field types
-            field_type_names[i] = switch (field.type_) {
+            // Extract Klar-level type name for struct/enum field types (through an alias)
+            field_type_names[i] = switch (self.resolveAliasTypeExpr(field.type_)) {
                 .named => |n| n.name,
                 .generic_apply => |g| switch (g.base) {
                     .named => |n| n.name,
