@@ -1,0 +1,53 @@
+// Bug 89, the readers past the LLVM type: codegen read a named type by its spelling, so
+// an alias of a struct lost its field names (the build failed with UnsupportedFeature) and
+// an alias of an unsigned integer compared and divided as signed. Each case returns its
+// own exit code.
+struct Point { x: i64, y: i64 }
+
+type Q = Point
+
+type Byte = u8
+
+type Word = u32
+
+fn y_of(q: Q) -> i64 {
+    return q.y
+}
+
+fn is_high(b: Byte) -> bool {
+    return b > 127.as#[u8]
+}
+
+fn main() -> i32 {
+    // A struct alias local reads its fields by name.
+    let q: Q = Point { x: 1.as#[i64], y: 4000000009.as#[i64] }
+    if q.y != 4000000009.as#[i64] {
+        return 1
+    }
+
+    // A struct alias parameter reads its fields by name.
+    if y_of(q) != 4000000009.as#[i64] {
+        return 2
+    }
+
+    // An unsigned alias parameter compares as unsigned.
+    let b: Byte = 200
+    if not is_high(b) {
+        return 3
+    }
+
+    // An unsigned alias local compares as unsigned.
+    let lim: Byte = 128
+    if b < lim {
+        return 4
+    }
+
+    // An unsigned alias local divides as unsigned.
+    let w: Word = 3000000000
+    let half: Word = w / 2.as#[u32]
+    if half != 1500000000.as#[u32] {
+        return 5
+    }
+
+    return 0
+}
