@@ -115,6 +115,10 @@ in user programs first, then checker/contract correctness, then tooling, then de
       wrong on macOS, so `createFile` ignores `truncate`/`exclusive` (`:525-528`; a shorter
       rewrite keeps the old tail) and `deleteTree` never removes directories (`:659`). Replace
       every literal with `std.c.O{…}` / `std.c.AT.REMOVEDIR`. (qa-review 2026-09-26)
+- [ ] Array-to-slice coercion — Bug 97: `let s: [i32] = arr` and `= @repeat(…)` store the
+      array's bytes into the slice slot, because only an array literal goes through
+      `convertArrayToSlice` (`src/codegen/emit.zig` ~2636, ~2807, ~9901); the program
+      crashes (SIGBUS) or reads a wrong length. (found: Builder 2026-09-30, Bug 74's test)
 - [x] Bugs 15 + 16 + 17 — GC: allocation no longer collects; the VM collects at the top of each
       instruction (`GC.collectIfRequested`), and `markValue` traces Future payloads. Stress-GC
       runs live in the unit tests (`src/vm_gc_test.zig`); the runner flag stays the Phase 0 task

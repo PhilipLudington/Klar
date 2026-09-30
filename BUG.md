@@ -2722,3 +2722,35 @@ the same program. An alias makes no difference.
 
 **Found by:** /qa-review on fix/bug-89-type-alias-lowering, 2026-09-29 — GenB (probes
 `scratch/gb89/b_listq.kl`, `p_listq.kl`) — reviewer's evidence, not re-read.
+
+---
+
+## [ ] Bug 97: An array variable or `@repeat` assigned to a slice is not converted natively — `let s: [i32] = arr` crashes
+
+**Status:** Open
+
+**System:** array-to-slice coercion — the `let` and `var` declaration paths in
+`src/codegen/emit.zig` (`is_slice_decl and is_array_literal_value`, ~2636 and ~2807) and
+the slice-typed struct field path (~9901), which call `convertArrayToSlice` only for an
+array literal
+
+**Description:** A slice-typed declaration converts its value to `{ ptr, len }` only when
+the value is an array literal. Any other array value, such as an array variable or an
+`@repeat(...)`, takes the normal path and stores the array's bytes straight into the slice
+slot, so the slice's pointer and length are the array's first elements. The interpreter runs
+both programs correctly.
+
+**Steps to reproduce:**
+1. `let arr: [i32; 3] = [1, 2, 3]`, `let s: [i32] = arr`, `if s.len() != 3 { return 1 }`,
+   `if s[2] != 3 { return 2 }`, `return 0`.
+2. The same with `let s: [i32] = @repeat(7, 3)` and `if s.len() != 3 { return 1 }`.
+3. `klar build` each and run; then `klar run --interpret`.
+
+**Expected:** Both exit 0, as they do under `--interpret`.
+
+**Actual:** The array variable exits 138 (SIGBUS); `@repeat` exits 1 (the length is wrong).
+With `var arr: [i32; 300]` the same line exits 139 or 133 depending on size (probes
+`scratch/probe74/coerce.kl`, `rep.kl`, `sl*.kl`, macOS arm64, 2026-09-30).
+
+**Found by:** Builder on fix/bug-74-75-runtime-checks, 2026-09-30, writing Bug 74's slice
+test; verified by probe.
