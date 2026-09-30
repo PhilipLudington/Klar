@@ -2440,9 +2440,9 @@ take `{ i1, i32 }`.
 
 ---
 
-## [ ] Bug 89: A non-channel type alias lowers to `i32` — wrong-width parameters and a compiler segfault
+## [x] Bug 89: A non-channel type alias lowers to `i32` — wrong-width parameters and a compiler segfault
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** native codegen — `namedTypeToLLVM` in `src/codegen/emit.zig`
 
@@ -2463,6 +2463,20 @@ The second segfaults the compiler in `LLVMStructGetTypeAtIndex` (`emitFieldAcces
 
 **Found by:** /qa-review on fix/bug-86-channel-field-alias, 2026-09-29 — GenA — reviewer's
 evidence (probes in the review scratchpad), not re-read.
+
+**Fix:** The emitter records every non-generic `type Name = T` (`registerTypeAlias`, from
+`registerAllStructDecls`), and `resolveAliasTypeExpr` follows a named type through its
+aliases. `namedTypeToLLVM` lowers an alias as the type expression it names. The `let` and
+`var` arms of `emitStmt`, and the parameter loops of `emitFunction` and `emitImplMethods`
+(a `ref` parameter's inner type included), resolve the declared type once, so the struct
+name, signedness, string, array and collection readers below them see the named type.
+Reading the code turned up the same cause past the LLVM type: a struct alias lost its field
+names (`UnsupportedFeature`), an unsigned alias compared and divided as signed, and a
+string alias local read `len()` as 0. The duplicate signedness reader `isTypeSigned` is
+gone, its callers on `isTypeExprSigned`.
+
+**Test:** `test/native/type_alias_lowering.kl`, `test/native/type_alias_readers.kl`,
+`test/native/type_alias_declarations.kl`
 
 ---
 
@@ -2577,3 +2591,39 @@ checker accepts the form.
 
 **Found by:** /qa-review on fix/bug-90-channel-index-for, 2026-09-29 — GenA (probe
 `scratch/b90/refparam.kl`); verified with `scratch/rv/refidx.kl`.
+
+---
+
+## [ ] Bug 94: `http_client` lets `"https://"`, `"http://"` and an uppercase `HTTPS://` through, and hides the https message
+
+**Status:** Open
+
+**System:** HTTP stdlib URL parsing — `parse_url` and `http_request` in `stdlib/http_client.kl`
+
+**Deferred:** after the current milestone — a malformed URL or an uppercase scheme; no crash,
+and no Phase 0 deliverable fetches over HTTP.
+
+**Description:** `parse_url` (`stdlib/http_client.kl:46-56`) rejects `https://` only when
+`url.len() > 8`, so the exact string `"https://"` falls through to host parsing and comes
+back `Ok` with host `https` and path `//`. The `http://` strip uses the same `>` where `>=` is
+meant, so a bare `"http://"` keeps its scheme as the host. The prefix compare is
+case-sensitive, so `HTTPS://host/` parses to host `HTTPS` and reaches `tcp_connect`. And
+`http_request` (`:163-165`) replaces every `parse_url` error with `"invalid URL: " + url`, so
+the "https is not supported, use http://" message never reaches a caller. No test calls
+`http_get` with an `https://` URL.
+
+**Steps to reproduce:**
+1. A copy of `parse_url` under `klar run`: call it with `"https://"`, `"https://x"` and
+   `"HTTPS://x/"`.
+2. `http_get("https://example.com/")` and print the error.
+
+**Expected:** Each of the three is `Err("https is not supported, use http://")`, and
+`http_get` returns that message.
+
+**Actual:** (probe 2026-09-29) `parse_url("https://")` → `Ok(host=https, path=//)`;
+`parse_url("https://x")` → `Err("https is not supported, use http://")`. By reading HEAD
+`2ab1b84`: `HTTPS://x/` → `Ok(host=HTTPS)`, and `http_get` returns `"invalid URL: …"`.
+
+**Found by:** `~/.claude` qa-calibrate trial c3gen, Fixture 4 export of `20a5a3e` (runs
+0929-173800, 0929-174150, 0929-173426); verified at `20a5a3e` and `adde2f0`, filed through
+`.claude/inbox/`, re-read at `2ab1b84` 2026-09-29.

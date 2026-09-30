@@ -171,6 +171,9 @@ pub const Emitter = struct {
 
     /// Cache of LLVM struct types by name.
     struct_types: std.StringHashMap(StructTypeInfo),
+    /// Non-generic `type Name = T` declarations, by name, so a named type that is an alias
+    /// lowers as the type expression it names (`resolveAliasTypeExpr`).
+    type_aliases: std.StringHashMap(ast.TypeExpr),
     /// Layout calculator for composite types.
     layout_calc: layout.LayoutCalculator,
     /// Counter for generating unique closure names.
@@ -454,6 +457,7 @@ pub const Emitter = struct {
             .usub_overflow_id = null,
             .umul_overflow_id = null,
             .struct_types = std.StringHashMap(StructTypeInfo).init(allocator),
+            .type_aliases = std.StringHashMap(ast.TypeExpr).init(allocator),
             .layout_calc = layout.LayoutCalculator.init(allocator, platform),
             .closure_counter = 0,
             .closure_types = std.StringHashMap(ClosureTypeInfo).init(allocator),
@@ -686,6 +690,7 @@ pub const Emitter = struct {
             }
         }
         self.struct_types.deinit();
+        self.type_aliases.deinit();
         // Free closure type info allocations
         var cit = self.closure_types.valueIterator();
         while (cit.next()) |info| {
@@ -750,12 +755,7 @@ pub const Emitter = struct {
         try self.registerBuiltinStructTypes();
 
         // First pass: collect struct declarations for field name resolution
-        for (module.declarations) |decl| {
-            switch (decl) {
-                .struct_decl => |s| try self.registerStructDecl(s),
-                else => {},
-            }
-        }
+        try self.registerAllStructDecls(module);
 
         // Second pass: declare all functions (including methods from impl blocks)
         try self.declareModuleFunctions(module);
@@ -1508,9 +1508,31 @@ pub const Emitter = struct {
         for (module.declarations) |decl| {
             switch (decl) {
                 .struct_decl => |s| try self.registerStructDecl(s),
+                .type_alias => |a| try self.registerTypeAlias(a),
                 else => {},
             }
         }
+    }
+
+    /// Record a non-generic type alias, so every reader of a named type sees the type it
+    /// names. A generic alias needs its arguments substituted and is left unrecorded.
+    fn registerTypeAlias(self: *Emitter, alias: *ast.TypeAlias) EmitError!void {
+        if (alias.type_params.len > 0) return;
+        self.type_aliases.put(alias.name, alias.target) catch return EmitError.OutOfMemory;
+    }
+
+    /// The type expression a named alias stands for, followed through a chain of aliases
+    /// (`type Id2 = Id`, `type Id = i64` gives `i64`). Any other type expression is
+    /// returned as it is. The depth bound stops a cycle the checker let through.
+    fn resolveAliasTypeExpr(self: *const Emitter, type_expr: ast.TypeExpr) ast.TypeExpr {
+        var current = type_expr;
+        var depth: u32 = 0;
+        while (depth < 32) : (depth += 1) {
+            if (current != .named) return current;
+            const aliased = self.type_aliases.get(current.named.name) orelse return current;
+            current = aliased;
+        }
+        return current;
     }
 
     fn declareFunction(self: *Emitter, func: *ast.FunctionDecl) EmitError!void {
@@ -1973,8 +1995,10 @@ pub const Emitter = struct {
 
             // Add parameters to named values
             for (method.params, 0..) |param, i| {
+                // An alias is read as the type it names by every reader below (Bug 89).
+                const param_type = self.resolveAliasTypeExpr(param.type_);
                 const param_value = llvm.getParam(function, @intCast(i));
-                const param_ty = try self.typeExprToLLVM(param.type_);
+                const param_ty = try self.typeExprToLLVM(param_type);
 
                 const param_name = self.allocator.dupeZ(u8, param.name) catch return EmitError.OutOfMemory;
                 defer self.allocator.free(param_name);
@@ -1983,11 +2007,11 @@ pub const Emitter = struct {
                 _ = self.builder.buildStore(param_value, alloca);
 
                 // Determine if parameter is signed
-                const is_signed = self.isTypeExprSigned(param.type_);
+                const is_signed = self.isTypeExprSigned(param_type);
 
                 // For struct type parameters, record the struct type name for field resolution
                 // For reference parameters (&Self or &mut Self), extract the inner struct name
-                const param_struct_name: ?[]const u8 = switch (param.type_) {
+                const param_struct_name: ?[]const u8 = switch (param_type) {
                     .named => |n| n.name,
                     .reference => |ref| blk: {
                         // For self parameter, use the impl block's struct name
@@ -1995,7 +2019,7 @@ pub const Emitter = struct {
                             break :blk struct_name;
                         }
                         // For other reference params, try to get inner type name
-                        break :blk switch (ref.inner) {
+                        break :blk switch (self.resolveAliasTypeExpr(ref.inner)) {
                             .named => |n| n.name,
                             else => null,
                         };
@@ -2004,7 +2028,7 @@ pub const Emitter = struct {
                 };
 
                 // Check if this is a reference parameter
-                const is_ref = param.type_ == .reference;
+                const is_ref = param_type == .reference;
                 const ref_inner_type: ?llvm.TypeRef = if (is_ref) blk: {
                     // For self parameter, use the struct type from struct_name directly
                     // This handles the case where the type is "Self" which isn't a registered type
@@ -2013,18 +2037,18 @@ pub const Emitter = struct {
                             break :blk struct_info.llvm_type;
                         }
                     }
-                    break :blk try self.typeExprToLLVM(param.type_.reference.inner);
+                    break :blk try self.typeExprToLLVM(param_type.reference.inner);
                 } else null;
 
                 // Check if this is an array type parameter (for field access on array elements)
-                const is_array = param.type_ == .array or param.type_ == .slice;
-                const array_info = self.getArrayTypeInfo(param.type_);
+                const is_array = param_type == .array or param_type == .slice;
+                const array_info = self.getArrayTypeInfo(param_type);
 
                 // Check collection type metadata for List/Map/Set parameters
-                const list_element_type = self.getListTypeInfo(param.type_);
-                const map_info = self.getMapTypeInfo(param.type_);
-                const set_info = self.getSetTypeInfo(param.type_);
-                const is_string_data = self.isTypeStringData(param.type_);
+                const list_element_type = self.getListTypeInfo(param_type);
+                const map_info = self.getMapTypeInfo(param_type);
+                const set_info = self.getSetTypeInfo(param_type);
+                const is_string_data = self.isTypeStringData(param_type);
 
                 self.named_values.put(param.name, .{
                     .value = alloca,
@@ -2044,7 +2068,7 @@ pub const Emitter = struct {
                     .is_set = set_info != null,
                     .set_element_type = set_info,
                     .is_string_data = is_string_data,
-                    .semantic_type = self.resolveMethodParamType(param.type_, struct_name),
+                    .semantic_type = self.resolveMethodParamType(param_type, struct_name),
                 }) catch return EmitError.OutOfMemory;
             }
 
@@ -2287,8 +2311,10 @@ pub const Emitter = struct {
         var llvm_param_idx: u32 = param_offset;
         var ast_param_idx: u32 = 0;
         for (func.params) |param| {
+            // An alias is read as the type it names by every reader below (Bug 89).
+            const param_type = self.resolveAliasTypeExpr(param.type_);
             defer ast_param_idx += 1;
-            const param_ty = try self.typeExprToLLVM(param.type_);
+            const param_ty = try self.typeExprToLLVM(param_type);
 
             // Allocate stack space for parameter
             const param_name = self.allocator.dupeZ(u8, param.name) catch return EmitError.OutOfMemory;
@@ -2296,7 +2322,7 @@ pub const Emitter = struct {
 
             // For main(args: [String]), the slice was split into two scalar LLVM params (ptr, i64).
             // Reconstruct the slice struct from the two separate parameters.
-            const alloca = if (is_main_with_args and param.type_ == .slice) blk: {
+            const alloca = if (is_main_with_args and param_type == .slice) blk: {
                 const slice_type = self.getSliceStructType();
                 const a = self.builder.buildAlloca(slice_type, param_name);
                 const ptr_val = llvm.getParam(function, llvm_param_idx);
@@ -2327,13 +2353,13 @@ pub const Emitter = struct {
                 }
             };
 
-            const is_signed = self.isTypeSigned(param.type_);
+            const is_signed = self.isTypeExprSigned(param_type);
 
             // For struct type parameters, record the struct type name for field resolution
             // For reference parameters, we need to track that the alloca contains a pointer
-            const param_struct_name: ?[]const u8 = switch (param.type_) {
+            const param_struct_name: ?[]const u8 = switch (param_type) {
                 .named => |n| n.name,
-                .reference => |ref| switch (ref.inner) {
+                .reference => |ref| switch (self.resolveAliasTypeExpr(ref.inner)) {
                     .named => |n| n.name,
                     else => null,
                 },
@@ -2341,27 +2367,27 @@ pub const Emitter = struct {
             };
 
             // Check if this is a reference parameter
-            const is_ref = param.type_ == .reference;
+            const is_ref = param_type == .reference;
             const ref_inner_type: ?llvm.TypeRef = if (is_ref) blk: {
                 // Get the LLVM type for the pointed-to struct
-                break :blk try self.typeExprToLLVM(param.type_.reference.inner);
+                break :blk try self.typeExprToLLVM(param_type.reference.inner);
             } else null;
 
             // Check if this is an array type parameter (for field access on array elements)
-            const is_array = param.type_ == .array or param.type_ == .slice;
-            const array_info = self.getArrayTypeInfo(param.type_);
+            const is_array = param_type == .array or param_type == .slice;
+            const array_info = self.getArrayTypeInfo(param_type);
 
             // Check if this is a string type parameter
-            const is_string = self.isTypeString(param.type_);
+            const is_string = self.isTypeString(param_type);
 
             // Check collection type metadata for List/Map/Set parameters
-            const list_element_type = self.getListTypeInfo(param.type_);
-            const map_info = self.getMapTypeInfo(param.type_);
-            const set_info = self.getSetTypeInfo(param.type_);
-            const is_string_data = self.isTypeStringData(param.type_);
+            const list_element_type = self.getListTypeInfo(param_type);
+            const map_info = self.getMapTypeInfo(param_type);
+            const set_info = self.getSetTypeInfo(param_type);
+            const is_string_data = self.isTypeStringData(param_type);
 
             // Resolve semantic type for type checking (needed for char.to_string(), etc.)
-            const semantic_type = self.resolveTypeExprDirect(param.type_);
+            const semantic_type = self.resolveTypeExprDirect(param_type);
 
             // Check if this is an extern fn type (C function pointer)
             const is_extern_fn = if (semantic_type) |st| st == .extern_fn else false;
@@ -2558,14 +2584,16 @@ pub const Emitter = struct {
 
         switch (stmt) {
             .let_decl => |decl| {
+                // An alias is read as the type it names by every reader below (Bug 89).
+                const decl_type = self.resolveAliasTypeExpr(decl.type_);
                 // Set expected type context from annotation for constructors like Ok/Err
                 const prev_expected = self.expected_type;
-                self.expected_type = self.resolveExpectedType(decl.type_);
+                self.expected_type = self.resolveExpectedType(decl_type);
                 defer self.expected_type = prev_expected;
 
                 // Check if this is a slice type with an array literal value
                 // In this case, we need to convert the array to a slice
-                const is_slice_decl = decl.type_ == .slice;
+                const is_slice_decl = decl_type == .slice;
                 const is_array_literal_value = decl.value == .array_literal;
 
                 // Determine the LLVM type for the alloca
@@ -2574,7 +2602,7 @@ pub const Emitter = struct {
                 // types than might be inferred from the LLVM representation alone
                 const ty = blk: {
                     // Try to use type annotation first
-                    const llvm_ty = self.typeExprToLLVM(decl.type_) catch null;
+                    const llvm_ty = self.typeExprToLLVM(decl_type) catch null;
                     if (llvm_ty) |t| break :blk t;
                     // Fall back to inference from expression
                     break :blk try self.inferExprType(decl.value);
@@ -2627,44 +2655,44 @@ pub const Emitter = struct {
 
                     _ = self.builder.buildStore(value, alloca);
                 }
-                const is_signed = self.isTypeSigned(decl.type_);
+                const is_signed = self.isTypeExprSigned(decl_type);
                 // Extract struct type name - try annotation first (has full generic info),
                 // then fall back to expression-based name
-                const struct_type_name = self.getStructTypeNameFromAnnotation(decl.type_) orelse
+                const struct_type_name = self.getStructTypeNameFromAnnotation(decl_type) orelse
                     self.getStructTypeName(decl.value);
                 // For Rc/Arc types, track the inner type for dereferencing
                 const inner_type = self.tryGetRcInnerType(decl.value);
                 const is_arc = self.isArcType(decl.value);
                 // For closure types, extract return type and param types from annotation
-                const closure_info = self.tryGetClosureTypeInfo(decl.type_);
+                const closure_info = self.tryGetClosureTypeInfo(decl_type);
                 // Check if this is a string type
-                const is_string = self.isTypeString(decl.type_);
+                const is_string = self.isTypeString(decl_type);
                 // Check if this is a heap-allocated String type
-                const is_string_data = self.isTypeStringData(decl.type_);
+                const is_string_data = self.isTypeStringData(decl_type);
                 // Check if this is an array or slice type
-                const is_array = self.isTypeArray(decl.type_);
-                const array_info = self.getArrayTypeInfo(decl.type_);
+                const is_array = self.isTypeArray(decl_type);
+                const array_info = self.getArrayTypeInfo(decl_type);
                 // Check if this is a List type
-                const list_element_type = self.getListTypeInfo(decl.type_);
+                const list_element_type = self.getListTypeInfo(decl_type);
                 // Check if this is a Map type
-                const map_info = self.getMapTypeInfo(decl.type_);
+                const map_info = self.getMapTypeInfo(decl_type);
                 // Check if this is a Set type
-                const set_info = self.getSetTypeInfo(decl.type_);
+                const set_info = self.getSetTypeInfo(decl_type);
                 // Check if this is an I/O type
-                const is_file_let = self.isTypeFile(decl.type_);
-                const is_stdout_let = self.isTypeStdout(decl.type_);
-                const is_stderr_let = self.isTypeStderr(decl.type_);
-                const is_stdin_let = self.isTypeStdin(decl.type_);
-                const is_path_let = self.isTypePath(decl.type_);
+                const is_file_let = self.isTypeFile(decl_type);
+                const is_stdout_let = self.isTypeStdout(decl_type);
+                const is_stderr_let = self.isTypeStderr(decl_type);
+                const is_stdin_let = self.isTypeStdin(decl_type);
+                const is_path_let = self.isTypePath(decl_type);
                 // Check if this is a buffered I/O type
-                const is_buf_reader_let = self.isTypeBufReader(decl.type_);
-                const is_buf_writer_let = self.isTypeBufWriter(decl.type_);
+                const is_buf_reader_let = self.isTypeBufReader(decl_type);
+                const is_buf_writer_let = self.isTypeBufWriter(decl_type);
                 // Check if this is a CStrOwned type (needs free on drop)
-                const is_cstr_owned_let = self.isTypeCstrOwned(decl.type_);
+                const is_cstr_owned_let = self.isTypeCstrOwned(decl_type);
                 // Check if this is a ThreadPool type
-                const is_thread_pool_let = self.isTypeThreadPool(decl.type_);
+                const is_thread_pool_let = self.isTypeThreadPool(decl_type);
                 // Resolve semantic type for pattern matching (Result, Optional, etc.)
-                const semantic_type = self.resolveTypeExprDirect(decl.type_);
+                const semantic_type = self.resolveTypeExprDirect(decl_type);
                 // Check if this is an extern fn type (C function pointer)
                 const is_extern_fn_let = if (semantic_type) |st| st == .extern_fn else false;
                 const extern_fn_llvm_type_let: ?llvm.TypeRef = if (is_extern_fn_let)
@@ -2726,28 +2754,30 @@ pub const Emitter = struct {
                 }
             },
             .var_decl => |decl| {
+                // An alias is read as the type it names by every reader below (Bug 89).
+                const decl_type = self.resolveAliasTypeExpr(decl.type_);
                 // Set expected type context from annotation for constructors like Ok/Err
                 const prev_expected = self.expected_type;
-                self.expected_type = self.resolveExpectedType(decl.type_);
+                self.expected_type = self.resolveExpectedType(decl_type);
                 defer self.expected_type = prev_expected;
 
                 // Check if this is a slice type with an array literal value
                 // In this case, we need to convert the array to a slice
-                const is_slice_decl = decl.type_ == .slice;
+                const is_slice_decl = decl_type == .slice;
                 const is_array_literal_value = decl.value == .array_literal;
 
                 // Determine the LLVM type for the alloca
                 // For slice types, use the declared slice type (not the array literal type)
                 // Also handle string type coercion: if declared as string but value is string_data
-                const is_string_type = if (decl.type_ == .named)
-                    std.mem.eql(u8, decl.type_.named.name, "string")
+                const is_string_type = if (decl_type == .named)
+                    std.mem.eql(u8, decl_type.named.name, "string")
                 else
                     false;
                 const ty = if (is_slice_decl)
-                    try self.typeExprToLLVM(decl.type_)
+                    try self.typeExprToLLVM(decl_type)
                 else if (is_string_type)
                     // Use declared string type (ptr) rather than inferred type
-                    try self.typeExprToLLVM(decl.type_)
+                    try self.typeExprToLLVM(decl_type)
                 else
                     try self.inferExprType(decl.value);
 
@@ -2798,42 +2828,42 @@ pub const Emitter = struct {
 
                     _ = self.builder.buildStore(value, alloca);
                 }
-                const is_signed = self.isTypeSigned(decl.type_);
+                const is_signed = self.isTypeExprSigned(decl_type);
                 // Extract struct type name - try annotation first (has full generic info),
                 // then fall back to expression-based name
-                const struct_type_name = self.getStructTypeNameFromAnnotation(decl.type_) orelse
+                const struct_type_name = self.getStructTypeNameFromAnnotation(decl_type) orelse
                     self.getStructTypeName(decl.value);
                 // For Rc/Arc types, track the inner type for dereferencing
                 const inner_type = self.tryGetRcInnerType(decl.value);
                 const is_arc = self.isArcType(decl.value);
                 // For closure types, extract return type and param types from annotation
-                const closure_info = self.tryGetClosureTypeInfo(decl.type_);
+                const closure_info = self.tryGetClosureTypeInfo(decl_type);
                 // Check if this is a string type
-                const is_string = self.isTypeString(decl.type_);
+                const is_string = self.isTypeString(decl_type);
                 // Check if this is a heap-allocated String type
-                const is_string_data = self.isTypeStringData(decl.type_);
+                const is_string_data = self.isTypeStringData(decl_type);
                 // Check if this is an array or slice type
-                const is_array = self.isTypeArray(decl.type_);
-                const array_info = self.getArrayTypeInfo(decl.type_);
+                const is_array = self.isTypeArray(decl_type);
+                const array_info = self.getArrayTypeInfo(decl_type);
                 // Check if this is a List type
-                const list_element_type = self.getListTypeInfo(decl.type_);
+                const list_element_type = self.getListTypeInfo(decl_type);
                 // Check if this is a Map type
-                const map_info = self.getMapTypeInfo(decl.type_);
+                const map_info = self.getMapTypeInfo(decl_type);
                 // Check if this is a Set type
-                const set_info = self.getSetTypeInfo(decl.type_);
+                const set_info = self.getSetTypeInfo(decl_type);
                 // Check if this is an I/O type
-                const is_file = self.isTypeFile(decl.type_);
-                const is_stdout = self.isTypeStdout(decl.type_);
-                const is_stderr = self.isTypeStderr(decl.type_);
-                const is_stdin = self.isTypeStdin(decl.type_);
-                const is_path = self.isTypePath(decl.type_);
+                const is_file = self.isTypeFile(decl_type);
+                const is_stdout = self.isTypeStdout(decl_type);
+                const is_stderr = self.isTypeStderr(decl_type);
+                const is_stdin = self.isTypeStdin(decl_type);
+                const is_path = self.isTypePath(decl_type);
                 // Check if this is a buffered I/O type
-                const is_buf_reader = self.isTypeBufReader(decl.type_);
-                const is_buf_writer = self.isTypeBufWriter(decl.type_);
+                const is_buf_reader = self.isTypeBufReader(decl_type);
+                const is_buf_writer = self.isTypeBufWriter(decl_type);
                 // Check if this is a CStrOwned type (needs free on drop)
-                const is_cstr_owned = self.isTypeCstrOwned(decl.type_);
+                const is_cstr_owned = self.isTypeCstrOwned(decl_type);
                 // Resolve semantic type for pattern matching (Result, Optional, etc.)
-                const semantic_type = self.resolveTypeExprDirect(decl.type_);
+                const semantic_type = self.resolveTypeExprDirect(decl_type);
                 // Check if this is an extern fn type (C function pointer)
                 const is_extern_fn_var = if (semantic_type) |st| st == .extern_fn else false;
                 const extern_fn_llvm_type_var: ?llvm.TypeRef = if (is_extern_fn_var)
@@ -4240,7 +4270,7 @@ pub const Emitter = struct {
                 return true;
             },
             .type_cast => |tc| {
-                return self.isTypeSigned(tc.target_type);
+                return self.isTypeExprSigned(tc.target_type);
             },
             .grouped => |g| {
                 return self.isExprSigned(g.expr);
@@ -7393,6 +7423,11 @@ pub const Emitter = struct {
             return struct_info.llvm_type;
         }
 
+        // A type alias lowers as the type expression it names.
+        if (self.type_aliases.get(name)) |aliased| {
+            return self.typeExprToLLVM(self.resolveAliasTypeExpr(aliased)) catch llvm.Types.pointer(self.ctx);
+        }
+
         // Builtin types that aren't in struct_types
         if (std.mem.eql(u8, name, "IoError")) {
             return self.getIoErrorStructType();
@@ -7450,29 +7485,6 @@ pub const Emitter = struct {
     /// Check if a type expression is explicitly "void".
     fn isVoidTypeExpr(type_expr: ast.TypeExpr) bool {
         return type_expr == .named and std.mem.eql(u8, type_expr.named.name, "void");
-    }
-
-    /// Check if a type expression represents a signed type.
-    fn isTypeSigned(self: *Emitter, type_expr: ast.TypeExpr) bool {
-        _ = self;
-        return switch (type_expr) {
-            .named => |named| {
-                // Unsigned types start with 'u'
-                if (named.name.len > 0 and named.name[0] == 'u') {
-                    // But could be "usize" which is architecture-dependent
-                    // For now, treat it as unsigned
-                    if (std.mem.eql(u8, named.name, "u8")) return false;
-                    if (std.mem.eql(u8, named.name, "u16")) return false;
-                    if (std.mem.eql(u8, named.name, "u32")) return false;
-                    if (std.mem.eql(u8, named.name, "u64")) return false;
-                    if (std.mem.eql(u8, named.name, "u128")) return false;
-                    if (std.mem.eql(u8, named.name, "usize")) return false;
-                }
-                // Signed types: i8, i16, i32, i64, i128, isize, or floats
-                return true;
-            },
-            else => true, // Default to signed
-        };
     }
 
     /// Resolve a type expression directly from AST (for Result, Optional types).
