@@ -1,0 +1,30 @@
+// scoped.kl - declares a private `type Id` that differs from main.kl's, and a pub alias.
+type Id = i32
+
+pub type Big = i64
+
+pub fn from_scoped(x: i32) -> i32 {
+    let v: Id = x
+    return v
+}
+
+pub fn big_of(x: i32) -> Big {
+    let v: Big = x.as#[Big]
+    return v
+}
+
+// A generic body is emitted after every module's, and still reads this module's `Id`.
+pub fn narrow_of#[T](tag: T, x: i32) -> i32 {
+    let v: Id = x
+    return v
+}
+
+// A return type through this module's `Id` takes this module's width.
+pub fn scoped_id() -> Id {
+    return 7
+}
+
+// A compound type holding this module's `Id` takes this module's width too.
+pub fn scoped_pair() -> (Id, Id) {
+    return (7, 1)
+}

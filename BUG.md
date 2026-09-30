@@ -2440,9 +2440,9 @@ take `{ i1, i32 }`.
 
 ---
 
-## [ ] Bug 89: A non-channel type alias lowers to `i32` — wrong-width parameters and a compiler segfault
+## [x] Bug 89: A non-channel type alias lowers to `i32` — wrong-width parameters and a compiler segfault
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** native codegen — `namedTypeToLLVM` in `src/codegen/emit.zig`
 
@@ -2463,6 +2463,27 @@ The second segfaults the compiler in `LLVMStructGetTypeAtIndex` (`emitFieldAcces
 
 **Found by:** /qa-review on fix/bug-86-channel-field-alias, 2026-09-29 — GenA — reviewer's
 evidence (probes in the review scratchpad), not re-read.
+
+**Fix:** The emitter records every non-generic `type Name = T` under its module
+(`registerTypeAlias`, from `registerAllStructDecls`), and reads aliases under the module
+whose code it is emitting, a monomorphized generic body included (`decl_alias_scopes`).
+A `pub` alias is also kept by bare name, which is how an importer finds it; two modules
+exporting a `pub` alias of the same name still collide there, the last registered winning.
+`resolveAliasTypeExpr` follows a named type through its aliases, and `namedTypeToLLVM`
+lowers an alias as the type expression it names. These sites resolve the declared type:
+the `let` and `var` arms of `emitStmt`, the parameter loops of `emitFunction` and
+`emitImplMethods` (a `ref` parameter's inner type included), the literal hint a `let`,
+`var` or return type asks the checker for (`substituteAliases`, at every depth of a tuple,
+optional, array, result or generic argument), a struct field's recorded type name, and a cast's target in `emitTypeCast` and
+`isExprSigned`. The
+struct name, signedness, string, array and collection readers below them see the named
+type. Reading the code turned up the same cause past the LLVM type: a struct alias lost its
+field names (`UnsupportedFeature`), an unsigned alias compared and divided as signed, and a
+string alias local read `len()` as 0. The duplicate signedness reader `isTypeSigned` is
+gone, its callers on `isTypeExprSigned`. A generic alias is still unrecorded.
+
+**Test:** `test/native/type_alias_lowering.kl`, `test/native/type_alias_readers.kl`,
+`test/native/type_alias_declarations.kl`, `test/module/type_alias_scope/`
 
 ---
 
@@ -2577,3 +2598,101 @@ checker accepts the form.
 
 **Found by:** /qa-review on fix/bug-90-channel-index-for, 2026-09-29 — GenA (probe
 `scratch/b90/refparam.kl`); verified with `scratch/rv/refidx.kl`.
+
+---
+
+## [ ] Bug 94: `http_client` lets `"https://"`, `"http://"` and an uppercase `HTTPS://` through, and hides the https message
+
+**Status:** Open
+
+**System:** HTTP stdlib URL parsing — `parse_url` and `http_request` in `stdlib/http_client.kl`
+
+**Deferred:** after the current milestone — a malformed URL or an uppercase scheme; no crash,
+and no Phase 0 deliverable fetches over HTTP.
+
+**Description:** `parse_url` (`stdlib/http_client.kl:46-56`) rejects `https://` only when
+`url.len() > 8`, so the exact string `"https://"` falls through to host parsing and comes
+back `Ok` with host `https` and path `//`. The `http://` strip uses the same `>` where `>=` is
+meant, so a bare `"http://"` keeps its scheme as the host. The prefix compare is
+case-sensitive, so `HTTPS://host/` parses to host `HTTPS` and reaches `tcp_connect`. And
+`http_request` (`:163-165`) replaces every `parse_url` error with `"invalid URL: " + url`, so
+the "https is not supported, use http://" message never reaches a caller. No test calls
+`http_get` with an `https://` URL.
+
+**Steps to reproduce:**
+1. A copy of `parse_url` under `klar run`: call it with `"https://"`, `"https://x"` and
+   `"HTTPS://x/"`.
+2. `http_get("https://example.com/")` and print the error.
+
+**Expected:** Each of the three is `Err("https is not supported, use http://")`, and
+`http_get` returns that message.
+
+**Actual:** (probe 2026-09-29) `parse_url("https://")` → `Ok(host=https, path=//)`;
+`parse_url("https://x")` → `Err("https is not supported, use http://")`. By reading HEAD
+`2ab1b84`: `HTTPS://x/` → `Ok(host=HTTPS)`, and `http_get` returns `"invalid URL: …"`.
+
+**Found by:** `~/.claude` qa-calibrate trial c3gen, Fixture 4 export of `20a5a3e` (runs
+0929-173800, 0929-174150, 0929-173426); verified at `20a5a3e` and `adde2f0`, filed through
+`.claude/inbox/`, re-read at `2ab1b84` 2026-09-29.
+
+---
+
+## [ ] Bug 95: An unsigned value read through a field, element, `for` binding or call result compares signed natively
+
+**Status:** Open
+
+**System:** native codegen — `isExprSigned` in `src/codegen/emit.zig`
+
+**Deferred:** after the current milestone. Wrong results only when an unsigned value is above
+its signed maximum; locals and parameters compare correctly, and no Phase 0 deliverable
+depends on it.
+
+**Description:** `isExprSigned` (`src/codegen/emit.zig:4272-4273`) knows the signedness of a
+local or parameter, but not of a `u8`/`u32` value reached through a struct field, an array or
+tuple element, a `for` binding or a function's return value. Those compare and divide as
+signed in native code, while the interpreter treats them as unsigned. `u32.to_string()` and
+`"{a}"` print the signed reading too. No type alias is involved.
+
+**Steps to reproduce:**
+1. `struct H { w: u32 }`, `let h: H = H { w: 3000000000 }`, `if h.w < 5.as#[u32] { return 2 }`.
+2. The same with `let arr: [u32; 2] = [3000000000, 1]` and `arr[0] < arr[1]`, a tuple
+   `t.0 < 5.as#[u32]`, `for k: u32 in arr { if k < 1 … }`, and `fn get() -> u8` returning 200
+   compared with `get() < 100.as#[u8]`.
+3. `klar build` and run each; then `klar run --interpret`.
+
+**Expected:** Each comparison is false (exit 0), and `3000000000.as#[u32].to_string()` is
+`"3000000000"`.
+
+**Actual:** Native exits 2 (field), 8 (array), 9 (tuple), 11 (`for`) and 2 (call result);
+the interpreter exits 0. `to_string()` prints `-1294967296`.
+
+**Found by:** /qa-review on fix/bug-89-type-alias-lowering, 2026-09-29 — GenA, GenB (probes
+`scratch/gb89/b_holder_w.kl`, `b_arr.kl`, `b_tup.kl`, `b_forb.kl`, `tostr.kl`,
+`scratch/qa89a/ret_ctl.kl`) — reviewer's evidence, not re-read.
+
+---
+
+## [ ] Bug 96: A field read on a `List` index (`ps[0].y`) fails native build with `UnsupportedFeature`
+
+**Status:** Open
+
+**System:** native codegen — field access in `src/codegen/emit.zig`
+
+**Deferred:** after the current milestone. The build refuses rather than miscompiling, and
+copying the element to a local first works.
+
+**Description:** Reading a field straight off a `List#[Point]` index fails the native build,
+because the chained field reader cannot find the element's struct type. The interpreter runs
+the same program. An alias makes no difference.
+
+**Steps to reproduce:**
+1. `struct Point { x: i64, y: i64 }`, `var ps: List#[Point] = List.new#[Point]()`,
+   `ps.push(Point { x: 1, y: 2 })`, `if ps[0].y != 2 { return 1 }`.
+2. `klar build` the file.
+
+**Expected:** It builds and exits 0.
+
+**Actual:** `Codegen error: UnsupportedFeature`.
+
+**Found by:** /qa-review on fix/bug-89-type-alias-lowering, 2026-09-29 — GenB (probes
+`scratch/gb89/b_listq.kl`, `p_listq.kl`) — reviewer's evidence, not re-read.

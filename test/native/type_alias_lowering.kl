@@ -1,0 +1,97 @@
+// Bug 89: a type alias that names neither an extern type nor a channel endpoint lowered to
+// `i32`, so a value declared through `type Id = i64` lost its high bits (or failed LLVM
+// verification) and `type P = (i64, i64)` then `pair.0` crashed the compiler. Each case
+// returns its own exit code, so a failure names the alias kind that lowered wrong.
+type Id = i64
+
+type Id2 = Id
+
+type P = (i64, i64)
+
+type Byte = u8
+
+type Real = f64
+
+type Triple = [i64; 3]
+
+fn widen(x: Id) -> i64 {
+    return x
+}
+
+fn through_alias_chain(x: Id2) -> Id2 {
+    return x
+}
+
+fn first_of(p: P) -> i64 {
+    return p.0
+}
+
+fn half(r: Real) -> Real {
+    return r / 2.0
+}
+
+fn main() -> i32 {
+    // A scalar alias parameter and return keep all 64 bits.
+    let w: i64 = 4000000001
+    if widen(w) != 4000000001.as#[i64] {
+        return 1
+    }
+
+    // An alias of an alias lowers as the type at the end of the chain.
+    let c: Id2 = 5000000002
+    if through_alias_chain(c) != 5000000002.as#[i64] {
+        return 2
+    }
+
+    // A tuple alias local: its fields are the tuple's fields.
+    let pair: P = (6000000003, 7)
+    if pair.0 != 6000000003.as#[i64] {
+        return 3
+    }
+    if pair.1 != 7.as#[i64] {
+        return 4
+    }
+
+    // A tuple alias parameter.
+    if first_of(pair) != 6000000003.as#[i64] {
+        return 5
+    }
+
+    // A local declared through a scalar alias.
+    let big: Id = 8000000004
+    if big != 8000000004.as#[i64] {
+        return 6
+    }
+
+    // A float alias.
+    if half(3.0) != 1.5 {
+        return 7
+    }
+
+    // An unsigned alias widens as unsigned.
+    let b: Byte = 200
+    if b.as#[i32] != 200 {
+        return 8
+    }
+
+    // An array alias.
+    let t: Triple = [1.as#[i64], 9000000005.as#[i64], 3.as#[i64]]
+    if t[1] != 9000000005.as#[i64] {
+        return 9
+    }
+
+    // A cast to an alias converts to the type it names (qa-review 2026-09-29).
+    let five: i32 = 5
+    let wide: Id = five.as#[Id]
+    if wide != 5.as#[i64] {
+        return 10
+    }
+
+    // A value cast to an unsigned alias compares as unsigned.
+    let raw: u8 = 200
+    if raw.as#[Byte] < 100.as#[u8] {
+        return 11
+    }
+
+    return 0
+}

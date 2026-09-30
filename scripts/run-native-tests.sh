@@ -135,6 +135,9 @@ get_expected() {
         channel_field_endpoints) echo 0 ;;  # send/recv through a struct or tuple field (Bug 86)
         channel_alias_endpoints) echo 0 ;;  # send/recv through an aliased endpoint type (Bug 87)
         channel_index_endpoints) echo 0 ;;  # send/recv through an index or a for binding (Bug 90)
+        type_alias_lowering) echo 0 ;;  # an alias lowers as the type it names (Bug 89)
+        type_alias_readers) echo 0 ;;  # struct and unsigned aliases read as their targets (Bug 89)
+        type_alias_declarations) echo 0 ;;  # var, method, ref and string alias declarations (Bug 89)
         none_hint_width) echo 0 ;;  # a bare None under a tuple or push hint takes the optional's layout (Bug 84)
         list_string_drop) echo 42 ;;
         list_index_assign) echo 42 ;;

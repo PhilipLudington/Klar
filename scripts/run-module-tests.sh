@@ -180,6 +180,29 @@ else
     echo "⊘ alias (test not found, skipping)"
 fi
 
+# Test 6b: A private type alias is scoped to its module (Bug 89)
+echo "--- type_alias_scope: private aliases with one name in two modules ---"
+temp_bin="/tmp/klar_module_type_alias_scope"
+if [ -d "$TEST_DIR/type_alias_scope" ]; then
+    if $KLAR build $TEST_DIR/type_alias_scope/main.kl -o "$temp_bin" 2>/dev/null && [ -x "$temp_bin" ]; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "42" ]; then
+            echo "✓ type_alias_scope (exit: $result)"
+            record_success "type_alias_scope"
+        else
+            echo "✗ type_alias_scope (expected: 42, got: $result)"
+            record_failure "type_alias_scope" "expected 42, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ type_alias_scope (build failed)"
+        record_failure "type_alias_scope" "build failed"
+    fi
+else
+    echo "⊘ type_alias_scope (test not found, skipping)"
+fi
+
 # Test 7: Sibling directory imports (test file imports from sibling lib/)
 # This tests that imports resolve relative to cwd, not just relative to entry file
 echo "--- sibling: Import from sibling directory ---"
