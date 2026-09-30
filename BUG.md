@@ -2790,3 +2790,31 @@ or when `b`'s `Id` is also `i64` (probe `scratch/gb89/mod/q/r3_l3/`).
 **Found by:** /qa-review fix-check round 3 on fix/bug-89-type-alias-lowering, 2026-09-30 —
 GenB, reply received after PR 53 merged; filed by /qa-review on fix/bug-74-75-runtime-checks
 — reviewer's evidence (probe with three controls), not re-read.
+
+---
+
+## [ ] Bug 99: `*p += …` (any compound assignment) through an `inout` parameter hangs the compiler or fails LLVM verification
+
+**Status:** Open
+
+**System:** deref compound assignment — the `.unary` deref arm of compound assignment in
+`src/codegen/emit.zig` (`ptr_elem_type = LLVMGetElementType(typeOf(ptr))`, `:5518`)
+
+**Description:** The compound-assignment path through a dereference takes the load type
+from `LLVMGetElementType` of the pointer's LLVM type. Pointers are opaque, so that call
+returns no real element type, and every `op=` arm loads with a garbage type. Plain
+`*p = *p + 1` works (`test/native/ref_inout.kl`).
+
+**Steps to reproduce:**
+1. `fn bump(p: inout i32) -> void { *p += 1 }`, called with `ref d` from `main`.
+2. The same with `p: inout u8` and `*p += 1.as#[u8]`, or `*p /= 3.as#[u8]`.
+3. `klar build` each.
+
+**Expected:** Each builds; `d` is updated through the reference.
+
+**Actual:** The `i32` form fails LLVM verification (`%addtmp = add half %loadtmp, i32 1`);
+the `u8` forms never finish building (killed after 20 s) (probes `scratch/qr7475/h5.kl`,
+`h7.kl`, `h2.kl`, macOS arm64, 2026-09-30).
+
+**Found by:** /qa-fix on fix/bug-74-75-runtime-checks, 2026-09-30, writing the deref case
+of finding #1's test; verified by probe (the `+=` arm is untouched by that branch).

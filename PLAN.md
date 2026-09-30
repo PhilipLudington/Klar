@@ -124,6 +124,10 @@ in user programs first, then checker/contract correctness, then tooling, then de
       (`getListTypeInfo`, `src/codegen/emit.zig:7795`, and the array, slice, `List.new` and
       `Map.new` readers) ask the checker directly instead of going through Bug 89's
       substitution. (qa-review 2026-09-30)
+- [ ] Deref compound assignment — Bug 99: `*p += …` and every other `op=` through an `inout`
+      parameter hangs the compiler (`u8`) or fails LLVM verification (`i32`), because the
+      load type is `LLVMGetElementType` of an opaque pointer (`src/codegen/emit.zig:5518`).
+      (qa-review 2026-09-30)
 - [x] Bugs 15 + 16 + 17 — GC: allocation no longer collects; the VM collects at the top of each
       instruction (`GC.collectIfRequested`), and `markValue` traces Future payloads. Stress-GC
       runs live in the unit tests (`src/vm_gc_test.zig`); the runner flag stays the Phase 0 task
