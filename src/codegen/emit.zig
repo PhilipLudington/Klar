@@ -4334,12 +4334,8 @@ pub const Emitter = struct {
                 return true;
             },
             .index => |ix| {
-                if (ix.object == .identifier) {
-                    if (self.named_values.get(ix.object.identifier.name)) |local| {
-                        const elem = local.array_element_type orelse local.list_element_type orelse return true;
-                        if (elem == .primitive and elem.primitive.isInteger()) return elem.primitive.isSigned();
-                    }
-                }
+                const elem = self.indexedElementType(ix.object) orelse return true;
+                if (elem == .primitive and elem.primitive.isInteger()) return elem.primitive.isSigned();
                 return true;
             },
             .call => |c| {
@@ -13444,6 +13440,36 @@ pub const Emitter = struct {
             // `*p` of a `ref u8` / `inout u8` reads the pointee's signedness.
             .reference => |r| self.isTypeExprSigned(self.resolveAliasTypeExpr(r.inner)),
             else => true,
+        };
+    }
+
+    /// The element type of an indexed array, slice or List: a local, a struct field
+    /// (`h.a[i]`) or a nested index (`m[i][j]`). Null when it cannot be resolved.
+    fn indexedElementType(self: *Emitter, object: ast.Expr) ?types.Type {
+        const container: types.Type = switch (object) {
+            .identifier => |id| {
+                const local = self.named_values.get(id.name) orelse return null;
+                return local.array_element_type orelse local.list_element_type;
+            },
+            .field => |f| blk: {
+                const struct_name = self.getStructTypeNameFromExpr(f.object) orelse return null;
+                const tc = self.type_checker orelse return null;
+                const sym = tc.lookupSymbolAcrossModules(struct_name) orelse return null;
+                if (sym.type_ != .struct_) return null;
+                for (sym.type_.struct_.fields) |field| {
+                    if (std.mem.eql(u8, field.name, f.field_name)) break :blk field.type_;
+                }
+                return null;
+            },
+            .index => |inner| self.indexedElementType(inner.object) orelse return null,
+            .grouped => |g| return self.indexedElementType(g.expr),
+            else => return null,
+        };
+        return switch (container) {
+            .array => |a| a.element,
+            .slice => |s| s.element,
+            .list => |l| l.element,
+            else => null,
         };
     }
 
