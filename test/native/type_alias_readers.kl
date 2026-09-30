@@ -6,6 +6,9 @@ struct Point { x: i64, y: i64 }
 
 type Q = Point
 
+// A struct field declared through a struct alias keeps its field names (qa-review 2026-09-29).
+struct Holder { q: Q }
+
 type Byte = u8
 
 type Word = u32
@@ -47,6 +50,11 @@ fn main() -> i32 {
     let half: Word = w / 2.as#[u32]
     if half != 1500000000.as#[u32] {
         return 5
+    }
+
+    let h: Holder = Holder { q: Point { x: 1.as#[i64], y: 2.as#[i64] } }
+    if h.q.y != 2.as#[i64] {
+        return 6
     }
 
     return 0

@@ -80,5 +80,18 @@ fn main() -> i32 {
         return 9
     }
 
+    // A cast to an alias converts to the type it names (qa-review 2026-09-29).
+    let five: i32 = 5
+    let wide: Id = five.as#[Id]
+    if wide != 5.as#[i64] {
+        return 10
+    }
+
+    // A value cast to an unsigned alias compares as unsigned.
+    let raw: u8 = 200
+    if raw.as#[Byte] < 100.as#[u8] {
+        return 11
+    }
+
     return 0
 }

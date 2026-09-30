@@ -1,0 +1,20 @@
+// main.kl - two modules declare a private `type Id` with different targets; each module's
+// code reads its own (qa-review 2026-09-29, Bug 89). Returns 42 on success.
+import scoped.{ from_scoped, big_of }
+
+type Id = i64
+
+fn main() -> i32 {
+    let seven: i32 = 7
+    if from_scoped(seven) != 7 {
+        return 1
+    }
+    let big: Id = 8000000004
+    if big != 8000000004.as#[i64] {
+        return 2
+    }
+    if big_of(5) != 5.as#[i64] {
+        return 3
+    }
+    return 42
+}

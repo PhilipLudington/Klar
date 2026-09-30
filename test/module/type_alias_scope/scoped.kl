@@ -1,0 +1,14 @@
+// scoped.kl - declares a private `type Id` that differs from main.kl's, and a pub alias.
+type Id = i32
+
+pub type Big = i64
+
+pub fn from_scoped(x: i32) -> i32 {
+    let v: Id = x
+    return v
+}
+
+pub fn big_of(x: i32) -> Big {
+    let v: Big = x.as#[Big]
+    return v
+}
