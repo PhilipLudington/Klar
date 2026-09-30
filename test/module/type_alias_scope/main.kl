@@ -1,12 +1,16 @@
 // main.kl - two modules declare a private `type Id` with different targets; each module's
-// code reads its own, in plain and generic bodies and in return types (qa-review
+// code reads its own, in plain and generic bodies, in return types and inside a tuple (qa-review
 // 2026-09-29, Bug 89). Returns 42 on success.
-import scoped.{ from_scoped, big_of, narrow_of, scoped_id }
+import scoped.{ from_scoped, big_of, narrow_of, scoped_id, scoped_pair }
 
 type Id = i64
 
 fn main_id() -> Id {
     return 8000000004
+}
+
+fn main_pair() -> (Id, Id) {
+    return (8000000004, 1)
 }
 
 fn main() -> i32 {
@@ -29,6 +33,18 @@ fn main() -> i32 {
     }
     if main_id() != 8000000004.as#[i64] {
         return 6
+    }
+    let sp: (i32, i32) = scoped_pair()
+    if sp.0 != 7 {
+        return 7
+    }
+    let mp: (Id, Id) = main_pair()
+    if mp.0 != 8000000004.as#[i64] {
+        return 8
+    }
+    let local: (Id, Id) = (8000000005, 2)
+    if local.0 != 8000000005.as#[i64] {
+        return 9
     }
     return 42
 }

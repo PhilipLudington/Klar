@@ -23,3 +23,8 @@ pub fn narrow_of#[T](tag: T, x: i32) -> i32 {
 pub fn scoped_id() -> Id {
     return 7
 }
+
+// A compound type holding this module's `Id` takes this module's width too.
+pub fn scoped_pair() -> (Id, Id) {
+    return (7, 1)
+}
