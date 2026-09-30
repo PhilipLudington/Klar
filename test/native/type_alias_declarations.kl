@@ -1,7 +1,7 @@
-// Bug 89, the declaration sites: a `var`, a method parameter and a string alias. Codegen
-// read each declared type by its spelling, so a `var` of a u32 alias divided as signed, a
-// method parameter of a struct alias lost its field names, and a local of a string alias
-// was not a string (`len()` read 0). Each case returns its own exit code.
+// Bug 89, the declaration sites: a `var`, a method or `ref` parameter and a string alias.
+// Codegen read each declared type by its spelling, so a `var` of a u32 alias divided as
+// signed, a method or `ref` parameter of a struct alias lost its field names, and a local
+// of a string alias was not a string (`len()` read 0). Each case returns its own exit code.
 struct Point { x: i64, y: i64 }
 
 type Q = Point
@@ -11,6 +11,10 @@ type Word = u32
 type Name = string
 
 struct Scaler { factor: i64 }
+
+fn y_through_ref(q: ref Q) -> i64 {
+    return q.y
+}
 
 impl Scaler {
     fn scale_y(self: Scaler, q: Q) -> i64 {
@@ -31,6 +35,11 @@ fn main() -> i32 {
     let q: Q = Point { x: 1.as#[i64], y: 2000000000.as#[i64] }
     if s.scale_y(q) != 4000000000.as#[i64] {
         return 2
+    }
+
+    // A `ref` parameter of a struct alias reads its fields by name.
+    if y_through_ref(ref q) != 2000000000.as#[i64] {
+        return 4
     }
 
     // A local of a string alias is a string.
