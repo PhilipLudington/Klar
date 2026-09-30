@@ -6,6 +6,10 @@
 #   - "// Expected: build-error" in first 5 lines = test should fail to compile
 #   - "// Requires: c-helper" in first 5 lines = test needs external C library
 #   - "// Skip: native-tests" in first 5 lines = skip (handled by different runner)
+#   - "// Expected: trap" in first 5 lines = a runtime check must stop the program
+#     through llvm.trap: SIGILL (exit 132, x86) or SIGTRAP (133, arm64) on POSIX, so
+#     a segfault or a SIGFPE from a bare `sdiv` does not pass; any non-zero exit on
+#     Windows, where Git Bash reports the exception code's low byte.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RESULTS_FILE="$SCRIPT_DIR/.native-test-results.json"
@@ -62,6 +66,20 @@ if timeout --version >/dev/null 2>&1; then
 elif gtimeout --version >/dev/null 2>&1; then
     RUN_TIMEOUT="gtimeout $NATIVE_TEST_TIMEOUT"
 fi
+
+# Check if test expects a runtime trap (looks in first 5 lines)
+expects_trap() {
+    head -5 "$1" | grep -q "// Expected: trap"
+}
+
+# Did the exit code come from a trap? See "// Expected: trap" above.
+is_trap_exit() {
+    if [[ "$OS" == "Windows_NT" ]]; then
+        [ "$1" -ne 0 ]
+    else
+        [ "$1" -eq 132 ] || [ "$1" -eq 133 ]
+    fi
+}
 
 # Check if test expects a build error (looks in first 5 lines)
 expects_build_error() {
@@ -139,6 +157,7 @@ get_expected() {
         type_alias_readers) echo 0 ;;  # struct and unsigned aliases read as their targets (Bug 89)
         type_alias_declarations) echo 0 ;;  # var, method, ref and string alias declarations (Bug 89)
         none_hint_width) echo 0 ;;  # a bare None under a tuple or push hint takes the optional's layout (Bug 84)
+        unsigned_index_and_division) echo 0 ;;  # unsigned index and division keep their own semantics (Bugs 74, 75)
         list_string_drop) echo 42 ;;
         list_index_assign) echo 42 ;;
         list_nested_basic) echo 42 ;;
@@ -225,6 +244,18 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
                 FAILURES="$FAILURES,"
             fi
             FAILURES="$FAILURES\"$name: timed out after ${NATIVE_TEST_TIMEOUT}s\""
+        elif expects_trap "$f"; then
+            if is_trap_exit $result; then
+                echo "✓ $name (trapped, exit: $result)"
+                PASSED=$((PASSED + 1))
+            else
+                echo "✗ $name (expected a trap, got exit: $result)"
+                FAILED=$((FAILED + 1))
+                if [ -n "$FAILURES" ]; then
+                    FAILURES="$FAILURES,"
+                fi
+                FAILURES="$FAILURES\"$name: expected a trap, got exit $result\""
+            fi
         elif [ "$expected" = "-1" ] || [ $result -eq $expected ]; then
             echo "✓ $name (exit: $result)"
             PASSED=$((PASSED + 1))

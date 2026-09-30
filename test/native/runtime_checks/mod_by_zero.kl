@@ -1,0 +1,11 @@
+// Bug 75: integer remainder by zero must trap natively.
+// Expected: trap
+// Returning normally (exit 0) means `%` ran without a zero check.
+
+fn main(args: [String]) -> i32 {
+    let z32: i32 = args.len() - 1
+    let z: i64 = z32.as#[i64]
+    let r: i64 = 10.as#[i64] % z
+    println("10 % 0 returned {r}")
+    return 0
+}

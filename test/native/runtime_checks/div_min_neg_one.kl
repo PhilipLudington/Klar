@@ -1,0 +1,11 @@
+// Bug 75: i32 MIN / -1 overflows and must trap natively.
+// Expected: trap
+// Returning normally (exit 0) means `/` ran without the MIN / -1 check.
+
+fn main(args: [String]) -> i32 {
+    let neg_one: i32 = 0 - args.len()
+    let min: i32 = -2147483647 - args.len()
+    let r: i32 = min / neg_one
+    println("MIN / -1 returned {r}")
+    return 0
+}

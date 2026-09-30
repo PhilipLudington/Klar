@@ -1,0 +1,13 @@
+// Bug 74: a negative i8 index must fail the bounds check, not write arr[-1].
+// Expected: trap
+// Returning normally (exit 0) means the check let the write through.
+
+fn main() -> i32 {
+    var arr: [i32; 300] = @repeat(0, 300)
+    let one: i8 = 1
+    let zero: i8 = 0
+    let k: i8 = zero - one
+    arr[k] = 5
+    println("wrote arr[-1] without trapping")
+    return 0
+}

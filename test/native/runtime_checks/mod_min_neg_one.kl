@@ -1,0 +1,12 @@
+// Bug 75: i8 MIN % -1 is undefined in LLVM (`srem`) and must trap natively.
+// Expected: trap
+// Returning normally (exit 0) means `%` ran without the MIN / -1 check.
+
+fn main(args: [String]) -> i32 {
+    let n: i8 = args.len().as#[i8]
+    let neg_one: i8 = 0.as#[i8] - n
+    let min: i8 = -127.as#[i8] - n
+    let r: i8 = min % neg_one
+    println("MIN % -1 returned {r}")
+    return 0
+}
