@@ -2472,8 +2472,9 @@ exporting a `pub` alias of the same name still collide there, the last registere
 `resolveAliasTypeExpr` follows a named type through its aliases, and `namedTypeToLLVM`
 lowers an alias as the type expression it names. These sites resolve the declared type:
 the `let` and `var` arms of `emitStmt`, the parameter loops of `emitFunction` and
-`emitImplMethods` (a `ref` parameter's inner type included), a function's return-value
-hint, a struct field's recorded type name, and a cast's target in `emitTypeCast` and
+`emitImplMethods` (a `ref` parameter's inner type included), the literal hint a `let`,
+`var` or return type asks the checker for (`substituteAliases`, at every depth of a tuple,
+optional, array, result or generic argument), a struct field's recorded type name, and a cast's target in `emitTypeCast` and
 `isExprSigned`. The
 struct name, signedness, string, array and collection readers below them see the named
 type. Reading the code turned up the same cause past the LLVM type: a struct alias lost its

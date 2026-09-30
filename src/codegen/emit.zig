@@ -182,6 +182,8 @@ pub const Emitter = struct {
     /// Each function and impl method declaration's module prefix, so a generic body
     /// emitted after every module reads its own module's aliases.
     decl_alias_scopes: std.AutoHashMap(*const ast.FunctionDecl, ?[]const u8),
+    /// Owns the type expressions `substituteAliases` rebuilds for the checker.
+    alias_arena: std.heap.ArenaAllocator,
     /// Layout calculator for composite types.
     layout_calc: layout.LayoutCalculator,
     /// Counter for generating unique closure names.
@@ -468,6 +470,7 @@ pub const Emitter = struct {
             .type_aliases = std.StringHashMap(ast.TypeExpr).init(allocator),
             .pub_type_aliases = std.StringHashMap(ast.TypeExpr).init(allocator),
             .decl_alias_scopes = std.AutoHashMap(*const ast.FunctionDecl, ?[]const u8).init(allocator),
+            .alias_arena = std.heap.ArenaAllocator.init(allocator),
             .layout_calc = layout.LayoutCalculator.init(allocator, platform),
             .closure_counter = 0,
             .closure_types = std.StringHashMap(ClosureTypeInfo).init(allocator),
@@ -705,6 +708,7 @@ pub const Emitter = struct {
         self.type_aliases.deinit();
         self.pub_type_aliases.deinit();
         self.decl_alias_scopes.deinit();
+        self.alias_arena.deinit();
         // Free closure type info allocations
         var cit = self.closure_types.valueIterator();
         while (cit.next()) |info| {
@@ -7949,9 +7953,67 @@ pub const Emitter = struct {
     fn resolveExpectedType(self: *Emitter, type_expr: ast.TypeExpr) ?types.Type {
         if (self.type_checker) |tc| {
             const tc_mut = @constCast(tc);
-            return tc_mut.resolveTypeExpr(type_expr) catch null;
+            // The checker's aliases are not per module: hand it the type with this
+            // module's aliases already substituted, at every depth.
+            const scoped = self.substituteAliases(type_expr, 0) catch type_expr;
+            return tc_mut.resolveTypeExpr(scoped) catch null;
         }
         return null;
+    }
+
+    /// `type_expr` with every alias the current module sees replaced by the type it
+    /// names, inside tuples, optionals, arrays, slices, results, references and generic
+    /// arguments too. Compound nodes are rebuilt in `alias_arena`.
+    fn substituteAliases(self: *Emitter, type_expr: ast.TypeExpr, depth: u32) EmitError!ast.TypeExpr {
+        if (depth > 32) return type_expr;
+        const a = self.alias_arena.allocator();
+        switch (type_expr) {
+            .named => {
+                const resolved = self.resolveAliasTypeExpr(type_expr);
+                if (resolved == .named) return resolved;
+                return self.substituteAliases(resolved, depth + 1);
+            },
+            .tuple => |t| {
+                const elems = a.alloc(ast.TypeExpr, t.elements.len) catch return EmitError.OutOfMemory;
+                for (t.elements, 0..) |e, i| elems[i] = try self.substituteAliases(e, depth + 1);
+                const node = a.create(ast.TupleType) catch return EmitError.OutOfMemory;
+                node.* = .{ .elements = elems, .span = t.span };
+                return .{ .tuple = node };
+            },
+            .optional => |o| {
+                const node = a.create(ast.OptionalType) catch return EmitError.OutOfMemory;
+                node.* = .{ .inner = try self.substituteAliases(o.inner, depth + 1), .span = o.span };
+                return .{ .optional = node };
+            },
+            .array => |arr| {
+                const node = a.create(ast.ArrayType) catch return EmitError.OutOfMemory;
+                node.* = .{ .element = try self.substituteAliases(arr.element, depth + 1), .size = arr.size, .span = arr.span };
+                return .{ .array = node };
+            },
+            .slice => |sl| {
+                const node = a.create(ast.SliceType) catch return EmitError.OutOfMemory;
+                node.* = .{ .element = try self.substituteAliases(sl.element, depth + 1), .span = sl.span };
+                return .{ .slice = node };
+            },
+            .result => |r| {
+                const node = a.create(ast.ResultType) catch return EmitError.OutOfMemory;
+                node.* = .{ .ok_type = try self.substituteAliases(r.ok_type, depth + 1), .err_type = try self.substituteAliases(r.err_type, depth + 1), .span = r.span };
+                return .{ .result = node };
+            },
+            .reference => |ref| {
+                const node = a.create(ast.ReferenceType) catch return EmitError.OutOfMemory;
+                node.* = .{ .inner = try self.substituteAliases(ref.inner, depth + 1), .mutable = ref.mutable, .span = ref.span };
+                return .{ .reference = node };
+            },
+            .generic_apply => |g| {
+                const args = a.alloc(ast.TypeExpr, g.args.len) catch return EmitError.OutOfMemory;
+                for (g.args, 0..) |arg, i| args[i] = try self.substituteAliases(arg, depth + 1);
+                const node = a.create(ast.GenericApply) catch return EmitError.OutOfMemory;
+                node.* = .{ .base = g.base, .args = args, .span = g.span };
+                return .{ .generic_apply = node };
+            },
+            else => return type_expr,
+        }
     }
 
     /// Infer LLVM type from expression (simplified).
