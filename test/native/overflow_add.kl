@@ -1,4 +1,5 @@
 // Test that addition overflow traps at runtime
+// Expected: trap
 // Standard + operator must trap on i32 overflow (SIGILL)
 // This program should NOT return 0 — if it does, overflow checking is broken
 fn main() -> i32 {

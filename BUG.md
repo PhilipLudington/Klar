@@ -1913,9 +1913,9 @@ out, and the wasm unsupported-feature trap (wasm's `unreachable` always traps).
 
 ---
 
-## [ ] Bug 74: A negative narrow signed index passes the native bounds check — `arr[k]` with an `i8` of -1 reads before the array
+## [x] Bug 74: A negative narrow signed index passes the native bounds check — `arr[k]` with an `i8` of -1 reads before the array
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** native codegen — `src/codegen/emit.zig`, the failure block of every runtime check
 
@@ -1938,11 +1938,25 @@ arm64, 2026-09-27: "read arr[-1] without trapping", exit 7).
 
 **Found by:** /qa-review on ci/baseline-zig-016, 2026-09-27 — GenA2; verified by probe.
 
+**Fix:** One bounds check, `Emitter.emitCheckedIndex`, for every trapping index: the eight
+array and slice read, write and `ref arr[i]` sites, the three List index reads, and
+`List.set` (which List index writes also use). It extends the index by its own signedness
+(sign for a signed index, zero for an unsigned one) to at least 64 bits, compares it
+unsigned against the zero-extended length, and returns that same i64 for the address. The
+unsigned half of the bug went too: a `u8` of 200 was zero-extended for the check and
+sign-extended to -56 by the GEP, so `arr[k] = 42` wrote outside `arr[200]`. An index read
+through a field or element takes its signedness from `isExprSigned`, which calls it signed
+(Bug 95): an unsigned one above its signed maximum now traps instead of misaddressing.
+
+**Test:** `test/native/runtime_checks/index_neg_i8_read.kl`, `index_neg_i8_write.kl`,
+`index_neg_i8_slice.kl` (each `// Expected: trap`), and
+`test/native/runtime_checks/unsigned_index_and_division.kl`.
+
 ---
 
-## [ ] Bug 75: Native integer `/` and `%` have no zero or MIN/-1 check — `10 / 0` returns 0 on arm64
+## [x] Bug 75: Native integer `/` and `%` have no zero or MIN/-1 check — `10 / 0` returns 0 on arm64
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** native codegen — `src/codegen/emit.zig`, the failure block of every runtime check
 
@@ -1962,6 +1976,18 @@ for `MIN / -1`. x86 raises SIGFPE; aarch64 returns 0. The VM returns `DivisionBy
 arm64, 2026-09-27).
 
 **Found by:** /qa-review on ci/baseline-zig-016, 2026-09-27 — GenA2; verified by probe.
+
+**Fix:** One lowering, `Emitter.emitCheckedDivRem`, for integer `/` and `%` and for `/=`
+and `%=` on a local, an array element, a field and a dereference. Before dividing it
+branches to a trapping `div.fail` block when the divisor is zero, or, for a signed
+dividend, when it is MIN and the divisor -1. An unsigned dividend has no MIN / -1 case.
+The four compound sites always emitted `sdiv`/`srem`; they now pass the target's
+signedness, so a `u8` of 200 `/= 3` is 66, not 238. Left unchecked: three internal
+divisions whose divisor is a nonzero constant or a channel capacity.
+
+**Test:** `test/native/runtime_checks/div_by_zero.kl`, `mod_by_zero.kl`,
+`div_assign_by_zero.kl`, `div_min_neg_one.kl`, `mod_min_neg_one.kl` (each
+`// Expected: trap`), and `test/native/runtime_checks/unsigned_index_and_division.kl`.
 
 ---
 
@@ -2696,3 +2722,99 @@ the same program. An alias makes no difference.
 
 **Found by:** /qa-review on fix/bug-89-type-alias-lowering, 2026-09-29 — GenB (probes
 `scratch/gb89/b_listq.kl`, `p_listq.kl`) — reviewer's evidence, not re-read.
+
+---
+
+## [ ] Bug 97: An array variable or `@repeat` assigned to a slice is not converted natively — `let s: [i32] = arr` crashes
+
+**Status:** Open
+
+**System:** array-to-slice coercion — the `let` and `var` declaration paths in
+`src/codegen/emit.zig` (`is_slice_decl and is_array_literal_value`, ~2636 and ~2807) and
+the slice-typed struct field path (~9901), which call `convertArrayToSlice` only for an
+array literal
+
+**Description:** A slice-typed declaration converts its value to `{ ptr, len }` only when
+the value is an array literal. Any other array value, such as an array variable or an
+`@repeat(...)`, takes the normal path and stores the array's bytes straight into the slice
+slot, so the slice's pointer and length are the array's first elements. The interpreter runs
+both programs correctly.
+
+**Steps to reproduce:**
+1. `let arr: [i32; 3] = [1, 2, 3]`, `let s: [i32] = arr`, `if s.len() != 3 { return 1 }`,
+   `if s[2] != 3 { return 2 }`, `return 0`.
+2. The same with `let s: [i32] = @repeat(7, 3)` and `if s.len() != 3 { return 1 }`.
+3. `klar build` each and run; then `klar run --interpret`.
+
+**Expected:** Both exit 0, as they do under `--interpret`.
+
+**Actual:** The array variable exits 138 (SIGBUS); `@repeat` exits 1 (the length is wrong).
+With `var arr: [i32; 300]` the same line exits 139 or 133 depending on size (probes
+`scratch/probe74/coerce.kl`, `rep.kl`, `sl*.kl`, macOS arm64, 2026-09-30).
+
+**Found by:** Builder on fix/bug-74-75-runtime-checks, 2026-09-30, writing Bug 74's slice
+test; verified by probe.
+
+---
+
+## [ ] Bug 98: `List#[Id]` of a module-private alias crashes the compiler when another module declares its own `Id`
+
+**Status:** Open
+
+**System:** type alias scope — the element-type readers in `src/codegen/emit.zig`
+(`getListTypeInfo` `:7795`, array/slice readers `:7769`, `:7777`, `List.new` `:18353`,
+`Map.new` `:20233-20234`, `:21946`)
+
+**Escaped from:** fix/bug-89-type-alias-lowering (PR 53) — scoped aliases for declared,
+parameter and return types, but not for the element-type readers, and its Fix text says
+every `let` and `var` reads its own module's alias
+
+**Description:** Bug 89's fix substitutes a module's own aliases before the codegen asks the
+checker for a declared type. The readers that get a collection's element type still ask the
+checker directly, and the checker does not keep aliases per module, so when two modules each
+declare `type Id` the element type of `List#[Id]` can be the other module's `Id`.
+
+**Steps to reproduce:**
+1. Module `a`: `type Id = i64`, `pub fn f() -> Id { var xs: List#[Id] = List.new#[Id]();
+   xs.push(5000000000); let k: i32 = 0; return xs[k] }`.
+2. Module `b`: `type Id = i32`, `pub fn b_val() -> Id { return 7 }`.
+3. `main.kl` imports both and returns 42 when `f()` is 5000000000 and `b_val()` is 7.
+4. `klar build main.kl`.
+
+**Expected:** It builds and exits 42.
+
+**Actual:** The compiler crashes with "integer does not fit in destination type" at
+`src/codegen/emit.zig:4472`. It builds and exits 42 without module `b`, with `List#[i64]`,
+or when `b`'s `Id` is also `i64` (probe `scratch/gb89/mod/q/r3_l3/`).
+
+**Found by:** /qa-review fix-check round 3 on fix/bug-89-type-alias-lowering, 2026-09-30 —
+GenB, reply received after PR 53 merged; filed by /qa-review on fix/bug-74-75-runtime-checks
+— reviewer's evidence (probe with three controls), not re-read.
+
+---
+
+## [ ] Bug 99: `*p += …` (any compound assignment) through an `inout` parameter hangs the compiler or fails LLVM verification
+
+**Status:** Open
+
+**System:** deref compound assignment — the `.unary` deref arm of compound assignment in
+`src/codegen/emit.zig` (`ptr_elem_type = LLVMGetElementType(typeOf(ptr))`, `:5518`)
+
+**Description:** The compound-assignment path through a dereference takes the load type
+from `LLVMGetElementType` of the pointer's LLVM type. Pointers are opaque, so that call
+returns no real element type, and every `op=` arm loads with a garbage type. Plain
+`*p = *p + 1` works (`test/native/ref_inout.kl`).
+
+**Steps to reproduce:**
+1. `fn bump(p: inout i32) -> void { *p += 1 }`, called with `ref d` from `main`.
+2. The same with `p: inout u8` and `*p += 1.as#[u8]`, or `*p /= 3.as#[u8]`.
+3. `klar build` each.
+
+**Expected:** Each builds; `d` is updated through the reference.
+
+**Actual:** The `i32` form fails LLVM verification (`%addtmp = add half %loadtmp, i32 1`);
+the `u8` forms never finish building (killed after 20 s) (probes `scratch/qr7475/h5.kl`,
+`h7.kl`, `h2.kl`, macOS arm64, 2026-09-30).
+
+**Found by:** /qa-fix on fix/bug-74-75-runtime-checks, 2026-09-30, writing the deref case
+of finding #1's test; verified by probe (the `+=` arm is untouched by that branch).

@@ -1,0 +1,10 @@
+// Bug 75: compound `/=` by zero must trap natively, like `/`.
+// Expected: trap
+// Returning normally (exit 0) means `/=` ran without a zero check.
+
+fn main(args: [String]) -> i32 {
+    var x: i32 = 10
+    x /= args.len() - 1
+    println("10 /= 0 left {x}")
+    return 0
+}

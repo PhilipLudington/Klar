@@ -1,0 +1,14 @@
+// Skip: native-tests
+// Never returns. scripts/run-native-tests.sh runs it under a 1-second timeout
+// to prove a hanging test is reported as timed out (Debt 7).
+
+fn main() -> i32 {
+    var n: i32 = 0
+    while n >= 0 {
+        n = n +% 1
+        if n == 2147483647 {
+            n = 0
+        }
+    }
+    return 0
+}

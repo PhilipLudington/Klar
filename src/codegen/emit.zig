@@ -4323,6 +4323,34 @@ pub const Emitter = struct {
             .binary => |b| {
                 return self.isExprSigned(b.left);
             },
+            // A field or element carries its declared type's signedness; the runtime
+            // checks sign- or zero-extend and divide by it (Bugs 74, 75).
+            .field => |f| {
+                if (self.getStructTypeNameFromExpr(f.object)) |struct_name| {
+                    if (self.lookupFieldStructTypeName(struct_name, f.field_name)) |type_name| {
+                        return !isUnsignedIntName(type_name);
+                    }
+                }
+                return true;
+            },
+            .index => |ix| {
+                const elem = self.indexedElementType(ix.object) orelse return true;
+                if (elem == .primitive and elem.primitive.isInteger()) return elem.primitive.isSigned();
+                return true;
+            },
+            .call => |c| {
+                if (c.callee == .identifier) {
+                    if (self.type_checker) |tc| {
+                        if (tc.lookupSymbolAcrossModules(c.callee.identifier.name)) |sym| {
+                            if (sym.type_ == .function) {
+                                const ret = sym.type_.function.return_type;
+                                if (ret == .primitive and ret.primitive.isInteger()) return ret.primitive.isSigned();
+                            }
+                        }
+                    }
+                }
+                return true;
+            },
             else => return true, // Literals and other expressions default to signed
         }
     }
@@ -4677,16 +4705,12 @@ pub const Emitter = struct {
                 self.emitCheckedMul(lhs, rhs, is_signed),
             .div => if (is_float)
                 self.builder.buildFDiv(lhs, rhs, "fdivtmp")
-            else if (is_signed)
-                self.builder.buildSDiv(lhs, rhs, "divtmp")
             else
-                self.builder.buildUDiv(lhs, rhs, "udivtmp"),
+                self.emitCheckedDivRem(.div, lhs, rhs, is_signed),
             .mod => if (is_float)
                 self.builder.buildFRem(lhs, rhs, "fremtmp")
-            else if (is_signed)
-                self.builder.buildSRem(lhs, rhs, "modtmp")
             else
-                self.builder.buildURem(lhs, rhs, "umodtmp"),
+                self.emitCheckedDivRem(.rem, lhs, rhs, is_signed),
 
             // Wrapping arithmetic (no overflow check, wraps around)
             .add_wrap => self.builder.buildAdd(lhs, rhs, "addwrap"),
@@ -4824,6 +4848,115 @@ pub const Emitter = struct {
     /// Emit checked multiplication that traps on overflow.
     fn emitCheckedMul(self: *Emitter, lhs: llvm.ValueRef, rhs: llvm.ValueRef, is_signed: bool) llvm.ValueRef {
         return self.emitOverflowCheckedOp(.mul, lhs, rhs, is_signed);
+    }
+
+    const DivRemOp = enum { div, rem };
+
+    /// The one lowering of integer `/`, `%`, `/=` and `%=`. LLVM's `sdiv`,
+    /// `udiv`, `srem` and `urem` are undefined behavior for a zero divisor, and
+    /// the signed ones for MIN / -1: x86 raises SIGFPE, arm64 returns 0 (Bug 75).
+    /// Both cases branch to a `div.fail` block that traps, before the division.
+    /// `is_signed` is the dividend's signedness; unsigned operands have no
+    /// MIN / -1 case. A non-integer operand is lowered as before, unchecked.
+    fn emitCheckedDivRem(self: *Emitter, op: DivRemOp, lhs: llvm.ValueRef, rhs: llvm.ValueRef, is_signed: bool) llvm.ValueRef {
+        const operand_type = llvm.typeOf(rhs);
+        const is_int = llvm.getTypeKind(operand_type) == llvm.c.LLVMIntegerTypeKind;
+
+        if (is_int) {
+            if (self.current_function) |func| {
+                const zero = llvm.c.LLVMConstNull(operand_type);
+                var bad = self.builder.buildICmp(llvm.c.LLVMIntEQ, rhs, zero, "div.by_zero");
+                if (is_signed) {
+                    const bits = llvm.c.LLVMGetIntTypeWidth(operand_type);
+                    const one = llvm.c.LLVMConstInt(operand_type, 1, 0);
+                    const shift = llvm.c.LLVMConstInt(operand_type, bits - 1, 0);
+                    const min = llvm.c.LLVMBuildShl(self.builder.ref, one, shift, "div.min");
+                    const neg_one = llvm.c.LLVMConstAllOnes(operand_type);
+                    const lhs_is_min = self.builder.buildICmp(llvm.c.LLVMIntEQ, lhs, min, "div.lhs_min");
+                    const rhs_is_neg_one = self.builder.buildICmp(llvm.c.LLVMIntEQ, rhs, neg_one, "div.rhs_neg_one");
+                    const overflows = llvm.c.LLVMBuildAnd(self.builder.ref, lhs_is_min, rhs_is_neg_one, "div.overflow");
+                    bad = llvm.c.LLVMBuildOr(self.builder.ref, bad, overflows, "div.bad");
+                }
+
+                const ok_block = llvm.appendBasicBlock(self.ctx, func, "div.ok");
+                const fail_block = llvm.appendBasicBlock(self.ctx, func, "div.fail");
+                _ = self.builder.buildCondBr(bad, fail_block, ok_block);
+
+                self.builder.positionAtEnd(fail_block);
+                self.emitTrap();
+
+                self.builder.positionAtEnd(ok_block);
+            }
+        }
+
+        const signed = is_signed or !is_int;
+        return switch (op) {
+            .div => if (signed)
+                self.builder.buildSDiv(lhs, rhs, "divtmp")
+            else
+                self.builder.buildUDiv(lhs, rhs, "udivtmp"),
+            .rem => if (signed)
+                self.builder.buildSRem(lhs, rhs, "modtmp")
+            else
+                self.builder.buildURem(lhs, rhs, "umodtmp"),
+        };
+    }
+
+    const IndexCheckLabels = struct { ok: [:0]const u8, fail: [:0]const u8 };
+    const array_bounds_labels: IndexCheckLabels = .{ .ok = "bounds.ok", .fail = "bounds.fail" };
+    const list_bounds_labels: IndexCheckLabels = .{ .ok = "list.bounds.ok", .fail = "list.bounds.fail" };
+    const list_set_labels: IndexCheckLabels = .{ .ok = "set.ok", .fail = "set.fail" };
+
+    /// The one bounds check for every trapping index: array, slice and List
+    /// reads and writes, `ref arr[i]`, and `List.set`. It extends the index by
+    /// its own signedness (`index_is_signed`: sign-extend a signed index,
+    /// zero-extend an unsigned one) to at least 64 bits, compares it unsigned
+    /// against the zero-extended `len`, so a negative index is out of range, and
+    /// traps in `labels.fail` when it is not below `len`. It returns that same
+    /// extended index as an i64, and the caller addresses the element with it:
+    /// the check and the address read one value (Bug 74, where the check
+    /// zero-extended an `i8` of -1 to 255 and the GEP sign-extended it to -1).
+    fn emitCheckedIndex(
+        self: *Emitter,
+        index_val: llvm.ValueRef,
+        index_is_signed: bool,
+        len: llvm.ValueRef,
+        labels: IndexCheckLabels,
+    ) EmitError!llvm.ValueRef {
+        const i64_type = llvm.Types.int64(self.ctx);
+        const index_bits = llvm.c.LLVMGetIntTypeWidth(llvm.typeOf(index_val));
+        const len_bits = llvm.c.LLVMGetIntTypeWidth(llvm.typeOf(len));
+        const cmp_bits = @max(@as(c_uint, 64), index_bits);
+        const cmp_type = llvm.c.LLVMIntTypeInContext(self.ctx.ref, cmp_bits);
+
+        const index_wide = if (index_bits == cmp_bits)
+            index_val
+        else if (index_is_signed)
+            self.builder.buildSExt(index_val, cmp_type, "idx.ext")
+        else
+            self.builder.buildZExt(index_val, cmp_type, "idx.ext");
+        const len_wide = if (len_bits == cmp_bits)
+            len
+        else
+            self.builder.buildZExt(len, cmp_type, "len.ext");
+
+        const in_bounds = self.builder.buildICmp(llvm.c.LLVMIntULT, index_wide, len_wide, "bounds.check");
+
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const ok_block = llvm.appendBasicBlock(self.ctx, func, labels.ok);
+        const fail_block = llvm.appendBasicBlock(self.ctx, func, labels.fail);
+        _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
+
+        self.builder.positionAtEnd(fail_block);
+        self.emitTrap();
+
+        self.builder.positionAtEnd(ok_block);
+
+        // In range, so the value fits in 64 bits.
+        return if (cmp_bits == 64)
+            index_wide
+        else
+            self.builder.buildTrunc(index_wide, i64_type, "idx.i64");
     }
 
     /// Emit saturating addition using LLVM intrinsics.
@@ -5073,11 +5206,11 @@ pub const Emitter = struct {
             },
             .div_assign => blk: {
                 const lhs = self.builder.buildLoad(local.ty, local.value, "loadtmp");
-                break :blk self.builder.buildSDiv(lhs, rhs, "divtmp");
+                break :blk self.emitCheckedDivRem(.div, lhs, rhs, self.isExprSigned(bin.left));
             },
             .mod_assign => blk: {
                 const lhs = self.builder.buildLoad(local.ty, local.value, "loadtmp");
-                break :blk self.builder.buildSRem(lhs, rhs, "modtmp");
+                break :blk self.emitCheckedDivRem(.rem, lhs, rhs, self.isExprSigned(bin.left));
             },
             else => return EmitError.InvalidAST,
         };
@@ -5137,7 +5270,7 @@ pub const Emitter = struct {
                                 if (self.getListElementType(idx.object)) |_| {
                                     const index_val = try self.emitExpr(idx.index);
                                     const rhs = try self.emitExpr(bin.right);
-                                    _ = try self.emitListSetInline(field_ptr, idx.object, index_val, rhs);
+                                    _ = try self.emitListSetInline(field_ptr, idx.object, index_val, self.isExprSigned(idx.index), rhs);
                                     return rhs;
                                 }
                             }
@@ -5170,7 +5303,7 @@ pub const Emitter = struct {
             if (local.list_element_type != null) {
                 const index_val = try self.emitExpr(idx.index);
                 const rhs = try self.emitExpr(bin.right);
-                _ = try self.emitListSetInline(local.value, idx.object, index_val, rhs);
+                _ = try self.emitListSetInline(local.value, idx.object, index_val, self.isExprSigned(idx.index), rhs);
                 return rhs;
             }
 
@@ -5206,31 +5339,7 @@ pub const Emitter = struct {
                     const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, local.value, 1, "slice.len_ptr");
                     const slice_len = self.builder.buildLoad(i64_type, len_ptr, "slice.len");
 
-                    const index_type = llvm.typeOf(index_val);
-                    const index_bits = llvm.c.LLVMGetIntTypeWidth(index_type);
-                    const index_i64 = if (index_bits < 64)
-                        self.builder.buildZExt(index_val, i64_type, "idx.ext")
-                    else if (index_bits > 64)
-                        self.builder.buildTrunc(index_val, i64_type, "idx.trunc")
-                    else
-                        index_val;
-
-                    const in_bounds = self.builder.buildICmp(
-                        llvm.c.LLVMIntULT,
-                        index_i64,
-                        slice_len,
-                        "bounds.check",
-                    );
-
-                    const func = self.current_function orelse return EmitError.InvalidAST;
-                    const ok_block = llvm.appendBasicBlock(self.ctx, func, "bounds.ok");
-                    const fail_block = llvm.appendBasicBlock(self.ctx, func, "bounds.fail");
-                    _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
-
-                    self.builder.positionAtEnd(fail_block);
-                    self.emitTrap();
-
-                    self.builder.positionAtEnd(ok_block);
+                    const index_i64 = try self.emitCheckedIndex(index_val, self.isExprSigned(idx.index), slice_len, array_bounds_labels);
 
                     // Load data pointer from slice struct (field 0).
                     const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, local.value, 0, "slice.ptr_ptr");
@@ -5255,40 +5364,8 @@ pub const Emitter = struct {
         const array_len = llvm.Types.getArrayLength(arr_type);
         const len_val = llvm.Const.int64(self.ctx, @intCast(array_len));
 
-        // Zero-extend or sign-extend index to i64 for comparison
-        const index_type = llvm.typeOf(index_val);
-        const index_bits = llvm.c.LLVMGetIntTypeWidth(index_type);
-        const i64_type = llvm.Types.int64(self.ctx);
-
-        const index_i64 = if (index_bits < 64)
-            self.builder.buildZExt(index_val, i64_type, "idx.ext")
-        else if (index_bits > 64)
-            self.builder.buildTrunc(index_val, i64_type, "idx.trunc")
-        else
-            index_val;
-
-        // Bounds check: index < length (unsigned comparison)
-        const in_bounds = self.builder.buildICmp(
-            llvm.c.LLVMIntULT,
-            index_i64,
-            len_val,
-            "bounds.check",
-        );
-
-        // Create blocks for bounds check
-        const func = self.current_function orelse return EmitError.InvalidAST;
-        const ok_block = llvm.appendBasicBlock(self.ctx, func, "bounds.ok");
-        const fail_block = llvm.appendBasicBlock(self.ctx, func, "bounds.fail");
-
-        // Branch based on bounds check
-        _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
-
-        // Fail block: trap/unreachable
-        self.builder.positionAtEnd(fail_block);
-        self.emitTrap();
-
-        // Continue in OK block
-        self.builder.positionAtEnd(ok_block);
+        // Bounds check; the element is addressed with the same extended index
+        const index_i64 = try self.emitCheckedIndex(index_val, self.isExprSigned(idx.index), len_val, array_bounds_labels);
 
         // Evaluate the right-hand side
         const rhs = try self.emitExpr(bin.right);
@@ -5296,7 +5373,7 @@ pub const Emitter = struct {
         // GEP to get pointer to array element
         var indices = [_]llvm.ValueRef{
             llvm.Const.int32(self.ctx, 0),
-            index_val,
+            index_i64,
         };
         const elem_ptr = self.builder.buildGEP(arr_type, local.value, &indices, "elem.ptr");
 
@@ -5321,12 +5398,12 @@ pub const Emitter = struct {
             .div_assign => blk: {
                 const elem_type = llvm.c.LLVMGetElementType(arr_type);
                 const lhs = self.builder.buildLoad(elem_type, elem_ptr, "loadtmp");
-                break :blk self.builder.buildSDiv(lhs, rhs, "divtmp");
+                break :blk self.emitCheckedDivRem(.div, lhs, rhs, self.isExprSigned(bin.left));
             },
             .mod_assign => blk: {
                 const elem_type = llvm.c.LLVMGetElementType(arr_type);
                 const lhs = self.builder.buildLoad(elem_type, elem_ptr, "loadtmp");
-                break :blk self.builder.buildSRem(lhs, rhs, "modtmp");
+                break :blk self.emitCheckedDivRem(.rem, lhs, rhs, self.isExprSigned(bin.left));
             },
             else => return EmitError.InvalidAST,
         };
@@ -5409,11 +5486,11 @@ pub const Emitter = struct {
             },
             .div_assign => blk: {
                 const lhs = self.builder.buildLoad(field_type, field_ptr, "loadtmp");
-                break :blk self.builder.buildSDiv(lhs, rhs, "divtmp");
+                break :blk self.emitCheckedDivRem(.div, lhs, rhs, self.isExprSigned(bin.left));
             },
             .mod_assign => blk: {
                 const lhs = self.builder.buildLoad(field_type, field_ptr, "loadtmp");
-                break :blk self.builder.buildSRem(lhs, rhs, "modtmp");
+                break :blk self.emitCheckedDivRem(.rem, lhs, rhs, self.isExprSigned(bin.left));
             },
             else => return EmitError.InvalidAST,
         };
@@ -5451,11 +5528,11 @@ pub const Emitter = struct {
             },
             .div_assign => blk: {
                 const lhs = self.builder.buildLoad(ptr_elem_type, ptr, "loadtmp");
-                break :blk self.builder.buildSDiv(lhs, rhs, "divtmp");
+                break :blk self.emitCheckedDivRem(.div, lhs, rhs, self.isExprSigned(bin.left));
             },
             .mod_assign => blk: {
                 const lhs = self.builder.buildLoad(ptr_elem_type, ptr, "loadtmp");
-                break :blk self.builder.buildSRem(lhs, rhs, "modtmp");
+                break :blk self.emitCheckedDivRem(.rem, lhs, rhs, self.isExprSigned(bin.left));
             },
             else => return EmitError.InvalidAST,
         };
@@ -10133,45 +10210,13 @@ pub const Emitter = struct {
                         const array_len = llvm.Types.getArrayLength(arr_type);
                         const len_val = llvm.Const.int64(self.ctx, @intCast(array_len));
 
-                        // Zero-extend or sign-extend index to i64 for comparison
-                        const index_type = llvm.typeOf(index_val);
-                        const index_bits = llvm.c.LLVMGetIntTypeWidth(index_type);
-                        const i64_type = llvm.Types.int64(self.ctx);
-
-                        const index_i64 = if (index_bits < 64)
-                            self.builder.buildZExt(index_val, i64_type, "idx.ext")
-                        else if (index_bits > 64)
-                            self.builder.buildTrunc(index_val, i64_type, "idx.trunc")
-                        else
-                            index_val;
-
-                        // Bounds check: index < length (unsigned comparison)
-                        const in_bounds = self.builder.buildICmp(
-                            llvm.c.LLVMIntULT,
-                            index_i64,
-                            len_val,
-                            "bounds.check",
-                        );
-
-                        // Create blocks for bounds check
-                        const func = self.current_function orelse return EmitError.InvalidAST;
-                        const ok_block = llvm.appendBasicBlock(self.ctx, func, "bounds.ok");
-                        const fail_block = llvm.appendBasicBlock(self.ctx, func, "bounds.fail");
-
-                        // Branch based on bounds check
-                        _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
-
-                        // Fail block: trap/unreachable
-                        self.builder.positionAtEnd(fail_block);
-                        self.emitTrap();
-
-                        // Continue in OK block
-                        self.builder.positionAtEnd(ok_block);
+                        // Bounds check; the element is addressed with the same extended index
+                        const index_i64 = try self.emitCheckedIndex(index_val, self.isExprSigned(idx.index), len_val, array_bounds_labels);
 
                         // GEP directly from the alloca (no temp copy needed)
                         var indices = [_]llvm.ValueRef{
                             llvm.Const.int32(self.ctx, 0),
-                            index_val,
+                            index_i64,
                         };
                         const elem_ptr = self.builder.buildGEP(arr_type, local.value, &indices, "elem.ptr");
 
@@ -10193,39 +10238,8 @@ pub const Emitter = struct {
                         const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, local.value, 1, "slice.len_ptr");
                         const slice_len = self.builder.buildLoad(i64_type, len_ptr, "slice.len");
 
-                        // Zero-extend or sign-extend index to i64 for comparison
-                        const index_type = llvm.typeOf(index_val);
-                        const index_bits = llvm.c.LLVMGetIntTypeWidth(index_type);
-
-                        const index_i64 = if (index_bits < 64)
-                            self.builder.buildZExt(index_val, i64_type, "idx.ext")
-                        else if (index_bits > 64)
-                            self.builder.buildTrunc(index_val, i64_type, "idx.trunc")
-                        else
-                            index_val;
-
-                        // Bounds check: index < length (unsigned comparison)
-                        const in_bounds = self.builder.buildICmp(
-                            llvm.c.LLVMIntULT,
-                            index_i64,
-                            slice_len,
-                            "bounds.check",
-                        );
-
-                        // Create blocks for bounds check
-                        const func = self.current_function orelse return EmitError.InvalidAST;
-                        const ok_block = llvm.appendBasicBlock(self.ctx, func, "bounds.ok");
-                        const fail_block = llvm.appendBasicBlock(self.ctx, func, "bounds.fail");
-
-                        // Branch based on bounds check
-                        _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
-
-                        // Fail block: trap/unreachable
-                        self.builder.positionAtEnd(fail_block);
-                        self.emitTrap();
-
-                        // Continue in OK block
-                        self.builder.positionAtEnd(ok_block);
+                        // Bounds check; the element is addressed with the same extended index
+                        const index_i64 = try self.emitCheckedIndex(index_val, self.isExprSigned(idx.index), slice_len, array_bounds_labels);
 
                         // Load data pointer from slice struct (field 0)
                         const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, local.value, 0, "slice.ptr_ptr");
@@ -10245,7 +10259,6 @@ pub const Emitter = struct {
                         const element_size = self.getLLVMTypeSize(element_type);
                         const idx_header_type = self.getListHeaderType();
                         const i32_type = llvm.Types.int32(self.ctx);
-                        const i64_type = llvm.Types.int64(self.ctx);
                         const i8_type = llvm.Types.int8(self.ctx);
 
                         // Dereference header and load len
@@ -10254,25 +10267,9 @@ pub const Emitter = struct {
                         const current_len = self.builder.buildLoad(i32_type, len_ptr, "list.len");
 
                         // Bounds check: 0 <= index < len
-                        const zero = llvm.Const.int32(self.ctx, 0);
-                        const idx_ge_zero = self.builder.buildICmp(llvm.c.LLVMIntSGE, index_val, zero, "list.idx_ge_zero");
-                        const idx_lt_len = self.builder.buildICmp(llvm.c.LLVMIntSLT, index_val, current_len, "list.idx_lt_len");
-                        const in_bounds = llvm.c.LLVMBuildAnd(self.builder.ref, idx_ge_zero, idx_lt_len, "list.in_bounds");
-
-                        const func = self.current_function orelse return EmitError.InvalidAST;
-                        const ok_block = llvm.appendBasicBlock(self.ctx, func, "list.bounds.ok");
-                        const fail_block = llvm.appendBasicBlock(self.ctx, func, "list.bounds.fail");
-                        _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
-
-                        // Fail: unreachable (panic)
-                        self.builder.positionAtEnd(fail_block);
-                        self.emitTrap();
-
-                        // OK: load element from header's data pointer
-                        self.builder.positionAtEnd(ok_block);
+                        const idx_i64 = try self.emitCheckedIndex(index_val, self.isExprSigned(idx.index), current_len, list_bounds_labels);
                         const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, idx_header_type, idx_header, 0, "list.ptr_ptr");
                         const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), ptr_ptr, "list.data_ptr");
-                        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, index_val, i64_type, "list.idx_i64");
                         const elem_size_val = llvm.Const.int64(self.ctx, @intCast(element_size));
                         const offset = llvm.c.LLVMBuildMul(self.builder.ref, idx_i64, elem_size_val, "list.offset");
                         var gep_indices = [_]llvm.ValueRef{offset};
@@ -10297,7 +10294,6 @@ pub const Emitter = struct {
                                     const element_type = self.typeToLLVM(elem_klar_type);
                                     const element_size = self.getLLVMTypeSize(element_type);
                                     const i32_type = llvm.Types.int32(self.ctx);
-                                    const i64_type = llvm.Types.int64(self.ctx);
                                     const i8_type = llvm.Types.int8(self.ctx);
 
                                     // Handle reference (inout) parameters: load the pointer first
@@ -10333,23 +10329,9 @@ pub const Emitter = struct {
                                     const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fb_header_type, fb_header, 1, "list.len_ptr");
                                     const current_len = self.builder.buildLoad(i32_type, len_ptr, "list.len");
 
-                                    const zero = llvm.Const.int32(self.ctx, 0);
-                                    const idx_ge_zero = self.builder.buildICmp(llvm.c.LLVMIntSGE, index_val, zero, "list.idx_ge_zero");
-                                    const idx_lt_len = self.builder.buildICmp(llvm.c.LLVMIntSLT, index_val, current_len, "list.idx_lt_len");
-                                    const in_bounds = llvm.c.LLVMBuildAnd(self.builder.ref, idx_ge_zero, idx_lt_len, "list.in_bounds");
-
-                                    const func = self.current_function orelse return EmitError.InvalidAST;
-                                    const ok_block = llvm.appendBasicBlock(self.ctx, func, "list.bounds.ok");
-                                    const fail_block = llvm.appendBasicBlock(self.ctx, func, "list.bounds.fail");
-                                    _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
-
-                                    self.builder.positionAtEnd(fail_block);
-                                    self.emitTrap();
-
-                                    self.builder.positionAtEnd(ok_block);
+                                    const idx_i64 = try self.emitCheckedIndex(index_val, self.isExprSigned(idx.index), current_len, list_bounds_labels);
                                     const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fb_header_type, fb_header, 0, "list.ptr_ptr");
                                     const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), ptr_ptr, "list.data_ptr");
-                                    const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, index_val, i64_type, "list.idx_i64");
                                     const elem_size_val = llvm.Const.int64(self.ctx, @intCast(element_size));
                                     const offset2 = llvm.c.LLVMBuildMul(self.builder.ref, idx_i64, elem_size_val, "list.offset");
                                     var gep_indices2 = [_]llvm.ValueRef{offset2};
@@ -10376,40 +10358,8 @@ pub const Emitter = struct {
             const array_len = llvm.Types.getArrayLength(obj_type);
             const len_val = llvm.Const.int64(self.ctx, @intCast(array_len));
 
-            // Zero-extend or sign-extend index to i64 for comparison
-            const index_type = llvm.typeOf(index_val);
-            const index_bits = llvm.c.LLVMGetIntTypeWidth(index_type);
-            const i64_type = llvm.Types.int64(self.ctx);
-
-            const index_i64 = if (index_bits < 64)
-                self.builder.buildZExt(index_val, i64_type, "idx.ext")
-            else if (index_bits > 64)
-                self.builder.buildTrunc(index_val, i64_type, "idx.trunc")
-            else
-                index_val;
-
-            // Bounds check: index < length (unsigned comparison)
-            const in_bounds = self.builder.buildICmp(
-                llvm.c.LLVMIntULT,
-                index_i64,
-                len_val,
-                "bounds.check",
-            );
-
-            // Create blocks for bounds check
-            const func = self.current_function orelse return EmitError.InvalidAST;
-            const ok_block = llvm.appendBasicBlock(self.ctx, func, "bounds.ok");
-            const fail_block = llvm.appendBasicBlock(self.ctx, func, "bounds.fail");
-
-            // Branch based on bounds check
-            _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
-
-            // Fail block: trap/unreachable
-            self.builder.positionAtEnd(fail_block);
-            self.emitTrap();
-
-            // Continue in OK block
-            self.builder.positionAtEnd(ok_block);
+            // Bounds check; the element is addressed with the same extended index
+            const index_i64 = try self.emitCheckedIndex(index_val, self.isExprSigned(idx.index), len_val, array_bounds_labels);
 
             // Array access - store to temp for GEP (needed for computed array expressions)
             const alloca = self.builder.buildAlloca(obj_type, "arr.tmp");
@@ -10418,7 +10368,7 @@ pub const Emitter = struct {
             // GEP with the index
             var indices = [_]llvm.ValueRef{
                 llvm.Const.int32(self.ctx, 0),
-                index_val,
+                index_i64,
             };
             const elem_ptr = self.builder.buildGEP(obj_type, alloca, &indices, "elem.ptr");
 
@@ -10474,39 +10424,8 @@ pub const Emitter = struct {
                 const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, slice_alloca, 1, "slice.len_ptr");
                 const slice_len = self.builder.buildLoad(i64_type, len_ptr, "slice.len");
 
-                // Zero-extend or sign-extend index to i64 for comparison
-                const index_type = llvm.typeOf(index_val);
-                const index_bits = llvm.c.LLVMGetIntTypeWidth(index_type);
-
-                const index_i64 = if (index_bits < 64)
-                    self.builder.buildZExt(index_val, i64_type, "idx.ext")
-                else if (index_bits > 64)
-                    self.builder.buildTrunc(index_val, i64_type, "idx.trunc")
-                else
-                    index_val;
-
-                // Bounds check: index < length (unsigned comparison)
-                const in_bounds = self.builder.buildICmp(
-                    llvm.c.LLVMIntULT,
-                    index_i64,
-                    slice_len,
-                    "bounds.check",
-                );
-
-                // Create blocks for bounds check
-                const func = self.current_function orelse return EmitError.InvalidAST;
-                const ok_block = llvm.appendBasicBlock(self.ctx, func, "bounds.ok");
-                const fail_block = llvm.appendBasicBlock(self.ctx, func, "bounds.fail");
-
-                // Branch based on bounds check
-                _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
-
-                // Fail block: trap/unreachable
-                self.builder.positionAtEnd(fail_block);
-                self.emitTrap();
-
-                // Continue in OK block
-                self.builder.positionAtEnd(ok_block);
+                // Bounds check; the element is addressed with the same extended index
+                const index_i64 = try self.emitCheckedIndex(index_val, self.isExprSigned(idx.index), slice_len, array_bounds_labels);
 
                 // Load data pointer from slice struct (field 0)
                 const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, slice_alloca, 0, "slice.ptr_ptr");
@@ -10532,7 +10451,6 @@ pub const Emitter = struct {
                         const fb_list_type = self.getListStructType();
                         const fb_header_type = self.getListHeaderType();
                         const i32_type = llvm.Types.int32(self.ctx);
-                        const i64_type = llvm.Types.int64(self.ctx);
                         const i8_type = llvm.Types.int8(self.ctx);
 
                         // Store to temp alloca for deref
@@ -10545,23 +10463,9 @@ pub const Emitter = struct {
                         const current_len = self.builder.buildLoad(i32_type, len_ptr, "list.len");
 
                         // Bounds check: 0 <= index < len
-                        const zero = llvm.Const.int32(self.ctx, 0);
-                        const idx_ge_zero = self.builder.buildICmp(llvm.c.LLVMIntSGE, index_val, zero, "list.idx_ge_zero");
-                        const idx_lt_len = self.builder.buildICmp(llvm.c.LLVMIntSLT, index_val, current_len, "list.idx_lt_len");
-                        const in_bounds = llvm.c.LLVMBuildAnd(self.builder.ref, idx_ge_zero, idx_lt_len, "list.in_bounds");
-
-                        const func = self.current_function orelse return EmitError.InvalidAST;
-                        const ok_block = llvm.appendBasicBlock(self.ctx, func, "list.bounds.ok");
-                        const fail_block = llvm.appendBasicBlock(self.ctx, func, "list.bounds.fail");
-                        _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
-
-                        self.builder.positionAtEnd(fail_block);
-                        self.emitTrap();
-
-                        self.builder.positionAtEnd(ok_block);
+                        const idx_i64 = try self.emitCheckedIndex(index_val, self.isExprSigned(idx.index), current_len, list_bounds_labels);
                         const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fb_header_type, fb_header, 0, "list.ptr_ptr");
                         const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), ptr_ptr, "list.data_ptr");
-                        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, index_val, i64_type, "list.idx_i64");
                         const elem_size_val = llvm.Const.int64(self.ctx, @intCast(element_size));
                         const offset = llvm.c.LLVMBuildMul(self.builder.ref, idx_i64, elem_size_val, "list.offset");
                         var gep_indices = [_]llvm.ValueRef{offset};
@@ -10594,45 +10498,13 @@ pub const Emitter = struct {
                         const array_len = llvm.Types.getArrayLength(arr_type);
                         const len_val = llvm.Const.int64(self.ctx, @intCast(array_len));
 
-                        // Zero-extend or sign-extend index to i64 for comparison
-                        const index_type = llvm.typeOf(index_val);
-                        const index_bits = llvm.c.LLVMGetIntTypeWidth(index_type);
-                        const i64_type = llvm.Types.int64(self.ctx);
-
-                        const index_i64 = if (index_bits < 64)
-                            self.builder.buildZExt(index_val, i64_type, "idx.ext")
-                        else if (index_bits > 64)
-                            self.builder.buildTrunc(index_val, i64_type, "idx.trunc")
-                        else
-                            index_val;
-
-                        // Bounds check: index < length (unsigned comparison)
-                        const in_bounds = self.builder.buildICmp(
-                            llvm.c.LLVMIntULT,
-                            index_i64,
-                            len_val,
-                            "bounds.check",
-                        );
-
-                        // Create blocks for bounds check
-                        const func = self.current_function orelse return EmitError.InvalidAST;
-                        const ok_block = llvm.appendBasicBlock(self.ctx, func, "bounds.ok");
-                        const fail_block = llvm.appendBasicBlock(self.ctx, func, "bounds.fail");
-
-                        // Branch based on bounds check
-                        _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
-
-                        // Fail block: trap/unreachable
-                        self.builder.positionAtEnd(fail_block);
-                        self.emitTrap();
-
-                        // Continue in OK block
-                        self.builder.positionAtEnd(ok_block);
+                        // Bounds check; the element is addressed with the same extended index
+                        const index_i64 = try self.emitCheckedIndex(index_val, self.isExprSigned(idx.index), len_val, array_bounds_labels);
 
                         // GEP directly from the alloca - return the pointer, don't load!
                         var indices = [_]llvm.ValueRef{
                             llvm.Const.int32(self.ctx, 0),
-                            index_val,
+                            index_i64,
                         };
                         return self.builder.buildGEP(arr_type, local.value, &indices, "elem.addr");
                     } else if (arr_type_kind == llvm.c.LLVMStructTypeKind and local.is_array and local.array_size == null) {
@@ -10650,39 +10522,8 @@ pub const Emitter = struct {
                         const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, local.value, 1, "slice.len_ptr");
                         const slice_len = self.builder.buildLoad(i64_type, len_ptr, "slice.len");
 
-                        // Zero-extend or sign-extend index to i64 for comparison
-                        const index_type = llvm.typeOf(index_val);
-                        const index_bits = llvm.c.LLVMGetIntTypeWidth(index_type);
-
-                        const index_i64 = if (index_bits < 64)
-                            self.builder.buildZExt(index_val, i64_type, "idx.ext")
-                        else if (index_bits > 64)
-                            self.builder.buildTrunc(index_val, i64_type, "idx.trunc")
-                        else
-                            index_val;
-
-                        // Bounds check: index < length (unsigned comparison)
-                        const in_bounds = self.builder.buildICmp(
-                            llvm.c.LLVMIntULT,
-                            index_i64,
-                            slice_len,
-                            "bounds.check",
-                        );
-
-                        // Create blocks for bounds check
-                        const func = self.current_function orelse return EmitError.InvalidAST;
-                        const ok_block = llvm.appendBasicBlock(self.ctx, func, "bounds.ok");
-                        const fail_block = llvm.appendBasicBlock(self.ctx, func, "bounds.fail");
-
-                        // Branch based on bounds check
-                        _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
-
-                        // Fail block: trap/unreachable
-                        self.builder.positionAtEnd(fail_block);
-                        self.emitTrap();
-
-                        // Continue in OK block
-                        self.builder.positionAtEnd(ok_block);
+                        // Bounds check; the element is addressed with the same extended index
+                        const index_i64 = try self.emitCheckedIndex(index_val, self.isExprSigned(idx.index), slice_len, array_bounds_labels);
 
                         // Load data pointer from slice struct (field 0)
                         const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, local.value, 0, "slice.ptr_ptr");
@@ -13594,20 +13435,50 @@ pub const Emitter = struct {
 
     /// Check if a type expression represents a signed type.
     fn isTypeExprSigned(self: *Emitter, type_expr: ast.TypeExpr) bool {
-        _ = self;
         return switch (type_expr) {
-            .named => |n| {
-                // Check for exact unsigned type names
-                if (std.mem.eql(u8, n.name, "u8")) return false;
-                if (std.mem.eql(u8, n.name, "u16")) return false;
-                if (std.mem.eql(u8, n.name, "u32")) return false;
-                if (std.mem.eql(u8, n.name, "u64")) return false;
-                if (std.mem.eql(u8, n.name, "u128")) return false;
-                if (std.mem.eql(u8, n.name, "usize")) return false;
-                return true;
-            },
+            .named => |n| !isUnsignedIntName(n.name),
+            // `*p` of a `ref u8` / `inout u8` reads the pointee's signedness.
+            .reference => |r| self.isTypeExprSigned(self.resolveAliasTypeExpr(r.inner)),
             else => true,
         };
+    }
+
+    /// The element type of an indexed array, slice or List: a local, a struct field
+    /// (`h.a[i]`) or a nested index (`m[i][j]`). Null when it cannot be resolved.
+    fn indexedElementType(self: *Emitter, object: ast.Expr) ?types.Type {
+        const container: types.Type = switch (object) {
+            .identifier => |id| {
+                const local = self.named_values.get(id.name) orelse return null;
+                return local.array_element_type orelse local.list_element_type;
+            },
+            .field => |f| blk: {
+                const struct_name = self.getStructTypeNameFromExpr(f.object) orelse return null;
+                const tc = self.type_checker orelse return null;
+                const sym = tc.lookupSymbolAcrossModules(struct_name) orelse return null;
+                if (sym.type_ != .struct_) return null;
+                for (sym.type_.struct_.fields) |field| {
+                    if (std.mem.eql(u8, field.name, f.field_name)) break :blk field.type_;
+                }
+                return null;
+            },
+            .index => |inner| self.indexedElementType(inner.object) orelse return null,
+            .grouped => |g| return self.indexedElementType(g.expr),
+            else => return null,
+        };
+        return switch (container) {
+            .array => |a| a.element,
+            .slice => |s| s.element,
+            .list => |l| l.element,
+            else => null,
+        };
+    }
+
+    fn isUnsignedIntName(name: []const u8) bool {
+        const unsigned_names = [_][]const u8{ "u8", "u16", "u32", "u64", "u128", "usize" };
+        for (unsigned_names) |u| {
+            if (std.mem.eql(u8, name, u)) return true;
+        }
+        return false;
     }
 
     // Runtime function declarations
@@ -19934,13 +19805,11 @@ pub const Emitter = struct {
     /// Emit list.set(index, value) - sets element at index.
     /// Uses inline LLVM codegen with bounds checking (no runtime function call).
     fn emitListSet(self: *Emitter, list_ptr: llvm.ValueRef, method: *ast.MethodCall, index: llvm.ValueRef, value: llvm.ValueRef) EmitError!llvm.ValueRef {
-        return self.emitListSetInline(list_ptr, method.object, index, value);
+        return self.emitListSetInline(list_ptr, method.object, index, self.isExprSigned(method.args[0]), value);
     }
 
     /// Inline implementation of list set - shared by emitListSet and emitIndexAssignment.
-    fn emitListSetInline(self: *Emitter, list_ptr: llvm.ValueRef, object: ast.Expr, index: llvm.ValueRef, value: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const func = self.current_function orelse return EmitError.InvalidAST;
-
+    fn emitListSetInline(self: *Emitter, list_ptr: llvm.ValueRef, object: ast.Expr, index: llvm.ValueRef, index_is_signed: bool, value: llvm.ValueRef) EmitError!llvm.ValueRef {
         const element_type = self.getListElementType(object) orelse return EmitError.InvalidAST;
         const element_llvm_type = self.typeToLLVM(element_type);
         const element_size = self.getLLVMTypeSize(element_llvm_type);
@@ -19948,7 +19817,6 @@ pub const Emitter = struct {
         const header_type = self.getListHeaderType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
-        const i64_type = llvm.Types.int64(self.ctx);
         const i8_type = llvm.Types.int8(self.ctx);
 
         // Dereference header and load len for bounds check
@@ -19956,29 +19824,12 @@ pub const Emitter = struct {
         const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "set.len_ptr");
         const current_len = self.builder.buildLoad(i32_type, len_ptr, "set.current_len");
 
-        // Bounds check: index >= 0 and index < len
-        const zero = llvm.Const.int32(self.ctx, 0);
-        const idx_ge_zero = self.builder.buildICmp(llvm.c.LLVMIntSGE, index, zero, "set.idx_ge_zero");
-        const idx_lt_len = self.builder.buildICmp(llvm.c.LLVMIntSLT, index, current_len, "set.idx_lt_len");
-        const in_bounds = llvm.c.LLVMBuildAnd(self.builder.ref, idx_ge_zero, idx_lt_len, "set.in_bounds");
-
-        const ok_bb = llvm.appendBasicBlock(self.ctx, func, "set.ok");
-        const fail_bb = llvm.appendBasicBlock(self.ctx, func, "set.fail");
-
-        _ = self.builder.buildCondBr(in_bounds, ok_bb, fail_bb);
-
-        // Fail block: trap
-        self.builder.positionAtEnd(fail_bb);
-        self.emitTrap();
-
-        // OK block: perform the set
-        self.builder.positionAtEnd(ok_bb);
+        const idx_i64 = try self.emitCheckedIndex(index, index_is_signed, current_len, list_set_labels);
 
         const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "set.ptr_ptr");
         const current_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "set.current_ptr");
 
         // Calculate address: ptr + index * element_size
-        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, index, i64_type, "set.idx_i64");
         const elem_size_val = llvm.Const.int64(self.ctx, @intCast(element_size));
         const offset = llvm.c.LLVMBuildMul(self.builder.ref, idx_i64, elem_size_val, "set.offset");
         var gep_indices = [_]llvm.ValueRef{offset};

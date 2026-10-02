@@ -104,14 +104,30 @@ in user programs first, then checker/contract correctness, then tooling, then de
       is emitted as `i32 0` (wrong tuple values, an uninitialized optional payload),
       `src/codegen/emit.zig:~4481`. (qa-review 2026-09-29) (completed 2026-09-29: a hinted
       bare `None` is the hinted optional's none value)
-- [ ] Native codegen — Bugs 74 + 75: runtime checks that let undefined behavior through. A
+- [x] Native codegen — Bugs 74 + 75: runtime checks that let undefined behavior through. A
       negative `i8`/`i16` index passes the bounds check (zext) and the GEP sign-extends it
       (`src/codegen/emit.zig:9898`, `:5160`, `:9957`); integer `/` and `%` have no zero or
       MIN/-1 check (`:4570`). One branch; both fail into `emitTrap`. (qa-review 2026-09-27)
+      (completed 2026-09-30: every trapping index check is `emitCheckedIndex`, which checks
+      and addresses with one index extended by its own signedness; every integer `/`, `%`,
+      `/=` and `%=` is `emitCheckedDivRem`, which traps on a zero divisor and signed MIN / -1)
 - [ ] Platform layer — Bugs 68 + 69: `src/compat.zig` hard-codes Linux flag values that are
       wrong on macOS, so `createFile` ignores `truncate`/`exclusive` (`:525-528`; a shorter
       rewrite keeps the old tail) and `deleteTree` never removes directories (`:659`). Replace
       every literal with `std.c.O{…}` / `std.c.AT.REMOVEDIR`. (qa-review 2026-09-26)
+- [ ] Array-to-slice coercion — Bug 97: `let s: [i32] = arr` and `= @repeat(…)` store the
+      array's bytes into the slice slot, because only an array literal goes through
+      `convertArrayToSlice` (`src/codegen/emit.zig` ~2636, ~2807, ~9901); the program
+      crashes (SIGBUS) or reads a wrong length. (found: Builder 2026-09-30, Bug 74's test)
+- [ ] Type alias scope — Bug 98: `List#[Id]` of a module-private alias crashes the compiler
+      when another module declares its own `Id`; the element-type readers
+      (`getListTypeInfo`, `src/codegen/emit.zig:7795`, and the array, slice, `List.new` and
+      `Map.new` readers) ask the checker directly instead of going through Bug 89's
+      substitution. (qa-review 2026-09-30)
+- [ ] Deref compound assignment — Bug 99: `*p += …` and every other `op=` through an `inout`
+      parameter hangs the compiler (`u8`) or fails LLVM verification (`i32`), because the
+      load type is `LLVMGetElementType` of an opaque pointer (`src/codegen/emit.zig:5518`).
+      (qa-review 2026-09-30)
 - [x] Bugs 15 + 16 + 17 — GC: allocation no longer collects; the VM collects at the top of each
       instruction (`GC.collectIfRequested`), and `markValue` traces Future payloads. Stress-GC
       runs live in the unit tests (`src/vm_gc_test.zig`); the runner flag stays the Phase 0 task

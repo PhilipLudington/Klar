@@ -99,9 +99,17 @@ reads stdin in the VM, the interpreter or the REPL. Only the LSP's stdin path is
 
 ---
 
-## [ ] Debt 6: `runtime_trap_lowering` reaches 11 of 17 trap sites and passes on any count
+## [x] Debt 6: `runtime_trap_lowering` reaches 11 of 17 trap sites and passes on any count
 
-**Status:** Open
+**Status:** Paid
+**Paid:** fix/bug-74-75-runtime-checks, 2026-09-30: `runtime_traps.kl` also indexes a List
+field through a struct (`h.items[i]`), `make_arr()[i]`, `make_slice()[i]`, `make_list()[i]`,
+`ref fixed[i]` and `ref dv[i]`, and divides with `/` and `%`: 33 failure blocks. The check
+now fails unless each of `bounds.fail`, `list.bounds.fail`, `set.fail`, `overflow_trap`,
+`div.fail`, `unwrap.fail`, `unwrap_err.fail` and `match.failed` appears and the count is at
+least 33 (`TRAP_BLOCK_FLOOR`). Seen red three ways: `emitCheckedIndex` failing into a bare
+`unreachable` (13 of 33 bare), no division check (`div.fail` missing), and one index site
+without its check (32 blocks).
 **Kind:** test-gap
 **Where:** `test/native/runtime_traps.kl`, `scripts/run-native-tests.sh` (`runtime_trap_lowering`)
 **Due when:** touching `test/native/runtime_traps.kl` or a runtime-check block in `src/codegen/emit.zig`
@@ -121,9 +129,16 @@ Assert the new block count (at least 19 today), or grep once per label kind (`ov
 
 ---
 
-## [ ] Debt 7: Native trap tests pass on any exit code, and the timeout branch is untested
+## [x] Debt 7: Native trap tests pass on any exit code, and the timeout branch is untested
 
-**Status:** Open
+**Status:** Paid
+**Paid:** fix/bug-74-75-runtime-checks, 2026-09-30: a test marked `// Expected: trap` passes
+only on SIGILL or SIGTRAP (exit 132 or 133; any non-zero exit on Windows), and
+`array_bounds.kl` and the three `overflow_*.kl` are marked. The run timeout is
+`timeout -k 5`, and exit 137 counts as a timeout as well as 124. `native_timeout_branch`
+runs `test/native/timeout_hang.kl`, which never returns, under a 1-second limit and fails
+unless it is reported as timed out. Seen red with `overflow_add.kl` made non-trapping
+(`+%`) and with the timeout test's 124 changed.
 **Kind:** test-gap
 **Where:** `scripts/run-native-tests.sh:147` (`*) echo -1`), `:62`, `:129-135`; `test/native/overflow_add.kl`, `test/native/array_bounds.kl`
 **Due when:** touching `scripts/run-native-tests.sh`
@@ -316,3 +331,50 @@ and run it with two arguments. If it does not return 3, resolve the alias in
 sighting (ci-baseline-zig-016, fix/bug-83-sender-param, fix/bug-86-channel-field-alias,
 fix/bug-90-channel-index-for, fix/bug-89-type-alias-lowering, 2026-09-29) — GenA — reviewer's
 reading, not re-verified.
+
+---
+
+## [ ] Debt 17: Compound `/=`/`%=` by zero and the narrow-index extension are unpinned at most sites
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/codegen/emit.zig` — compound division on an element, field and deref (~5370, ~5458, ~5500); `ref arr[k]` (~10470, ~10494) and computed array/slice index (~10330, ~10396); `test/native/runtime_traps.kl`
+**Due when:** touching `emitCheckedIndex` or `emitCheckedDivRem` in `src/codegen/emit.zig` · touching `test/native/runtime_traps.kl`
+
+**Description:** `runtime_traps.kl` covers binary `/` and `%` only, so reverting the element,
+field or deref `/=`/`%=` site to a bare `sdiv` stays green, and `%=` by zero is tested
+nowhere. `runtime_trap_lowering` counts failure blocks, so a narrow-index site reverted to
+the old zero-extended compare still passes: it keeps its `bounds.fail` block. The exact
+`TRAP_BLOCK_FLOOR` (33) must also be raised by hand when a site is added, or a lost check
+hides behind the new one.
+
+**Payment:** Add `arr[i] /= z`, `h.n /= z` and `%=` lines to `runtime_traps.kl` and raise
+`TRAP_BLOCK_FLOOR`, or add `runtime_checks/mod_assign_by_zero.kl`. Add
+`runtime_checks/index_neg_i8_ref.kl` (`ref arr[k]` with an i8 -1, trap) and a u8 200 read
+through a computed array in `unsigned_index_and_division.kl`.
+
+**Found by:** /qa-review on fix/bug-74-75-runtime-checks, 2026-09-30 — TestCov (GAPS, and a
+WATCH on `runtime_traps.kl` seen on ci-baseline-zig-016 and fix/bug-83-sender-param) —
+reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 18: The native runner's trap and timeout branches have no self-test of their own
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `scripts/run-native-tests.sh:201-203`, `:212-213`, `:256-267`, `:309`
+**Due when:** touching `scripts/run-native-tests.sh`
+
+**Description:** If `expects_trap` stops matching the `// Expected: trap` marker, every trap
+test falls through to "any exit" and passes. `native_timeout_branch` exercises only exit 124,
+with its own `-k 5 1` command rather than `RUN_TIMEOUT`, so dropping `-k` stays green. On
+Windows any non-zero exit passes a trap test.
+
+**Payment:** A self-check like `native_timeout_branch` that builds a skipped fixture carrying
+the trap marker and returning 0, and asserts it is reported failed; derive the timeout
+self-test's command from `RUN_TIMEOUT` with the limit substituted.
+
+**Found by:** /qa-review on fix/bug-74-75-runtime-checks, 2026-09-30 — TestCov (GAPS, and a
+WATCH on the runner seen on fix/bug-79-integration-crash and fix/bug-90-channel-index-for) —
+reviewer's reading, not re-verified.

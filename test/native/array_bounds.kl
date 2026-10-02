@@ -1,4 +1,5 @@
 // test_array_bounds.kl - Test array bounds checking (should abort)
+// Expected: trap
 
 fn main() -> i32 {
     let arr: [i32] = [10, 20, 30]

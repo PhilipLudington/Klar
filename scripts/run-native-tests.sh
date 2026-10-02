@@ -6,6 +6,10 @@
 #   - "// Expected: build-error" in first 5 lines = test should fail to compile
 #   - "// Requires: c-helper" in first 5 lines = test needs external C library
 #   - "// Skip: native-tests" in first 5 lines = skip (handled by different runner)
+#   - "// Expected: trap" in first 5 lines = a runtime check must stop the program
+#     through llvm.trap: SIGILL (exit 132, x86) or SIGTRAP (133, arm64) on POSIX, so
+#     a segfault or a SIGFPE from a bare `sdiv` does not pass; any non-zero exit on
+#     Windows, where Git Bash reports the exception code's low byte.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RESULTS_FILE="$SCRIPT_DIR/.native-test-results.json"
@@ -58,10 +62,33 @@ FAILURES=""
 NATIVE_TEST_TIMEOUT="${NATIVE_TEST_TIMEOUT:-60}"
 RUN_TIMEOUT=""
 if timeout --version >/dev/null 2>&1; then
-    RUN_TIMEOUT="timeout $NATIVE_TEST_TIMEOUT"
+    TIMEOUT_CMD="timeout"
 elif gtimeout --version >/dev/null 2>&1; then
-    RUN_TIMEOUT="gtimeout $NATIVE_TEST_TIMEOUT"
+    TIMEOUT_CMD="gtimeout"
 fi
+# -k: a binary that ignores SIGTERM is killed 5s later instead of hanging the job.
+if [ -n "${TIMEOUT_CMD:-}" ]; then
+    RUN_TIMEOUT="$TIMEOUT_CMD -k 5 $NATIVE_TEST_TIMEOUT"
+fi
+
+# A run timed out: 124 when SIGTERM ended it, 137 when the -k SIGKILL did.
+is_timeout_exit() {
+    [ -n "$RUN_TIMEOUT" ] && { [ "$1" -eq 124 ] || [ "$1" -eq 137 ]; }
+}
+
+# Check if test expects a runtime trap (looks in first 5 lines)
+expects_trap() {
+    head -5 "$1" | grep -q "// Expected: trap"
+}
+
+# Did the exit code come from a trap? See "// Expected: trap" above.
+is_trap_exit() {
+    if [[ "$OS" == "Windows_NT" ]]; then
+        [ "$1" -ne 0 ]
+    else
+        [ "$1" -eq 132 ] || [ "$1" -eq 133 ]
+    fi
+}
 
 # Check if test expects a build error (looks in first 5 lines)
 expects_build_error() {
@@ -139,6 +166,8 @@ get_expected() {
         type_alias_readers) echo 0 ;;  # struct and unsigned aliases read as their targets (Bug 89)
         type_alias_declarations) echo 0 ;;  # var, method, ref and string alias declarations (Bug 89)
         none_hint_width) echo 0 ;;  # a bare None under a tuple or push hint takes the optional's layout (Bug 84)
+        unsigned_index_and_division) echo 0 ;;  # unsigned index and division keep their own semantics (Bugs 74, 75)
+        unsigned_operand_sources) echo 0 ;;  # a field or element operand keeps its unsigned semantics (Bugs 74, 75 qa-fix)
         list_string_drop) echo 42 ;;
         list_index_assign) echo 42 ;;
         list_nested_basic) echo 42 ;;
@@ -218,13 +247,25 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
         # Check against expected (if defined)
         expected=$(get_expected "$name")
 
-        if [ -n "$RUN_TIMEOUT" ] && [ $result -eq 124 ]; then
+        if is_timeout_exit $result; then
             echo "✗ $name (timed out after ${NATIVE_TEST_TIMEOUT}s)"
             FAILED=$((FAILED + 1))
             if [ -n "$FAILURES" ]; then
                 FAILURES="$FAILURES,"
             fi
             FAILURES="$FAILURES\"$name: timed out after ${NATIVE_TEST_TIMEOUT}s\""
+        elif expects_trap "$f"; then
+            if is_trap_exit $result; then
+                echo "✓ $name (trapped, exit: $result)"
+                PASSED=$((PASSED + 1))
+            else
+                echo "✗ $name (expected a trap, got exit: $result)"
+                FAILED=$((FAILED + 1))
+                if [ -n "$FAILURES" ]; then
+                    FAILURES="$FAILURES,"
+                fi
+                FAILURES="$FAILURES\"$name: expected a trap, got exit $result\""
+            fi
         elif [ "$expected" = "-1" ] || [ $result -eq $expected ]; then
             echo "✓ $name (exit: $result)"
             PASSED=$((PASSED + 1))
@@ -283,17 +324,34 @@ if [ -f "$trap_ir" ]; then
     ' "$trap_ir")
     trap_total=$(printf '%s\n' "$trap_blocks" | grep -c . || true)
     trap_bare=$(printf '%s\n' "$trap_blocks" | grep -v "call void @llvm.trap()" | grep -c . || true)
-    if [ "$trap_total" -gt 0 ] && [ "$trap_bare" -eq 0 ]; then
+    # Every kind of check must still reach the IR, and the fixture's block count
+    # must not drop: a failure block that disappears is a check that was lost
+    # (Debt 6). Raise the floor when runtime_traps.kl gains a site.
+    TRAP_BLOCK_FLOOR=33
+    trap_missing=""
+    for kind in bounds.fail list.bounds.fail set.fail overflow_trap div.fail unwrap.fail unwrap_err.fail match.failed; do
+        if ! printf '%s\n' "$trap_blocks" | awk -v k="$kind" '{ l = $1; sub(/[0-9]*:$/, "", l); if (l == k) f = 1 } END { exit !f }'; then
+            trap_missing="$trap_missing $kind"
+        fi
+    done
+    if [ "$trap_bare" -eq 0 ] && [ "$trap_total" -ge "$TRAP_BLOCK_FLOOR" ] && [ -z "$trap_missing" ]; then
         echo "✓ $trap_name ($trap_total failure blocks trap)"
         PASSED=$((PASSED + 1))
     else
-        echo "✗ $trap_name ($trap_bare of $trap_total failure blocks do not call llvm.trap)"
+        if [ "$trap_bare" -ne 0 ]; then
+            trap_why="$trap_bare of $trap_total failure blocks do not call llvm.trap"
+        elif [ -n "$trap_missing" ]; then
+            trap_why="no failure block for:$trap_missing"
+        else
+            trap_why="$trap_total failure blocks, fewer than $TRAP_BLOCK_FLOOR"
+        fi
+        echo "✗ $trap_name ($trap_why)"
         printf '%s\n' "$trap_blocks" | grep -v "call void @llvm.trap()" | head -5 | sed 's/^/  /'
         FAILED=$((FAILED + 1))
         if [ -n "$FAILURES" ]; then
             FAILURES="$FAILURES,"
         fi
-        FAILURES="$FAILURES\"$trap_name: $trap_bare of $trap_total failure blocks do not call llvm.trap\""
+        FAILURES="$FAILURES\"$trap_name: $trap_why\""
     fi
 else
     echo "✗ $trap_name (runtime_traps.kl did not compile to LLVM IR)"
@@ -304,6 +362,41 @@ else
     FAILURES="$FAILURES\"$trap_name: runtime_traps.kl did not compile to LLVM IR\""
 fi
 rm -rf "$trap_dir"
+
+# Timeout branch (Debt 7): a binary that never returns must be reported as timed
+# out, not hang the job or pass. test/native/timeout_hang.kl loops forever; run it
+# under a 1-second limit through the same timeout command and exit test as above.
+if [ -n "$RUN_TIMEOUT" ]; then
+    hang_name="native_timeout_branch"
+    hang_bin="$BUILD_DIR/klar_test_timeout_hang"
+    if $KLAR build "$TEST_DIR/timeout_hang.kl" -o "$hang_bin" 2>/dev/null | grep -q "^Built"; then
+        hang_run="$hang_bin"
+        if [[ "$OS" == "Windows_NT" ]] && [ -f "$hang_bin.exe" ]; then
+            hang_run="$hang_bin.exe"
+        fi
+        $TIMEOUT_CMD -k 5 1 "$hang_run" >/dev/null 2>&1
+        hang_result=$?
+        if is_timeout_exit $hang_result; then
+            echo "✓ $hang_name (hanging binary timed out, exit: $hang_result)"
+            PASSED=$((PASSED + 1))
+        else
+            echo "✗ $hang_name (hanging binary was not reported as timed out, exit: $hang_result)"
+            FAILED=$((FAILED + 1))
+            if [ -n "$FAILURES" ]; then
+                FAILURES="$FAILURES,"
+            fi
+            FAILURES="$FAILURES\"$hang_name: exit $hang_result, not a timeout\""
+        fi
+        rm -f "$hang_bin" "$hang_bin.exe"
+    else
+        echo "✗ $hang_name (timeout_hang.kl did not build)"
+        FAILED=$((FAILED + 1))
+        if [ -n "$FAILURES" ]; then
+            FAILURES="$FAILURES,"
+        fi
+        FAILURES="$FAILURES\"$hang_name: timeout_hang.kl did not build\""
+    fi
+fi
 
 TOTAL=$((PASSED + FAILED))
 

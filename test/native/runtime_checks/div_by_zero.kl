@@ -1,0 +1,10 @@
+// Bug 75: integer division by zero must trap natively, as the VM reports it.
+// Expected: trap
+// Returning normally (exit 0) means `/` ran without a zero check.
+
+fn main(args: [String]) -> i32 {
+    let z: i32 = args.len() - 1
+    let r: i32 = 10 / z
+    println("10 / 0 returned {r}")
+    return 0
+}
