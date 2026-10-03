@@ -2971,3 +2971,31 @@ at EOF, so the output comes back silently truncated with `Ok`.
 **Found by:** `~/.claude` qa-calibrate trial c4ens (Fixture 4 ensemble), 1 of 6 runs
 (2026-09-30 172024, against `20a5a3e`); the `<= 0` test survives at `3ab4ec6`, re-read
 2026-10-03 — not run.
+
+---
+
+## [ ] Bug 105: `compat.Dir.deleteTree` reports success when a delete fails, so `klar clean` never warns
+
+**Status:** Open
+
+**System:** platform layer — `src/compat.zig` (the Zig 0.16 file/dir/process shim)
+
+**Deferred:** after the current milestone — `klar clean` still removes `build/` in the
+ordinary case since Bug 69; this only hides a failure (a permission error, a file in use).
+
+**Description:** `deleteTree` (`src/compat.zig:696-707`) discards each file's `deleteFile`
+error (`catch {}`) and the final `unlinkat` result (`_ =`), so it returns success with the
+tree still on disk. `cleanCommand` (`src/main.zig:6860`) has a "Warning: could not remove
+build/" branch that cannot fire, and counts `build/` as removed. Bug 69 hid behind the
+same silence: the wrong flag failed with ENOTDIR and nothing said so.
+
+**Steps to reproduce:**
+1. `mkdir -p build/sub && touch build/sub/f && chmod 555 build/sub` (so `f` cannot be unlinked).
+2. `klar clean`.
+
+**Expected:** `Warning: could not remove build/`, and `build/` not counted as removed.
+
+**Actual:** No warning; `build/` is reported removed and is still there.
+
+**Found by:** /qa-review on fix/bug-68-69-compat-flags, 2026-10-03 — GenA; verified by
+reading `src/compat.zig:700-706` and `src/main.zig:6860-6863`.
