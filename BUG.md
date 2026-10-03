@@ -2818,3 +2818,142 @@ the `u8` forms never finish building (killed after 20 s) (probes `scratch/qr7475
 
 **Found by:** /qa-fix on fix/bug-74-75-runtime-checks, 2026-09-30, writing the deref case
 of finding #1's test; verified by probe (the `+=` arm is untouched by that branch).
+
+---
+
+## [ ] Bug 100: `tcp_read(s, max_bytes <= 0)` returns an IoError built from a stale errno
+
+**Status:** Open
+
+**System:** native socket argument guards — the `max_bytes <= 0` blocks of `emitTcpRead`
+(`tcpr.max_bad`) and `udp_read` (`udpr.max_bad`) in `src/codegen/emit.zig`
+
+**Deferred:** after the current milestone. The read is still refused with `Err`; only the
+error kind is wrong, and only for a caller passing a non-positive size.
+
+**Description:** The L7 guard rejects `max_bytes <= 0` before any syscall runs, then calls
+`emitErrnoToIoError`, so the error kind is whatever errno an earlier call left behind.
+`udp_read` has the same block.
+
+**Steps to reproduce:**
+1. Make any failing libc call (open a missing file), then `tcp_read(stream, 0)`.
+
+**Expected:** A fixed kind such as `InvalidInput`, the same every time.
+
+**Actual:** The earlier failure's kind (e.g. `NotFound`), or `Other` when errno is 0.
+
+**Found by:** `~/.claude` qa-calibrate trial c4ens (Fixture 4 ensemble), 3 of 6 runs
+(2026-09-30 171611, 172024, 172442); filed through `.claude/inbox/`, code re-read at
+`3ab4ec6` 2026-10-03 — not run.
+
+---
+
+## [ ] Bug 101: The HTTP server matches routes against the raw request target, query string included
+
+**Status:** Open
+
+**System:** HTTP server routing — `parse_request_line_path` and `match_route` in
+`stdlib/http_server.kl`
+
+**Deferred:** after the current milestone. A stdlib routing defect with a caller-side
+workaround (strip the query before matching); no compiler path depends on it.
+
+**Description:** The request path is the whole request target, and nothing strips `?…`, so
+a query string becomes part of the path a route is matched against.
+
+**Steps to reproduce:**
+1. Register the exact route `/health`, then `curl 'http://127.0.0.1:<port>/health?x=1'`.
+
+**Expected:** `/health` matches, and the query is available separately.
+
+**Actual:** No route matches; the param route `/api/users/{id}` given `/api/users/42?v=1`
+binds `id = "42?v=1"`.
+
+**Found by:** `~/.claude` qa-calibrate trial c4ens (Fixture 4 ensemble), 2 of 6 runs
+(2026-09-30 171611, 172605); filed through `.claude/inbox/`, code re-read at `3ab4ec6`
+2026-10-03 — not run.
+
+---
+
+## [ ] Bug 102: `http_request` sends caller headers unvalidated and duplicates `Content-Length`
+
+**Status:** Open
+
+**System:** HTTP stdlib message framing — `Content-Length` and body bounds in
+`stdlib/http_client.kl` (`http_request`, `parse_http_response`) and `stdlib/http_server.kl`
+
+**Deferred:** after the current milestone. Reached only by a caller that passes its own
+`Content-Length` or a header containing CR/LF; Bug 64 already holds this System's next fix.
+
+**Description:** `http_request` concatenates the caller's header names and values, and the
+path, into the request with no CR/LF check, so a value containing `\r\n` injects headers.
+A caller that passes its own `Content-Length` gets a second one appended whenever the body
+is non-empty.
+
+**Steps to reproduce:**
+1. `http_request("POST", url, headers {"Content-Length": "3"}, "abc")`.
+
+**Expected:** One `Content-Length` header; a header containing CR or LF rejected with `Err`.
+
+**Actual:** Two `Content-Length` lines (a request-smuggling shape); CR/LF passed through.
+
+**Found by:** `~/.claude` qa-calibrate trial c4ens (Fixture 4 ensemble), 1 of 6 runs
+(2026-09-30 172132); filed through `.claude/inbox/`, code re-read at `3ab4ec6` 2026-10-03
+— not run.
+
+---
+
+## [ ] Bug 103: TCP sockets are created without close-on-exec, so a spawned child inherits them
+
+**Status:** Open
+
+**System:** native fd inheritance — the `socket` and `accept` calls in `src/codegen/emit.zig`
+(`emitTcp*`); only the `process_spawn` pipes get `FD_CLOEXEC`
+
+**Deferred:** after the current milestone. Only a program that holds a socket while calling
+`process_spawn` is affected, and Bug 13 (non-variadic `fcntl`) must be settled first for an
+`fcntl`-based fix to work on arm64 macOS.
+
+**Description:** A server that calls `process_spawn` while holding a listener or a
+connection leaks those fds into the child, which keeps the port bound and the peer's
+connection open after the parent closes it. Related to Bug 13: `SOCK_CLOEXEC` / `accept4`
+on Linux avoids `fcntl` altogether.
+
+**Steps to reproduce:**
+1. `tcp_listen`, `process_spawn("sleep", ["30"])`, `tcp_listener_close`, exit.
+2. `lsof -i :<port>` while the child sleeps.
+
+**Expected:** The port is free once the parent exits.
+
+**Actual:** The child holds the listening socket.
+
+**Found by:** `~/.claude` qa-calibrate trial c4ens (Fixture 4 ensemble), 1 of 6 runs
+(2026-09-30 172605); filed through `.claude/inbox/`, code re-read at `3ab4ec6` 2026-10-03
+— not run.
+
+---
+
+## [ ] Bug 104: `process_wait` treats a read error while draining stdout/stderr as EOF
+
+**Status:** Open
+
+**System:** native process wait — the poll drain loop of `emitProcessWait` in
+`src/codegen/emit.zig` (`wait.oeof` / `wait.eeof`, `nr <= 0`)
+
+**Deferred:** after the current milestone. Needs a signal handler installed without
+`SA_RESTART`, or an EIO, to reach; the common path reads to a real EOF.
+
+**Description:** A `read` returning -1 (EINTR from a signal, or EIO) ends that stream as if
+at EOF, so the output comes back silently truncated with `Ok`.
+
+**Steps to reproduce:**
+1. Install a signal handler without `SA_RESTART`, spawn a child producing large output, and
+   deliver the signal during `process_wait`.
+
+**Expected:** The read is retried on EINTR, and any other error returns `Err`.
+
+**Actual:** `Ok(ProcessOutput)` with stdout cut where the signal landed.
+
+**Found by:** `~/.claude` qa-calibrate trial c4ens (Fixture 4 ensemble), 1 of 6 runs
+(2026-09-30 172024, against `20a5a3e`); the `<= 0` test survives at `3ab4ec6`, re-read
+2026-10-03 — not run.
