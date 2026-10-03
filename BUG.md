@@ -1724,9 +1724,9 @@ CI Linux jobs can show.
 
 ---
 
-## [ ] Bug 68: On macOS, `compat.Dir.createFile` ignores `truncate` and `exclusive` — a shorter rewrite leaves the old file's tail behind
+## [x] Bug 68: On macOS, `compat.Dir.createFile` ignores `truncate` and `exclusive` — a shorter rewrite leaves the old file's tail behind
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** platform layer — `src/compat.zig` (the Zig 0.16 file/dir/process shim)
 
@@ -1750,11 +1750,19 @@ migration (`2c69c7f`).
 **Found by:** /qa-review on ci/baseline-zig-016, 2026-09-26 — GenA; probe
 `scratch/qa-shardA/probe/probe.zig` — reviewer's evidence, not re-read.
 
+**Fix:** `createFile` and `openFile` build their `openat` flags as `std.c.O`, std's
+per-target layout, so `CREAT`, `TRUNC`, `EXCL` and the access mode are the target's own
+bits; `mapOpenErrno` maps `EEXIST` to `PathAlreadyExists`, which an exclusive create of an
+existing file now returns (`src/compat.zig`, fix/bug-68-69-compat-flags).
+
+**Test:** `src/compat_test.zig` — "Dir.createFile truncates…" and "Dir.createFile
+exclusive refuses an existing file with PathAlreadyExists".
+
 ---
 
-## [ ] Bug 69: On macOS, `compat.Dir.deleteTree` never removes directories — `klar clean` leaves `build/` behind
+## [x] Bug 69: On macOS, `compat.Dir.deleteTree` never removes directories — `klar clean` leaves `build/` behind
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** platform layer — `src/compat.zig` (the Zig 0.16 file/dir/process shim)
 
@@ -1773,6 +1781,12 @@ error is discarded. Files inside are deleted and every directory stays.
 
 **Found by:** /qa-review on ci/baseline-zig-016, 2026-09-26 — GenA; probe
 `scratch/qa-shardA/probe/probe2.zig` — reviewer's evidence, not re-read.
+
+**Fix:** `deleteTree` passes `std.c.AT.REMOVEDIR` (0x80 on macOS, 0x200 on Linux) to its
+final `unlinkat` (`src/compat.zig`, fix/bug-68-69-compat-flags).
+
+**Test:** `src/compat_test.zig` — "Dir.deleteTree removes nested directories, not only
+their files".
 
 ---
 
