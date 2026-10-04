@@ -3122,3 +3122,39 @@ leaving the variable pointing at it.
 
 **Found by:** PR 56 session's exit-code count from the `./run-tests.sh` output at `b9d81b2`,
 2026-10-04; re-run individually and narrowed by the Bug 98 pick-up, 2026-10-04.
+
+---
+
+## [ ] Bug 109: A module-private alias inside a function type (`fn(Id) -> Id`) fails native build with an LLVM verification error
+
+**Status:** Open
+
+**System:** type alias scope — the element-type readers in `src/codegen/emit.zig`
+(`substituteAliases` `:7966`)
+
+**Deferred:** after the current milestone. The build refuses rather than miscompiling, and
+spelling the target type (`fn(i64) -> i64`) works.
+
+**Escaped from:** fix/bug-89-type-alias-lowering (PR 53) — `substituteAliases` recurses
+through tuples, optionals, arrays, slices, results, references and generic arguments, but has
+no case for `.function`, `.extern_function` or `.qualified`
+
+**Description:** An alias inside a function type is handed to the checker unscoped, so the
+closure's signature is built with the wrong width. One file and one alias are enough; no
+second module is needed.
+
+**Steps to reproduce:**
+1. `type Id = i64`; in `main`: `let one: Id = 1`,
+   `let f: fn(Id) -> Id = |x: Id| -> Id { return x + one }`, `let a: Id = 5000000000`,
+   `if f(a) != 5000000001.as#[i64] { return 3 }`, `return 42`.
+2. `klar build` the file.
+
+**Expected:** It builds and exits 42.
+
+**Actual:** `LLVM Module verification failed: Call parameter type does not match function
+signature!` (an `i64` argument against an `i32` parameter), no binary, and `klar build` exits
+0 (Bug 77). It fails the same way when the closure is stored in a `List#[fn(Id) -> Id]` and
+read back (probes `scratch/p98d/two.kl`, `scratch/p98d/one.kl`, 3 of 3 runs each).
+
+**Found by:** /qa-review on fix/bug-98-alias-element-scope, 2026-10-04 — GenA named the gap
+in `substituteAliases`; the main loop's probes showed it failing.
