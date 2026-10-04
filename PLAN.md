@@ -118,10 +118,13 @@ in user programs first, then checker/contract correctness, then tooling, then de
       (completed 2026-10-03: every `openat`, `unlinkat`, `lseek` and statx flag in
       `compat.zig` is std's per-target constant, and an exclusive create of an existing
       file is `PathAlreadyExists`)
-- [ ] Array-to-slice coercion — Bug 97: `let s: [i32] = arr` and `= @repeat(…)` store the
+- [x] Array-to-slice coercion — Bug 97: `let s: [i32] = arr` and `= @repeat(…)` store the
       array's bytes into the slice slot, because only an array literal goes through
       `convertArrayToSlice` (`src/codegen/emit.zig` ~2636, ~2807, ~9901); the program
       crashes (SIGBUS) or reads a wrong length. (found: Builder 2026-09-30, Bug 74's test)
+      (completed 2026-10-04: every `let`/`var` declared `[T]`, every plain `=` to a slice
+      variable and every slice field initializer stores through `emitSliceValue`, which
+      converts any array value; a plain `=` to a slice was a third copy of the bug)
 - [ ] Type alias scope — Bug 98: `List#[Id]` of a module-private alias crashes the compiler
       when another module declares its own `Id`; the element-type readers
       (`getListTypeInfo`, `src/codegen/emit.zig:7795`, and the array, slice, `List.new` and
