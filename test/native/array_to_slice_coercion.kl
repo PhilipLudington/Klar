@@ -1,0 +1,57 @@
+// Test: any array value stored into a slice-typed slot becomes { ptr, len } (Bug 97).
+// Before the fix only an array literal was converted; an array variable or a @repeat
+// stored the array's own bytes in the slice slot (SIGBUS, or a wrong length).
+
+fn slice_from_local() -> [i32] {
+    let arr: [i32; 3] = [4, 5, 6]
+    let s: [i32] = arr
+    return s
+}
+
+fn main() -> i32 {
+    // 1. `let` from an array variable.
+    let arr: [i32; 3] = [1, 2, 3]
+    let a: [i32] = arr
+    if a.len() != 3 { return 1 }
+    if a[2] != 3 { return 2 }
+
+    // 2. `var` from an array variable.
+    var b: [i32] = arr
+    if b.len() != 3 { return 3 }
+    if b[0] != 1 { return 4 }
+
+    // 3. A small @repeat.
+    let c: [i32] = @repeat(7, 3)
+    if c.len() != 3 { return 5 }
+    if c[2] != 7 { return 6 }
+
+    // 4. A large @repeat (the path that initializes in place).
+    let d: [i32] = @repeat(8, 5000)
+    if d.len() != 5000 { return 7 }
+    if d[4999] != 8 { return 8 }
+
+    // 5. A large array variable.
+    var big: [i32; 300] = @repeat(1, 300)
+    big[299] = 9
+    let e: [i32] = big
+    if e.len() != 300 { return 9 }
+    if e[299] != 9 { return 10 }
+
+    // 6. A plain `=` of an array to a slice variable.
+    var f: [i32] = [0]
+    f = arr
+    if f.len() != 3 { return 11 }
+    if f[1] != 2 { return 12 }
+
+    // 7. A slice converted from a local array outlives the function that made it.
+    let g: [i32] = slice_from_local()
+    if g.len() != 3 { return 13 }
+    if g[2] != 6 { return 14 }
+
+    // 8. A slice stored into a slice stays the same slice.
+    let h: [i32] = a
+    if h.len() != 3 { return 15 }
+    if h[0] != 1 { return 16 }
+
+    return 0
+}
