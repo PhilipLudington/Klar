@@ -2834,8 +2834,9 @@ GenB, reply received after PR 53 merged; filed by /qa-review on fix/bug-74-75-ru
 — reviewer's evidence (probe with three controls), not re-read.
 
 **Fix:** Every place `src/codegen/emit.zig` asks the checker to resolve a type expression now
-goes through `resolveExpectedType`, which substitutes the current module's aliases at every
-depth first (Bug 89's `substituteAliases`): the array, slice, List, Map and Set element
+goes through `resolveExpectedType`, which substitutes the current module's aliases first
+(Bug 89's `substituteAliases`, which recurses through optional, array, slice, tuple and generic
+arguments but not into a function type: Bug 109): the array, slice, List, Map and Set element
 readers, `List.with_capacity`, `Map.new` / `Map.with_capacity` (`resolveMapEntrySize`),
 `Set.with_capacity`, `channel_create`, `getVariantPayloadType` and `resolveTypeExprDirect`.
 The crash was intermittent, not certain: an unscoped `Id` falls through to the checker's
