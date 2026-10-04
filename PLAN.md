@@ -134,6 +134,16 @@ in user programs first, then checker/contract correctness, then tooling, then de
       parameter hangs the compiler (`u8`) or fails LLVM verification (`i32`), because the
       load type is `LLVMGetElementType` of an opaque pointer (`src/codegen/emit.zig:5518`).
       (qa-review 2026-09-30)
+- [ ] Cell — Bug 106: a second `let x: T = cell.get()` after `cell.set(v)` segfaults the
+      native program; `test/native/cell_basic.kl` crashes and passes. (found: PR 56 exit-code
+      count, 2026-10-04)
+- [ ] Generic function-typed parameters — Bug 107: `apply#[T](f: fn(T) -> T, x: T)` calling
+      `f(x)` segfaults the native program; `test/native/meta_pure_generic.kl` crashes and
+      passes. (found: PR 56 exit-code count, 2026-10-04)
+- [ ] String drop — Bug 108: any use of a `String` after `.drop()` segfaults the native
+      program; `test/native/string_drop.kl` crashes and passes. Land Bug 7's widened fix
+      (default expects 0) with or after these three. (found: PR 56 exit-code count,
+      2026-10-04)
 - [x] Bugs 15 + 16 + 17 — GC: allocation no longer collects; the VM collects at the top of each
       instruction (`GC.collectIfRequested`), and `markValue` traces Future payloads. Stress-GC
       runs live in the unit tests (`src/vm_gc_test.zig`); the runner flag stays the Phase 0 task
