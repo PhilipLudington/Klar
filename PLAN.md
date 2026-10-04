@@ -125,11 +125,13 @@ in user programs first, then checker/contract correctness, then tooling, then de
       (completed 2026-10-04: every `let`/`var` declared `[T]`, every plain `=` to a slice
       variable and every slice field initializer stores through `emitSliceValue`, which
       converts any array value; a plain `=` to a slice was a third copy of the bug)
-- [ ] Type alias scope — Bug 98: `List#[Id]` of a module-private alias crashes the compiler
+- [x] Type alias scope — Bug 98: `List#[Id]` of a module-private alias crashes the compiler
       when another module declares its own `Id`; the element-type readers
       (`getListTypeInfo`, `src/codegen/emit.zig:7795`, and the array, slice, `List.new` and
       `Map.new` readers) ask the checker directly instead of going through Bug 89's
-      substitution. (qa-review 2026-09-30)
+      substitution. (qa-review 2026-09-30) (completed 2026-10-04: every checker read of a
+      type expression in the emitter goes through `resolveExpectedType`, which substitutes
+      the module's own aliases first)
 - [ ] Deref compound assignment — Bug 99: `*p += …` and every other `op=` through an `inout`
       parameter hangs the compiler (`u8`) or fails LLVM verification (`i32`), because the
       load type is `LLVMGetElementType` of an opaque pointer (`src/codegen/emit.zig:5518`).

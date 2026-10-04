@@ -2799,9 +2799,9 @@ lives as long as the call. (fix/bug-97-array-slice-coercion, 2026-10-04)
 
 ---
 
-## [ ] Bug 98: `List#[Id]` of a module-private alias crashes the compiler when another module declares its own `Id`
+## [x] Bug 98: `List#[Id]` of a module-private alias crashes the compiler when another module declares its own `Id`
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** type alias scope — the element-type readers in `src/codegen/emit.zig`
 (`getListTypeInfo` `:7795`, array/slice readers `:7769`, `:7777`, `List.new` `:18353`,
@@ -2832,6 +2832,17 @@ or when `b`'s `Id` is also `i64` (probe `scratch/gb89/mod/q/r3_l3/`).
 **Found by:** /qa-review fix-check round 3 on fix/bug-89-type-alias-lowering, 2026-09-30 —
 GenB, reply received after PR 53 merged; filed by /qa-review on fix/bug-74-75-runtime-checks
 — reviewer's evidence (probe with three controls), not re-read.
+
+**Fix:** Every place `src/codegen/emit.zig` asks the checker to resolve a type expression now
+goes through `resolveExpectedType`, which substitutes the current module's aliases at every
+depth first (Bug 89's `substituteAliases`): the array, slice, List, Map and Set element
+readers, `List.with_capacity`, `Map.new` / `Map.with_capacity` (`resolveMapEntrySize`),
+`Set.with_capacity`, `channel_create`, `getVariantPayloadType` and `resolveTypeExprDirect`.
+The crash was intermittent, not certain: an unscoped `Id` falls through to the checker's
+`lookupSymbolAcrossModules`, which walks a pointer-keyed map of module scopes, so which
+module's `Id` it found changed from run to run.
+
+**Test:** `test/module/type_alias_elements/` (in `scripts/run-module-tests.sh`)
 
 ---
 
