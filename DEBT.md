@@ -400,3 +400,25 @@ on an existing file keeps the old bytes and reads them back through the same han
 **Found by:** /qa-review on fix/bug-68-69-compat-flags, 2026-10-03 — TestCov (GAPS, and a
 WATCH on `compat.zig` test coverage seen on ci-baseline-zig-016 and ci-upgrade-runners-actions)
 — reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 20: Windows `fileSeekTo` does not compile on Zig 0.16 (`SetFilePointerEx` is gone)
+
+**Status:** Open
+**Kind:** latent-defect
+**Where:** `src/compat_windows.zig:116-121`
+**Due when:** touching `src/compat_windows.zig` · when anything calls `compat.File.seekTo` on Windows
+
+**Description:** `fileSeekTo` calls `std.os.windows.kernel32.SetFilePointerEx`, which Zig
+0.16's kernel32 no longer declares. Zig compiles lazily, so the Windows build stays green only
+because no Windows path reaches `seekTo` today. The first change that does will break the
+nightly Windows job.
+
+**Payment:** Re-implement it on `Io.File` (the pattern `fileStat` above it uses), or declare
+`SetFilePointerEx` locally with `extern "kernel32"`. Confirm with a Windows type-check of
+`seekTo` (`zig build-obj -target x86_64-windows` on a probe that calls it).
+
+**Found by:** Builder's cross-target type-check on fix/bug-68-69-compat-flags, 2026-10-03 —
+reported in its result, not routed by /qa-review; code re-read at `compat_windows.zig:116-121`,
+not compiled since.
