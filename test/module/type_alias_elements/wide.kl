@@ -1,0 +1,42 @@
+// wide.kl - a private `type Id = i64`, used as a collection's element, key or value type.
+// narrow.kl declares its own private `Id = i32`; every collection here must read this one.
+type Id = i64
+
+// A `var` declared `List#[Id]`: the push hint is the list's element type.
+pub fn list_local() -> Id {
+    var xs: List#[Id] = List.new#[Id]()
+    xs.push(5000000000)
+    let k: i32 = 0
+    return xs[k]
+}
+
+fn put(xs: List#[Id]) -> void {
+    xs.push(5000000001)
+}
+
+// A parameter declared `List#[Id]`.
+pub fn list_param() -> Id {
+    var xs: List#[i64] = List.new#[i64]()
+    put(xs)
+    let k: i32 = 0
+    return xs[k]
+}
+
+// A `Map#[string, Id]` value.
+pub fn map_value() -> Id {
+    var m: Map#[string, Id] = Map.new#[string, Id]()
+    let v: i64 = 5000000002
+    m.insert("k", v)
+    return m.get("k") ?? 0.as#[i64]
+}
+
+// A `Map#[Id, string]` key.
+pub fn map_key() -> Id {
+    var m: Map#[Id, string] = Map.new#[Id, string]()
+    let v: i64 = 5000000003
+    m.insert(v, "x")
+    if m.contains_key(v) {
+        return v
+    }
+    return 0
+}

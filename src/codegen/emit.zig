@@ -7202,13 +7202,7 @@ pub const Emitter = struct {
     fn getVariantPayloadType(self: *Emitter, v: *ast.VariantPattern, expected_type: ?types.Type) ?types.Type {
         // Get enum type - either from pattern's type_expr or from expected_type
         const match_type: ?types.Type = if (v.type_expr) |type_expr| blk: {
-            // Try to resolve the type expression
-            if (self.type_checker) |tc| {
-                const tc_mut = @constCast(tc);
-                const resolved = tc_mut.resolveTypeExpr(type_expr) catch break :blk expected_type;
-                break :blk resolved;
-            }
-            break :blk expected_type;
+            break :blk self.resolveExpectedType(type_expr) orelse expected_type;
         } else expected_type;
 
         if (match_type == null) {
@@ -7608,11 +7602,7 @@ pub const Emitter = struct {
                     }
                 }
                 // For other generic types, try type checker (may fail due to scope)
-                if (self.type_checker) |tc| {
-                    const tc_mut = @constCast(tc);
-                    return tc_mut.resolveTypeExpr(type_expr) catch return null;
-                }
-                return null;
+                return self.resolveExpectedType(type_expr);
             },
             .named => |n| {
                 // Primitive types
@@ -7632,8 +7622,7 @@ pub const Emitter = struct {
                 }
                 // For other named types, try type checker
                 if (self.type_checker) |tc| {
-                    const tc_mut = @constCast(tc);
-                    if (tc_mut.resolveTypeExpr(type_expr) catch null) |resolved| {
+                    if (self.resolveExpectedType(type_expr)) |resolved| {
                         return resolved;
                     }
                     // Cross-module fallback: search all module scopes
@@ -7645,11 +7634,7 @@ pub const Emitter = struct {
             },
             else => {
                 // For other types, try type checker
-                if (self.type_checker) |tc| {
-                    const tc_mut = @constCast(tc);
-                    return tc_mut.resolveTypeExpr(type_expr) catch return null;
-                }
-                return null;
+                return self.resolveExpectedType(type_expr);
             },
         }
     }
@@ -7800,20 +7785,11 @@ pub const Emitter = struct {
                     }
                     break :blk null;
                 } else null;
-                // Convert the element type expression to a types.Type using type checker
-                const element_type: ?types.Type = if (self.type_checker) |tc| blk: {
-                    const tc_mut = @constCast(tc);
-                    break :blk tc_mut.resolveTypeExpr(arr.element) catch null;
-                } else null;
-                return .{ .element_type = element_type, .size = size };
+                return .{ .element_type = self.resolveExpectedType(arr.element), .size = size };
             },
             .slice => |slc| {
                 // Slices don't have a size
-                const element_type: ?types.Type = if (self.type_checker) |tc| blk: {
-                    const tc_mut = @constCast(tc);
-                    break :blk tc_mut.resolveTypeExpr(slc.element) catch null;
-                } else null;
-                return .{ .element_type = element_type, .size = null };
+                return .{ .element_type = self.resolveExpectedType(slc.element), .size = null };
             },
             else => return null,
         }
@@ -7825,13 +7801,7 @@ pub const Emitter = struct {
             .generic_apply => |g| {
                 // Check if the base is "List"
                 if (g.base == .named and std.mem.eql(u8, g.base.named.name, "List")) {
-                    if (g.args.len == 1) {
-                        // Resolve the element type using type checker
-                        if (self.type_checker) |tc| {
-                            const tc_mut = @constCast(tc);
-                            return tc_mut.resolveTypeExpr(g.args[0]) catch null;
-                        }
-                    }
+                    if (g.args.len == 1) return self.resolveExpectedType(g.args[0]);
                 }
                 return null;
             },
@@ -7851,13 +7821,9 @@ pub const Emitter = struct {
                 // Check if the base is "Map"
                 if (g.base == .named and std.mem.eql(u8, g.base.named.name, "Map")) {
                     if (g.args.len == 2) {
-                        // Resolve the key and value types using type checker
-                        if (self.type_checker) |tc| {
-                            const tc_mut = @constCast(tc);
-                            const key_type = tc_mut.resolveTypeExpr(g.args[0]) catch return null;
-                            const value_type = tc_mut.resolveTypeExpr(g.args[1]) catch return null;
-                            return .{ .key_type = key_type, .value_type = value_type };
-                        }
+                        const key_type = self.resolveExpectedType(g.args[0]) orelse return null;
+                        const value_type = self.resolveExpectedType(g.args[1]) orelse return null;
+                        return .{ .key_type = key_type, .value_type = value_type };
                     }
                 }
                 return null;
@@ -7872,13 +7838,7 @@ pub const Emitter = struct {
             .generic_apply => |g| {
                 // Check if the base is "Set"
                 if (g.base == .named and std.mem.eql(u8, g.base.named.name, "Set")) {
-                    if (g.args.len == 1) {
-                        // Resolve the element type using type checker
-                        if (self.type_checker) |tc| {
-                            const tc_mut = @constCast(tc);
-                            return tc_mut.resolveTypeExpr(g.args[0]) catch null;
-                        }
-                    }
+                    if (g.args.len == 1) return self.resolveExpectedType(g.args[0]);
                 }
                 return null;
             },
@@ -7985,8 +7945,10 @@ pub const Emitter = struct {
         return null;
     }
 
-    /// Resolve a type expression to a types.Type for use as expected_type context.
-    /// Used to propagate type annotations to constructors like Ok/Err.
+    /// Resolve a type expression to a types.Type in the module being emitted. This is the
+    /// one place the emitter asks the checker to resolve a type expression: the element,
+    /// key and value readers, the collection constructors, `channel_create` and the
+    /// expected-type hints all come through here, so each reads its own module's aliases.
     fn resolveExpectedType(self: *Emitter, type_expr: ast.TypeExpr) ?types.Type {
         if (self.type_checker) |tc| {
             const tc_mut = @constCast(tc);
@@ -18166,11 +18128,7 @@ pub const Emitter = struct {
         const type_args = method.type_args orelse return EmitError.InvalidAST;
         if (type_args.len != 1) return EmitError.InvalidAST;
 
-        // Resolve element type using type checker
-        const element_type = if (self.type_checker) |tc| blk: {
-            const tc_mut = @constCast(tc);
-            break :blk tc_mut.resolveTypeExpr(type_args[0]) catch return EmitError.InvalidAST;
-        } else return EmitError.InvalidAST;
+        const element_type = self.resolveExpectedType(type_args[0]) orelse return EmitError.InvalidAST;
 
         const element_llvm_type = self.typeToLLVM(element_type);
         const element_size = self.getLLVMTypeSize(element_llvm_type);
@@ -20025,15 +19983,8 @@ pub const Emitter = struct {
         const type_args = method.type_args orelse return EmitError.InvalidAST;
         if (type_args.len != 2) return EmitError.InvalidAST;
 
-        var key_type_klar: types.Type = undefined;
-        var value_type_klar: types.Type = undefined;
-        if (self.type_checker) |tc| {
-            const tc_mut = @constCast(tc);
-            key_type_klar = tc_mut.resolveTypeExpr(type_args[0]) catch return EmitError.InvalidAST;
-            value_type_klar = tc_mut.resolveTypeExpr(type_args[1]) catch return EmitError.InvalidAST;
-        } else {
-            return EmitError.InvalidAST;
-        }
+        const key_type_klar = self.resolveExpectedType(type_args[0]) orelse return EmitError.InvalidAST;
+        const value_type_klar = self.resolveExpectedType(type_args[1]) orelse return EmitError.InvalidAST;
 
         const key_llvm_type = self.typeToLLVM(key_type_klar);
         const value_llvm_type = self.typeToLLVM(value_type_klar);
@@ -21738,14 +21689,7 @@ pub const Emitter = struct {
         const type_args = method.type_args orelse return EmitError.InvalidAST;
         if (type_args.len != 1) return EmitError.InvalidAST;
 
-        // Resolve element type using type checker
-        var element_type_klar: types.Type = undefined;
-        if (self.type_checker) |tc| {
-            const tc_mut = @constCast(tc);
-            element_type_klar = tc_mut.resolveTypeExpr(type_args[0]) catch return EmitError.InvalidAST;
-        } else {
-            return EmitError.InvalidAST;
-        }
+        const element_type_klar = self.resolveExpectedType(type_args[0]) orelse return EmitError.InvalidAST;
 
         const element_llvm_type = self.typeToLLVM(element_type_klar);
         const entry_type = self.getSetEntryType(element_llvm_type);
@@ -30683,11 +30627,8 @@ pub const Emitter = struct {
         var elem_size: u32 = 8; // default to pointer size
         if (call.type_args) |ta| {
             if (ta.len == 1) {
-                if (self.type_checker) |tc| {
-                    const tc_mut = @constCast(tc);
-                    const elem_type = tc_mut.resolveTypeExpr(ta[0]) catch {
-                        return EmitError.InvalidAST;
-                    };
+                if (self.type_checker != null) {
+                    const elem_type = self.resolveExpectedType(ta[0]) orelse return EmitError.InvalidAST;
                     elem_size = @intCast(self.getSizeOfKlarType(elem_type));
                 }
             }
