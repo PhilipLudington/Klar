@@ -1,0 +1,24 @@
+// main.kl - a collection whose element, key or value type is a module-private alias reads
+// that module's alias, while another module declares an `Id` of its own (Bug 98). Returns 42
+// on success; a wrong element type crashes the compiler or fails LLVM verification.
+import wide.{ list_local, list_param, map_value, map_key }
+import narrow.{ narrow_val }
+
+fn main() -> i32 {
+    if narrow_val() != 7 {
+        return 1
+    }
+    if list_local() != 5000000000.as#[i64] {
+        return 2
+    }
+    if list_param() != 5000000001.as#[i64] {
+        return 3
+    }
+    if map_value() != 5000000002.as#[i64] {
+        return 4
+    }
+    if map_key() != 5000000003.as#[i64] {
+        return 5
+    }
+    return 42
+}
