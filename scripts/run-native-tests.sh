@@ -168,6 +168,7 @@ get_expected() {
         none_hint_width) echo 0 ;;  # a bare None under a tuple or push hint takes the optional's layout (Bug 84)
         unsigned_index_and_division) echo 0 ;;  # unsigned index and division keep their own semantics (Bugs 74, 75)
         unsigned_operand_sources) echo 0 ;;  # a field or element operand keeps its unsigned semantics (Bugs 74, 75 qa-fix)
+        array_to_slice_coercion) echo 0 ;;  # any array stored into a slice becomes { ptr, len } (Bug 97)
         list_string_drop) echo 42 ;;
         list_index_assign) echo 42 ;;
         list_nested_basic) echo 42 ;;

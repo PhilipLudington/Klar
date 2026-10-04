@@ -2739,9 +2739,9 @@ the same program. An alias makes no difference.
 
 ---
 
-## [ ] Bug 97: An array variable or `@repeat` assigned to a slice is not converted natively — `let s: [i32] = arr` crashes
+## [x] Bug 97: An array variable or `@repeat` assigned to a slice is not converted natively — `let s: [i32] = arr` crashes
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** array-to-slice coercion — the `let` and `var` declaration paths in
 `src/codegen/emit.zig` (`is_slice_decl and is_array_literal_value`, ~2636 and ~2807) and
@@ -2768,6 +2768,17 @@ With `var arr: [i32; 300]` the same line exits 139 or 133 depending on size (pro
 
 **Found by:** Builder on fix/bug-74-75-runtime-checks, 2026-09-30, writing Bug 74's slice
 test; verified by probe.
+
+**Fix:** Every stored array-to-slice coercion goes through one path, `emitSliceValue`
+(`src/codegen/emit.zig`, beside `convertArrayToSlice`), which decides on the emitted value's
+type rather than the AST's shape: any array value is copied to a heap backing and becomes
+`{ ptr, len }`, a large `@repeat` is written straight into that backing, and a slice passes
+through unchanged. The `let` and `var` declarations of a `[T]` take it ahead of the
+large-`@repeat` path, a plain `=` to a slice variable takes it, and so does a slice-typed
+struct field initializer. Function arguments keep `convertArgIfNeeded`'s stack copy, which
+lives as long as the call. (fix/bug-97-array-slice-coercion, 2026-10-04)
+
+**Test:** `test/native/array_to_slice_coercion.kl`
 
 ---
 
