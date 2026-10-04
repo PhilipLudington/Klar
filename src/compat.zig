@@ -322,9 +322,9 @@ pub const File = struct {
 
     pub fn getEndPos(self: File) !u64 {
         if (comptime is_windows) return win.fileGetEndPos(self.handle);
-        const SEEK_SET: std.c.whence_t = 0;
-        const SEEK_CUR: std.c.whence_t = 1;
-        const SEEK_END: std.c.whence_t = 2;
+        const SEEK_SET: std.c.whence_t = std.c.SEEK.SET;
+        const SEEK_CUR: std.c.whence_t = std.c.SEEK.CUR;
+        const SEEK_END: std.c.whence_t = std.c.SEEK.END;
         const cur = std.c.lseek(self.handle, 0, SEEK_CUR);
         if (cur < 0) return error.Unexpected;
         const end = std.c.lseek(self.handle, 0, SEEK_END);
@@ -335,7 +335,7 @@ pub const File = struct {
 
     pub fn stat(self: File) !Stat {
         if (comptime is_windows) return win.fileStat(self.handle);
-        if (comptime builtin.os.tag == .linux) return linuxStat(self.handle, "", 0x1000); // AT_EMPTY_PATH
+        if (comptime builtin.os.tag == .linux) return linuxStat(self.handle, "", std.c.AT.EMPTY_PATH);
         var st: std.c.Stat = undefined;
         const rc = std.c.fstat(self.handle, &st);
         if (rc != 0) return error.Unexpected;
@@ -376,7 +376,7 @@ pub const File = struct {
 
     pub fn seekTo(self: File, pos: u64) !void {
         if (comptime is_windows) return win.fileSeekTo(self.handle, pos);
-        const SEEK_SET: std.c.whence_t = 0;
+        const SEEK_SET: std.c.whence_t = std.c.SEEK.SET;
         const rc = std.c.lseek(self.handle, @intCast(pos), SEEK_SET);
         if (rc < 0) return error.Unexpected;
     }
@@ -506,12 +506,13 @@ pub const Dir = struct {
         if (comptime is_windows) return File{ .handle = try win.dirOpenFile(self.handle, sub_path, flags) };
         var buf: [4096]u8 = undefined;
         const zpath = try tmpZPath(&buf, sub_path);
-        const o_flag: c_int = switch (flags.mode) {
-            .read_only => @as(c_int, 0),
-            .write_only => @as(c_int, 1),
-            .read_write => @as(c_int, 2),
-        };
-        const fd = std.c.openat(self.handle, zpath.ptr, @bitCast(o_flag), @as(std.c.mode_t, 0));
+        // std's per-target O layout, as createFile and openDir use (Bugs 68, 69).
+        const o_flag: std.c.O = .{ .ACCMODE = switch (flags.mode) {
+            .read_only => .RDONLY,
+            .write_only => .WRONLY,
+            .read_write => .RDWR,
+        } };
+        const fd = std.c.openat(self.handle, zpath.ptr, o_flag, @as(std.c.mode_t, 0));
         if (fd < 0) {
             return mapOpenErrno();
         }
@@ -522,12 +523,16 @@ pub const Dir = struct {
         if (comptime is_windows) return File{ .handle = try win.dirCreateFile(self.handle, sub_path, flags) };
         var buf: [4096]u8 = undefined;
         const zpath = try tmpZPath(&buf, sub_path);
-        var o_flag: c_int = if (flags.read) 2 else 1; // O_RDWR or O_WRONLY
-        o_flag |= 0o100; // O_CREAT
-        if (flags.truncate) o_flag |= 0o1000; // O_TRUNC
-        if (flags.exclusive) o_flag |= 0o200; // O_EXCL
+        // std's per-target O layout: the Linux octal literals set O_ASYNC and
+        // O_FSYNC on macOS and never truncated or refused an existing file (Bug 68).
+        const o_flag: std.c.O = .{
+            .ACCMODE = if (flags.read) .RDWR else .WRONLY,
+            .CREAT = true,
+            .TRUNC = flags.truncate,
+            .EXCL = flags.exclusive,
+        };
         const mode: std.c.mode_t = @as(std.c.mode_t, 0o644);
-        const fd = std.c.openat(self.handle, zpath.ptr, @bitCast(o_flag), mode);
+        const fd = std.c.openat(self.handle, zpath.ptr, o_flag, mode);
         if (fd < 0) {
             return mapOpenErrno();
         }
@@ -698,9 +703,8 @@ pub const Dir = struct {
         }
         var parent_buf: [4096]u8 = undefined;
         const zpath = tmpZPath(&parent_buf, sub_path) catch return;
-        // Use unlinkat with AT_REMOVEDIR flag (0x200 on Linux/macOS common).
-        const AT_REMOVEDIR: c_int = 0x200;
-        _ = std.c.unlinkat(self.handle, zpath.ptr, AT_REMOVEDIR);
+        // std's per-target AT_REMOVEDIR: 0x200 on Linux, 0x80 on macOS (Bug 69).
+        _ = std.c.unlinkat(self.handle, zpath.ptr, std.c.AT.REMOVEDIR);
     }
 
     pub fn copyFile(src_dir: Dir, src_sub_path: []const u8, dest_dir: Dir, dest_sub_path: []const u8, options: CopyFileOptions) !void {
@@ -921,6 +925,7 @@ fn closeDirHandle(handle: posix.fd_t) void {
 fn mapOpenErrno() anyerror {
     return switch (posix.errno(-1)) {
         .NOENT => error.FileNotFound,
+        .EXIST => error.PathAlreadyExists,
         .ACCES, .PERM => error.AccessDenied,
         .ISDIR => error.IsDir,
         .NOTDIR => error.NotDir,

@@ -378,3 +378,25 @@ self-test's command from `RUN_TIMEOUT` with the limit substituted.
 **Found by:** /qa-review on fix/bug-74-75-runtime-checks, 2026-09-30 — TestCov (GAPS, and a
 WATCH on the runner seen on fix/bug-79-integration-crash and fix/bug-90-channel-index-for) —
 reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 19: `compat.zig`'s open modes, `truncate = false` and `seekTo` are unpinned
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/compat.zig:509-515` (`openFile` modes), `:523-535` (`createFile`), `:377-382` (`seekTo`)
+**Due when:** touching `src/compat.zig`
+
+**Description:** Bugs 68/69's tests pin truncate, exclusive and deleteTree, but `createFile`
+with `.read = true` (RDWR) or `truncate = false`, `openFile` `.write_only`/`.read_write`, and
+`seekTo`'s `SEEK.SET` have no test. A break that always sets `.TRUNC` passes every test.
+
+**Payment:** In `src/compat_test.zig`: `createFile(name, .{ .read = true, .truncate = false })`
+on an existing file keeps the old bytes and reads them back through the same handle;
+`openFile(.read_write)` writes then reads back; a `.read_only` handle refuses a write;
+`seekTo(0)` after a write rereads from the start.
+
+**Found by:** /qa-review on fix/bug-68-69-compat-flags, 2026-10-03 — TestCov (GAPS, and a
+WATCH on `compat.zig` test coverage seen on ci-baseline-zig-016 and ci-upgrade-runners-actions)
+— reviewer's reading, not re-verified.

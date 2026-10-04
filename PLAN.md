@@ -111,10 +111,13 @@ in user programs first, then checker/contract correctness, then tooling, then de
       (completed 2026-09-30: every trapping index check is `emitCheckedIndex`, which checks
       and addresses with one index extended by its own signedness; every integer `/`, `%`,
       `/=` and `%=` is `emitCheckedDivRem`, which traps on a zero divisor and signed MIN / -1)
-- [ ] Platform layer — Bugs 68 + 69: `src/compat.zig` hard-codes Linux flag values that are
+- [x] Platform layer — Bugs 68 + 69: `src/compat.zig` hard-codes Linux flag values that are
       wrong on macOS, so `createFile` ignores `truncate`/`exclusive` (`:525-528`; a shorter
       rewrite keeps the old tail) and `deleteTree` never removes directories (`:659`). Replace
       every literal with `std.c.O{…}` / `std.c.AT.REMOVEDIR`. (qa-review 2026-09-26)
+      (completed 2026-10-03: every `openat`, `unlinkat`, `lseek` and statx flag in
+      `compat.zig` is std's per-target constant, and an exclusive create of an existing
+      file is `PathAlreadyExists`)
 - [ ] Array-to-slice coercion — Bug 97: `let s: [i32] = arr` and `= @repeat(…)` store the
       array's bytes into the slice slot, because only an array literal goes through
       `convertArrayToSlice` (`src/codegen/emit.zig` ~2636, ~2807, ~9901); the program

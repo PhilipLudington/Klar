@@ -7400,6 +7400,7 @@ fn printVersion() !void {
 // Re-export tests from all modules
 test {
     _ = @import("compat.zig");
+    _ = @import("compat_test.zig");
     _ = @import("token.zig");
     _ = @import("lexer.zig");
     _ = @import("ast.zig");
