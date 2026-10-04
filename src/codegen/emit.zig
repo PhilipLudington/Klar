@@ -5403,8 +5403,17 @@ pub const Emitter = struct {
         }
         const idx = field_idx orelse return EmitError.InvalidAST;
 
-        // Evaluate the right-hand side
-        const rhs = try self.emitExpr(bin.right);
+        const gep_type = if (local.is_reference)
+            local.reference_inner_type.?
+        else
+            local.ty;
+        const field_type = llvm.c.LLVMStructGetTypeAtIndex(gep_type, idx);
+
+        // Evaluate the right-hand side. A plain `=` to a slice field converts an array value.
+        const rhs = if (bin.op == .assign and field_type == self.getSliceStructType())
+            try self.emitSliceValue(bin.right)
+        else
+            try self.emitExpr(bin.right);
 
         // For reference parameters, load the pointer first, then GEP into it
         // For regular struct parameters, GEP directly from the alloca
@@ -5412,11 +5421,6 @@ pub const Emitter = struct {
             self.builder.buildLoad(local.ty, local.value, "ref.load")
         else
             local.value;
-
-        const gep_type = if (local.is_reference)
-            local.reference_inner_type.?
-        else
-            local.ty;
 
         // GEP to get pointer to struct field
         var indices = [_]llvm.ValueRef{
@@ -5426,7 +5430,6 @@ pub const Emitter = struct {
         const field_ptr = self.builder.buildGEP(gep_type, base_ptr, &indices, "field.ptr");
 
         // For compound assignment, need to load current value and operate
-        const field_type = llvm.c.LLVMStructGetTypeAtIndex(gep_type, idx);
         const value = switch (bin.op) {
             .assign => rhs,
             .add_assign => blk: {
