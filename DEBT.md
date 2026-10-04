@@ -422,3 +422,27 @@ nightly Windows job.
 **Found by:** Builder's cross-target type-check on fix/bug-68-69-compat-flags, 2026-10-03 —
 reported in its result, not routed by /qa-review; code re-read at `compat_windows.zig:116-121`,
 not compiled since.
+
+---
+
+## [ ] Debt 21: Array-to-slice coercion's heap backing and less common sources are unpinned
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/codegen/emit.zig` `emitSliceValue` (~32681), struct-literal slice field (~9884), `emitAssignment` (~5144); `test/native/array_to_slice_coercion.kl`
+**Due when:** touching `src/codegen/emit.zig`'s `emitSliceValue` · touching `test/native/array_to_slice_coercion.kl`
+
+**Description:** The Bug 97 test pins `let`, `var` and plain `=` from an array variable or a
+`@repeat`. Three things it does not pin: that the heap backing outlives the frame (case 7 would
+still pass on a stack backing, since nothing overwrites the dead frame before the read); a
+plain `=` from a large `@repeat`, or a non-variable array source (a call returning `[i32; 3]`,
+a struct's array field) at a `[T]` declaration; and a slice-typed struct field initialized from
+an array value, which the checker rejects today, so the emitter path is unreachable.
+
+**Payment:** Add cases to `array_to_slice_coercion.kl`: return a slice built from a local
+array, call a function that dirties a large local buffer, then read the slice; `f = @repeat(8,
+5000)` into a `[i32]`; `let s: [i32] = make_arr()` and `let s: [i32] = h.arr`. Each must go red
+when `emitSliceValue` stack-allocates or is bypassed.
+
+**Found by:** /qa-review on fix/bug-97-array-slice-coercion, 2026-10-04 — QA Test Coverage
+Review GAPS; reviewer's reading, not re-verified.
