@@ -170,6 +170,8 @@ get_expected() {
         unsigned_operand_sources) echo 0 ;;  # a field or element operand keeps its unsigned semantics (Bugs 74, 75 qa-fix)
         array_to_slice_coercion) echo 0 ;;  # any array stored into a slice becomes { ptr, len } (Bug 97)
         deref_compound_assign) echo 0 ;;  # every op= through an inout reference (Bug 99)
+        cell_basic) echo 42 ;;  # get() after set() into a second let (Bug 106)
+        cell_shapes) echo 0 ;;  # Cell in let, var, alias and block bindings (Bug 106)
         list_string_drop) echo 42 ;;
         list_index_assign) echo 42 ;;
         list_nested_basic) echo 42 ;;
@@ -364,6 +366,39 @@ else
     FAILURES="$FAILURES\"$trap_name: runtime_traps.kl did not compile to LLVM IR\""
 fi
 rm -rf "$trap_dir"
+
+# Cell drop (Bug 106): a Cell#[T] is stack storage, so no Cell variable may be
+# dropped through klar_rc_drop, which reads a refcount header 16 bytes before the
+# pointer and frees it. test/native/cell_shapes.kl binds five Cells and one Rc;
+# its IR must call klar_rc_drop exactly once, for the Rc.
+cell_name="cell_drop_lowering"
+cell_dir="$BUILD_DIR/klar_cell_ir_$$"
+mkdir -p "$cell_dir"
+cell_ir="$cell_dir/cell_shapes.ll"
+( cd "$cell_dir" && "$KLAR" build "$TEST_DIR/cell_shapes.kl" -c -o "$cell_dir/cell_shapes.o" --emit-llvm >/dev/null 2>&1 )
+if [ -f "$cell_ir" ]; then
+    cell_drops=$(grep -c "call void @klar_rc_drop(" "$cell_ir" || true)
+    if [ "$cell_drops" -eq 1 ]; then
+        echo "✓ $cell_name (only the Rc is dropped as an Rc)"
+        PASSED=$((PASSED + 1))
+    else
+        cell_why="$cell_drops klar_rc_drop calls, expected 1 (the Rc only)"
+        echo "✗ $cell_name ($cell_why)"
+        FAILED=$((FAILED + 1))
+        if [ -n "$FAILURES" ]; then
+            FAILURES="$FAILURES,"
+        fi
+        FAILURES="$FAILURES\"$cell_name: $cell_why\""
+    fi
+else
+    echo "✗ $cell_name (cell_shapes.kl did not compile to LLVM IR)"
+    FAILED=$((FAILED + 1))
+    if [ -n "$FAILURES" ]; then
+        FAILURES="$FAILURES,"
+    fi
+    FAILURES="$FAILURES\"$cell_name: cell_shapes.kl did not compile to LLVM IR\""
+fi
+rm -rf "$cell_dir"
 
 # Timeout branch (Debt 7): a binary that never returns must be reported as timed
 # out, not hang the job or pass. test/native/timeout_hang.kl loops forever; run it
