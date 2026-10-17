@@ -80,9 +80,11 @@ in user programs first, then checker/contract correctness, then tooling, then de
       native program; `test/native/cell_basic.kl` crashes and passes. (found: PR 56 exit-code
       count, 2026-10-04) (completed 2026-10-17, fix/bug-106-cell-get: the crash was a Cell
       dropped as an Rc at scope exit)
-- [ ] Generic function-typed parameters — Bug 107: `apply#[T](f: fn(T) -> T, x: T)` calling
+- [x] Generic function-typed parameters — Bug 107: `apply#[T](f: fn(T) -> T, x: T)` calling
       `f(x)` segfaults the native program; `test/native/meta_pure_generic.kl` crashes and
-      passes. (found: PR 56 exit-code count, 2026-10-04)
+      passes. (found: PR 56 exit-code count, 2026-10-04) (completed 2026-10-17,
+      fix/bug-107-generic-fn-param: a generic body read its byval parameters' pointers as
+      their values)
 - [ ] String drop — Bug 108: any use of a `String` after `.drop()` segfaults the native
       program; `test/native/string_drop.kl` crashes and passes. Land Bug 7's widened fix
       (default expects 0) with or after these three. (found: PR 56 exit-code count,

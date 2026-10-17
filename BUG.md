@@ -3090,9 +3090,9 @@ plus the `cell_drop_lowering` IR check in `scripts/run-native-tests.sh` (exactly
 
 ---
 
-## [ ] Bug 107: A generic function with a `fn(T) -> T` parameter segfaults natively when it calls it
+## [x] Bug 107: A generic function with a `fn(T) -> T` parameter segfaults natively when it calls it
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** generic function-typed parameters — monomorphization of a generic function whose
 parameter is a function type, in `src/codegen/emit.zig` (`declareMonomorphizedFunction` and
@@ -3115,6 +3115,21 @@ native runner reports it as passing (Bug 7). `meta pure` is not involved: the cr
 
 **Found by:** PR 56 session's exit-code count from the `./run-tests.sh` output at `b9d81b2`,
 2026-10-04; re-run individually and narrowed by the Bug 98 pick-up, 2026-10-04.
+
+**Cause:** not the call through `f`. `declareMonomorphizedFunction` passes every parameter
+over 8 bytes byval, a pointer to the caller's copy, and a closure (`{ ptr, ptr }`) is 16
+bytes. `emitMonomorphizedFunction` stored that pointer into the parameter's alloca as if
+it were the value, so the body read the pointer's bytes as the closure and called garbage.
+A struct over 8 bytes passed to any generic function was read the same way: no crash, the
+wrong fields (`identity#[Point]` with two `f64` fields).
+
+**Fix:** `bindParamAlloca` (`src/codegen/emit.zig`) is the one path both function bodies,
+`emitFunction` and `emitMonomorphizedFunction`, bind a parameter through: a byval
+parameter is loaded through its pointer and copied. `isByvalParam` reads the
+`byval_functions` entry by user parameter index, so an sret return does not shift it.
+
+**Test:** `test/native/meta_pure_generic.kl` (now expects 0), `test/native/generic_byval_params.kl`
+and `test/native/generic_byval_sret.kl`.
 
 ---
 

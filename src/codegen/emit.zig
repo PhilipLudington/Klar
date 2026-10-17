@@ -2382,20 +2382,8 @@ pub const Emitter = struct {
                 const param_value = llvm.getParam(function, llvm_param_idx);
                 llvm_param_idx += 1;
 
-                // For byval parameters, the LLVM param is already a pointer to the struct.
-                // We copy it to a local alloca so the function body can mutate it freely
-                // without modifying the caller's copy.
-                const is_byval = byval_info != null and (llvm_param_idx - 1 - param_offset) < byval_info.?.len and byval_info.?[llvm_param_idx - 1 - param_offset] != null;
-                if (is_byval) {
-                    const a = self.builder.buildAlloca(param_ty, param_name);
-                    const loaded = self.builder.buildLoad(param_ty, param_value, "byval.load");
-                    _ = self.builder.buildStore(loaded, a);
-                    break :blk a;
-                } else {
-                    const a = self.builder.buildAlloca(param_ty, param_name);
-                    _ = self.builder.buildStore(param_value, a);
-                    break :blk a;
-                }
+                const is_byval = isByvalParam(byval_info, llvm_param_idx - 1 - param_offset);
+                break :blk self.bindParamAlloca(param_value, param_ty, param_name, is_byval);
             };
 
             const is_signed = self.isTypeExprSigned(param_type);
@@ -38505,6 +38493,25 @@ pub const Emitter = struct {
         llvm.setFunctionCallConv(llvm_func, self.calling_convention.toLLVM());
     }
 
+    /// Whether user parameter `index` of a function registered in `byval_functions`
+    /// arrives byval (a pointer to the caller's copy of a struct over 8 bytes).
+    fn isByvalParam(byval_info: ?[]const ?llvm.TypeRef, index: usize) bool {
+        const info = byval_info orelse return false;
+        return index < info.len and info[index] != null;
+    }
+
+    /// Bind an incoming parameter to a fresh local alloca, the one path every function
+    /// body (plain and monomorphized) binds its parameters through. A byval parameter
+    /// is a pointer to the caller's copy, so its value is loaded through it and copied,
+    /// letting the body mutate its own copy; storing the pointer itself made a generic
+    /// body read the pointer as the struct (Bug 107).
+    fn bindParamAlloca(self: *Emitter, param_value: llvm.ValueRef, param_ty: llvm.TypeRef, name: [:0]const u8, is_byval: bool) llvm.ValueRef {
+        const alloca = self.builder.buildAlloca(param_ty, name);
+        const value = if (is_byval) self.builder.buildLoad(param_ty, param_value, "byval.load") else param_value;
+        _ = self.builder.buildStore(value, alloca);
+        return alloca;
+    }
+
     /// Emit a monomorphized function body.
     fn emitMonomorphizedFunction(self: *Emitter, mono: MonomorphizedFunction) EmitError!void {
         const func = mono.original_decl;
@@ -38557,6 +38564,9 @@ pub const Emitter = struct {
         }
         defer self.current_sret_ptr = null;
 
+        // declareMonomorphizedFunction passes a large struct or closure parameter byval.
+        const byval_info = self.byval_functions.get(mono.mangled_name);
+
         // Add parameters to named values with concrete types
         for (func.params, 0..) |param, i| {
             const param_value = llvm.getParam(function, @intCast(i + param_offset));
@@ -38566,8 +38576,7 @@ pub const Emitter = struct {
             const param_name = self.allocator.dupeZ(u8, param.name) catch return EmitError.OutOfMemory;
             defer self.allocator.free(param_name);
 
-            const alloca = self.builder.buildAlloca(param_ty, param_name);
-            _ = self.builder.buildStore(param_value, alloca);
+            const alloca = self.bindParamAlloca(param_value, param_ty, param_name, isByvalParam(byval_info, @intCast(i)));
 
             // Check if this is a reference parameter
             const is_ref = concrete_param_type == .reference;
