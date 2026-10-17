@@ -3049,9 +3049,9 @@ reading `src/compat.zig:700-706` and `src/main.zig:6860-6863`.
 
 ---
 
-## [ ] Bug 106: A second `let x: T = cell.get()` after `cell.set(v)` segfaults natively
+## [x] Bug 106: A second `let x: T = cell.get()` after `cell.set(v)` segfaults natively
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** Cell — the native `Cell.new` / `.get()` / `.set()` lowering in
 `src/codegen/emit.zig`
@@ -3073,6 +3073,20 @@ second `let` exits 42 (probes `scratch/c/c2.kl`, `scratch/c/c3.kl`, macOS arm64)
 
 **Found by:** PR 56 session's exit-code count from the `./run-tests.sh` output at `b9d81b2`,
 2026-10-04; re-run individually and narrowed by the Bug 98 pick-up, 2026-10-04.
+
+**Cause:** not `get()` or `set()`. `tryGetRcInnerType` gives `Cell.new(v)` an inner type
+like `Rc.new(v)`, and the `let`/`var` lowering registered every variable with an inner type
+as an Rc droppable. At scope exit `klar_rc_drop` read a refcount 16 bytes before the Cell's
+stack storage, decremented it and freed it when it hit zero. Whether that crashed depended
+on the stack layout, which is why the second `let` mattered.
+
+**Fix:** `isCellExpr` (`src/codegen/emit.zig`) tells a Cell (`Cell.new(v)` or a variable
+bound to one) from an Rc; `LocalValue.is_cell` records it. The `let` and `var` lowering skip
+`registerDroppable` for a Cell, and `isRcType` no longer reads a Cell variable as an Rc.
+
+**Test:** `test/native/cell_basic.kl` (now expects 42) and `test/native/cell_shapes.kl`,
+plus the `cell_drop_lowering` IR check in `scripts/run-native-tests.sh` (exactly one
+`klar_rc_drop` call in `cell_shapes.kl`, the Rc's).
 
 ---
 

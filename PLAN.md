@@ -76,9 +76,10 @@ in user programs first, then checker/contract correctness, then tooling, then de
       parameter hangs the compiler (`u8`) or fails LLVM verification (`i32`), because the
       load type is `LLVMGetElementType` of an opaque pointer (`src/codegen/emit.zig:5518`).
       (qa-review 2026-09-30) (completed 2026-10-17, fix/bug-99-deref-compound-assign)
-- [ ] Cell — Bug 106: a second `let x: T = cell.get()` after `cell.set(v)` segfaults the
+- [x] Cell — Bug 106: a second `let x: T = cell.get()` after `cell.set(v)` segfaults the
       native program; `test/native/cell_basic.kl` crashes and passes. (found: PR 56 exit-code
-      count, 2026-10-04)
+      count, 2026-10-04) (completed 2026-10-17, fix/bug-106-cell-get: the crash was a Cell
+      dropped as an Rc at scope exit)
 - [ ] Generic function-typed parameters — Bug 107: `apply#[T](f: fn(T) -> T, x: T)` calling
       `f(x)` segfaults the native program; `test/native/meta_pure_generic.kl` crashes and
       passes. (found: PR 56 exit-code count, 2026-10-04)
