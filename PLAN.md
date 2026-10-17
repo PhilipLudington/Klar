@@ -95,6 +95,11 @@ in user programs first, then checker/contract correctness, then tooling, then de
       Added to the cut set by Philip 2026-10-17: a trial program that overflows gets
       a wrong answer with no error, and the check changes `op=` timing, so it lands
       before the performance baseline. (qa-review 2026-10-17)
+- [ ] Function-typed parameter calls — Bug 113: a call through a parameter typed
+      `fn(f64) -> f64` (any signature other than i32) fails native LLVM verification,
+      in plain and generic functions, because the call is typed `fn(..i32) -> i32`.
+      Added to the cut set by Philip 2026-10-17: higher-order code a trial program
+      would plausibly write hits it. (found: fix/bug-107-generic-fn-param, 2026-10-17)
 - [ ] Bug 34 — codegen `getTypeSize` sizes `char` as 1 byte and omits padding; enum payload
       stores overlap (`src/codegen/emit.zig:38333`, `:38342`). (qa-audit 2026-09-04)
 - [ ] Bug 5 — builtin emitters alloca at the call site; `fs_stat`/`process_run` in a loop
@@ -350,7 +355,7 @@ other (`build.zig.zon` says 0.4.0, `src/version.zig` says 0.5.0).
       collections, strings, file and process I/O — can hit the bug. Lines that fail the
       test stay after the tag and go in Known issues. Philip approves the set. (completed
       2026-10-17: Bugs 99, 106, 107, 108 with Bug 7, 34, 5, 63, 49 — the "v0.6.0 cut set"
-      group at the top of Next Up; Bug 111 added 2026-10-17 by Philip. Networking Bugs 8, 13, 64 left out, since the trial
+      group at the top of Next Up; Bug 111 added 2026-10-17 by Philip; Bug 113 added 2026-10-17 by Philip. Networking Bugs 8, 13, 64 left out, since the trial
       project does no networking for now; add them if that changes.)
 - [ ] Land the cut set through the normal Next Up flow; the cut is the first `main`
       commit after the last of them where `./run-tests.sh` is green and the nightly CI
