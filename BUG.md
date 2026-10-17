@@ -2847,9 +2847,9 @@ module's `Id` it found changed from run to run.
 
 ---
 
-## [ ] Bug 99: `*p += …` (any compound assignment) through an `inout` parameter hangs the compiler or fails LLVM verification
+## [x] Bug 99: `*p += …` (any compound assignment) through an `inout` parameter hangs the compiler or fails LLVM verification
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** deref compound assignment — the `.unary` deref arm of compound assignment in
 `src/codegen/emit.zig` (`ptr_elem_type = LLVMGetElementType(typeOf(ptr))`, `:5518`)
@@ -2872,6 +2872,13 @@ the `u8` forms never finish building (killed after 20 s) (probes `scratch/qr7475
 
 **Found by:** /qa-fix on fix/bug-74-75-runtime-checks, 2026-09-30, writing the deref case
 of finding #1's test; verified by probe (the `+=` arm is untouched by that branch).
+
+**Fix:** `emitDerefAssignment` takes the load type from `inferDerefType`, the one pointee
+lookup the `*p` read now also calls (its inline copy in `emitUnary` `.deref` deleted);
+`inferDerefType` gained the reference parameter's `reference_inner_type`
+(`src/codegen/emit.zig`).
+
+**Test:** `test/native/deref_compound_assign.kl`
 
 ---
 
