@@ -3194,3 +3194,62 @@ macOS arm64, 2026-10-17).
 
 **Found by:** /continue-plan on fix/bug-99-deref-compound-assign, 2026-10-17, writing Bug
 99's test.
+
+---
+
+## [ ] Bug 111: Native `+=`, `-=` and `*=` wrap silently on overflow; `a = a + 1` traps
+
+**Status:** Open
+
+**System:** compound-assignment overflow — the `.add_assign`/`.sub_assign`/`.mul_assign`
+arms in `src/codegen/emit.zig` (`emitAssignment` and `emitDerefAssignment`, ~5479), which
+use plain `buildAdd`/`buildSub`/`buildMul` instead of the `*.with.overflow` path (~4745)
+that binary `+`, `-`, `*` take
+
+**Deferred:** after v0.6.0 — wrong only on overflow, which a trial program does not reach
+in ordinary use; goes in the v0.6.0 Known issues.
+
+**Description:** Klar defines plain integer arithmetic to trap on overflow (wrapping is
+`+%`, saturating `+|`). Natively, `a = a + 1` traps, but `a += 1` on the same value wraps,
+directly and through an `inout` reference. `/=` and `%=` already go through
+`emitCheckedDivRem`, so division by zero traps.
+
+**Steps to reproduce:**
+1. `var a: i32 = 2147483647`, then `a += 1`, `return 0` from `main`.
+2. `klar build` it and run the binary; repeat with `a = a + 1`.
+
+**Expected:** Both trap (exit 133), as the interpreter's `.trap` compound assignment does.
+
+**Actual:** `a += 1` exits 0 with `a` wrapped; `a = a + 1` exits 133 (probes
+`scratch/rv99m/direct.kl`, `deref.kl`, `plain.kl`, macOS arm64, 2026-10-17).
+
+**Found by:** /qa-review on fix/bug-99-deref-compound-assign, 2026-10-17 — GenA WATCH
+(`emit.zig:5503`, read as matching native semantics); verified by the main loop's probe
+against `a = a + 1`.
+
+---
+
+## [ ] Bug 112: The interpreter refuses `*p op= v` — compound assignment takes only an identifier target
+
+**Status:** Open
+
+**System:** interpreter assignment targets — `src/interpreter.zig` compound assignment
+(~2090), whose target switch accepts only `.identifier`
+
+**Deferred:** after v0.6.0 — `--interpret` only; the default VM and native backends run it.
+
+**Description:** `*p += v` through an `inout` parameter stops the tree-walking interpreter
+with `InvalidOperation`. The VM and native code run the same program.
+
+**Steps to reproduce:**
+1. `fn add_i32(p: inout i32, v: i32) -> void { *p += v }`; `main` sets `var a: i32 = 5`,
+   calls `add_i32(ref a, 10)`, returns `a`.
+2. `klar run file.kl --interpret`, then `klar run file.kl`.
+
+**Expected:** Both exit 15.
+
+**Actual:** `--interpret` prints `Runtime error in main: InvalidOperation` and exits 1; the
+VM exits 15 (probe `scratch/rv99/h.kl`, macOS arm64, 2026-10-17).
+
+**Found by:** /qa-review on fix/bug-99-deref-compound-assign, 2026-10-17 — GenA; reviewer's
+evidence, confirmed by re-running the probe.

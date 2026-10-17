@@ -502,3 +502,46 @@ no longer needs it (MEMORY: removing it broke that build once).
 **Found by:** /qa-review on fix/bug-98-alias-element-scope, 2026-10-04 — GenA WATCH
 (`emit.zig` `[correctness]` seen in 6 prior branches, promoted on recurrence); reviewer's
 reading, not re-verified.
+
+---
+
+## [ ] Debt 24: Deref reads and `op=` through a non-i32 reference are pinned only by the u8/i64 happy path
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `test/native/deref_compound_assign.kl`, `test/native/ref_inout.kl`, `src/codegen/emit.zig` `inferExprType` `.deref` arm (~9111)
+**Due when:** touching `inferDerefType` or `emitDerefAssignment` in `src/codegen/emit.zig` · touching `test/native/deref_compound_assign.kl`
+
+**Description:** Bug 99's test pins every `op=` at its width, but every u8 value is below
+128, so signed and unsigned `/=`/`%=` give the same answer. No test reads a scalar `*x`
+through `ref i64`/`ref u8`, and nothing observes `inferExprType` on `*p` for a reference
+parameter that is not i32. All pass today (GenA probe: u8 200/3 = 66, 250 % 7 = 5).
+
+**Payment:** In `deref_compound_assign.kl`, `div_u8` on 200 by 3 expects 66 and `mod_u8`
+on 200 by 7 expects 4. In `ref_inout.kl`, `read_i64(x: ref i64) -> i64 { return *x }` on
+a value above 2^32. One native test that interpolates `"{*p}"` for an `inout i64` above
+2^32 and compares the string.
+
+**Found by:** /qa-review on fix/bug-99-deref-compound-assign, 2026-10-17 — TestCov GAPS;
+reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 25: The native runner's build step has no timeout
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `scripts/run-native-tests.sh` build step (~231); only the run (~244) is under `timeout`
+**Due when:** touching `scripts/run-native-tests.sh`
+
+**Description:** A compiler hang stalls the whole suite instead of failing one test. Bug
+99's unfixed code hung `klar build` on the u8 case, so its regression test would stall
+`./run-tests.sh` rather than turn red if that hang came back.
+
+**Payment:** Wrap the build in `timeout -k 5 "$NATIVE_TEST_TIMEOUT"` like the run, report a
+build timeout as a FAILED entry reading "build timed out", and add a self-test beside
+`native_timeout_branch` (Debt 18) that proves it.
+
+**Found by:** /qa-review on fix/bug-99-deref-compound-assign, 2026-10-17 — TestCov WATCH
+(`run-native-tests.sh` `[test-coverage]` seen in 3 prior branches, promoted on
+recurrence); reviewer's reading, not re-verified.
