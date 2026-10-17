@@ -545,3 +545,32 @@ build timeout as a FAILED entry reading "build timed out", and add a self-test b
 **Found by:** /qa-review on fix/bug-99-deref-compound-assign, 2026-10-17 — TestCov WATCH
 (`run-native-tests.sh` `[test-coverage]` seen in 3 prior branches, promoted on
 recurrence); reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 26: Bug 106's Cell test pins only `let`/`var` bindings from `Cell.new`, and the Cell match lives in two places
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/codegen/emit.zig` `isRcType` (~5927), `isCellExpr` (~5890), `tryGetRcInnerType` (~5818); `test/native/cell_shapes.kl`; `scripts/run-native-tests.sh` `cell_drop_lowering`
+**Due when:** touching `isCellExpr`, `isRcType` or `tryGetRcInnerType` in `src/codegen/emit.zig` · touching `test/native/cell_shapes.kl`
+
+**Description:** Bug 106's fix is pinned for `let`, `var`, alias and inner-block Cells
+built by `Cell.new`. Three things are not pinned. (1) `isRcType`'s `!local.is_cell` term:
+deleting it keeps every test green, because the checker rejects `clone()` on a Cell today
+(GenA probe). (2) A Cell that arrives as a function parameter, a struct field or a call's
+return value. None registers an Rc droppable today, because `tryGetRcInnerType` returns
+null for them. (3) `cell_drop_lowering` counts `klar_rc_drop` call sites with `grep -c`,
+so a lost Rc drop and a stray Cell drop would cancel out to 1. Separately, `isCellExpr`
+repeats `tryGetRcInnerType`'s `Cell`/`new` match, so a second Cell constructor would have
+to be added to both.
+
+**Payment:** Add a checker test that pins the rejection of `clone()` on a `Cell#[i32]`. Add
+`cell_shapes.kl` cases for a Cell parameter and a Cell returned from a function. Make
+`cell_drop_lowering` check that the one call is inside `rc_still_dropped`'s body. When the
+smart-pointer predicates move out of `emit.zig` (Debt 14's seam), make `isCellExpr` the
+single Cell match that `tryGetRcInnerType` calls.
+
+**Found by:** /qa-review on fix/bug-106-cell-get, 2026-10-17 — TestCov GAPS and WATCH,
+GenA WATCH (`emit.zig` `[duplication]` seen in 3 prior branches), GenB WATCH
+(`run-native-tests.sh` `[test-coverage]` seen in 4); reviewer's reading, not re-verified.
