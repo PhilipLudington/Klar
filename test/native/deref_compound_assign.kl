@@ -1,0 +1,65 @@
+// Every compound assignment through an inout reference loads and stores the
+// pointee at its own width (Bug 99): i32, u8 and i64, all five operators.
+// One operator per function: a line that starts with `*` continues the line
+// above it, so two deref statements cannot sit on consecutive lines.
+
+fn add_i32(p: inout i32, v: i32) -> void { *p += v }
+fn sub_i32(p: inout i32, v: i32) -> void { *p -= v }
+fn mul_i32(p: inout i32, v: i32) -> void { *p *= v }
+fn div_i32(p: inout i32, v: i32) -> void { *p /= v }
+fn mod_i32(p: inout i32, v: i32) -> void { *p %= v }
+
+fn add_u8(p: inout u8, v: u8) -> void { *p += v }
+fn sub_u8(p: inout u8, v: u8) -> void { *p -= v }
+fn mul_u8(p: inout u8, v: u8) -> void { *p *= v }
+fn div_u8(p: inout u8, v: u8) -> void { *p /= v }
+fn mod_u8(p: inout u8, v: u8) -> void { *p %= v }
+
+fn add_i64(p: inout i64, v: i64) -> void { *p += v }
+fn sub_i64(p: inout i64, v: i64) -> void { *p -= v }
+fn mul_i64(p: inout i64, v: i64) -> void { *p *= v }
+fn div_i64(p: inout i64, v: i64) -> void { *p /= v }
+fn mod_i64(p: inout i64, v: i64) -> void { *p %= v }
+
+fn main() -> i32 {
+    // i32: ((5 + 10 - 3) * 4 / 2) % 9 = 24 % 9 = 6
+    var a: i32 = 5
+    add_i32(ref a, 10)
+    if a != 15 { return 1 }
+    sub_i32(ref a, 3)
+    if a != 12 { return 2 }
+    mul_i32(ref a, 4)
+    if a != 48 { return 3 }
+    div_i32(ref a, 2)
+    if a != 24 { return 4 }
+    mod_i32(ref a, 9)
+    if a != 6 { return 5 }
+
+    // u8: ((40 + 1 - 2) * 3 / 3) % 7 = 39 % 7 = 4
+    var b: u8 = 40.as#[u8]
+    add_u8(ref b, 1.as#[u8])
+    if b != 41.as#[u8] { return 11 }
+    sub_u8(ref b, 2.as#[u8])
+    if b != 39.as#[u8] { return 12 }
+    mul_u8(ref b, 3.as#[u8])
+    if b != 117.as#[u8] { return 13 }
+    div_u8(ref b, 3.as#[u8])
+    if b != 39.as#[u8] { return 14 }
+    mod_u8(ref b, 7.as#[u8])
+    if b != 4.as#[u8] { return 15 }
+
+    // i64: values past i32 range survive every operator
+    var c: i64 = 7.as#[i64]
+    add_i64(ref c, 5000000000.as#[i64])
+    if c != 5000000007.as#[i64] { return 21 }
+    sub_i64(ref c, 1.as#[i64])
+    if c != 5000000006.as#[i64] { return 22 }
+    mul_i64(ref c, 2.as#[i64])
+    if c != 10000000012.as#[i64] { return 23 }
+    div_i64(ref c, 4.as#[i64])
+    if c != 2500000003.as#[i64] { return 24 }
+    mod_i64(ref c, 1000000007.as#[i64])
+    if c != 499999989.as#[i64] { return 25 }
+
+    return 0
+}

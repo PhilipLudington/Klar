@@ -5470,8 +5470,10 @@ pub const Emitter = struct {
         // Evaluate the right-hand side
         const rhs = try self.emitExpr(bin.right);
 
-        // For compound assignment, need to load current value and operate
-        const ptr_elem_type = llvm.c.LLVMGetElementType(llvm.typeOf(ptr));
+        // For compound assignment, need to load current value and operate. The
+        // pointee type is the one a `*ptr` read loads (pointers are opaque, so
+        // the pointer's own LLVM type carries no element type).
+        const ptr_elem_type = try self.inferDerefType(un.operand);
         const value = switch (bin.op) {
             .assign => rhs,
             .add_assign => blk: {
@@ -5606,26 +5608,7 @@ pub const Emitter = struct {
             .deref => {
                 // Dereference a pointer: load the value from the pointer
                 const operand = try self.emitExpr(un.operand);
-
-                // Try to get the inner type from the operand
-                // First, check if operand is an identifier with a known inner type
-                const inner_type: llvm.TypeRef = if (un.operand == .identifier) blk: {
-                    const id = un.operand.identifier;
-                    if (self.named_values.get(id.name)) |local| {
-                        if (local.inner_type) |inner| {
-                            break :blk inner;
-                        }
-                        // For reference parameters (ref T), use the reference inner type
-                        if (local.is_reference) {
-                            if (local.reference_inner_type) |ref_inner| {
-                                break :blk ref_inner;
-                            }
-                        }
-                    }
-                    // Fallback: try to infer from expression
-                    break :blk try self.inferDerefType(un.operand);
-                } else try self.inferDerefType(un.operand);
-
+                const inner_type = try self.inferDerefType(un.operand);
                 return self.builder.buildLoad(inner_type, operand, "deref");
             },
             .ref => {
@@ -5803,12 +5786,18 @@ pub const Emitter = struct {
             }
         }
 
-        // For identifiers, check the named_values for inner_type
+        // For identifiers, check the named_values for inner_type, then for a
+        // reference parameter (ref T / inout T) its pointee type.
         if (expr == .identifier) {
             const id = expr.identifier;
             if (self.named_values.get(id.name)) |local| {
                 if (local.inner_type) |inner| {
                     return inner;
+                }
+                if (local.is_reference) {
+                    if (local.reference_inner_type) |ref_inner| {
+                        return ref_inner;
+                    }
                 }
             }
         }

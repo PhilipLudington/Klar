@@ -72,10 +72,10 @@ in user programs first, then checker/contract correctness, then tooling, then de
       lists `deletion` and `non_fast_forward` and nothing else)
 
 **v0.6.0 cut set (blocks Phase 1: the tagged release; approved by Philip 2026-10-17)**
-- [ ] Deref compound assignment — Bug 99: `*p += …` and every other `op=` through an `inout`
+- [x] Deref compound assignment — Bug 99: `*p += …` and every other `op=` through an `inout`
       parameter hangs the compiler (`u8`) or fails LLVM verification (`i32`), because the
       load type is `LLVMGetElementType` of an opaque pointer (`src/codegen/emit.zig:5518`).
-      (qa-review 2026-09-30)
+      (qa-review 2026-09-30) (completed 2026-10-17, fix/bug-99-deref-compound-assign)
 - [ ] Cell — Bug 106: a second `let x: T = cell.get()` after `cell.set(v)` segfaults the
       native program; `test/native/cell_basic.kl` crashes and passes. (found: PR 56 exit-code
       count, 2026-10-04)
