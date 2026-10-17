@@ -76,9 +76,10 @@ in user programs first, then checker/contract correctness, then tooling, then de
       parameter hangs the compiler (`u8`) or fails LLVM verification (`i32`), because the
       load type is `LLVMGetElementType` of an opaque pointer (`src/codegen/emit.zig:5518`).
       (qa-review 2026-09-30) (completed 2026-10-17, fix/bug-99-deref-compound-assign)
-- [ ] Cell — Bug 106: a second `let x: T = cell.get()` after `cell.set(v)` segfaults the
+- [x] Cell — Bug 106: a second `let x: T = cell.get()` after `cell.set(v)` segfaults the
       native program; `test/native/cell_basic.kl` crashes and passes. (found: PR 56 exit-code
-      count, 2026-10-04)
+      count, 2026-10-04) (completed 2026-10-17, fix/bug-106-cell-get: the crash was a Cell
+      dropped as an Rc at scope exit)
 - [ ] Generic function-typed parameters — Bug 107: `apply#[T](f: fn(T) -> T, x: T)` calling
       `f(x)` segfaults the native program; `test/native/meta_pure_generic.kl` crashes and
       passes. (found: PR 56 exit-code count, 2026-10-04)
@@ -86,6 +87,12 @@ in user programs first, then checker/contract correctness, then tooling, then de
       program; `test/native/string_drop.kl` crashes and passes. Land Bug 7's widened fix
       (default expects 0) with or after these three. (found: PR 56 exit-code count,
       2026-10-04)
+- [ ] Compound-assignment overflow — Bug 111: native `+=`, `-=` and `*=` wrap silently
+      on overflow while `a = a + 1` traps; route them through the `*.with.overflow`
+      path (`src/codegen/emit.zig` `emitAssignment`, `emitDerefAssignment` ~5479).
+      Added to the cut set by Philip 2026-10-17: a trial program that overflows gets
+      a wrong answer with no error, and the check changes `op=` timing, so it lands
+      before the performance baseline. (qa-review 2026-10-17)
 - [ ] Bug 34 — codegen `getTypeSize` sizes `char` as 1 byte and omits padding; enum payload
       stores overlap (`src/codegen/emit.zig:38333`, `:38342`). (qa-audit 2026-09-04)
 - [ ] Bug 5 — builtin emitters alloca at the call site; `fs_stat`/`process_run` in a loop
@@ -341,7 +348,7 @@ other (`build.zig.zon` says 0.4.0, `src/version.zig` says 0.5.0).
       collections, strings, file and process I/O — can hit the bug. Lines that fail the
       test stay after the tag and go in Known issues. Philip approves the set. (completed
       2026-10-17: Bugs 99, 106, 107, 108 with Bug 7, 34, 5, 63, 49 — the "v0.6.0 cut set"
-      group at the top of Next Up. Networking Bugs 8, 13, 64 left out, since the trial
+      group at the top of Next Up; Bug 111 added 2026-10-17 by Philip. Networking Bugs 8, 13, 64 left out, since the trial
       project does no networking for now; add them if that changes.)
 - [ ] Land the cut set through the normal Next Up flow; the cut is the first `main`
       commit after the last of them where `./run-tests.sh` is green and the nightly CI

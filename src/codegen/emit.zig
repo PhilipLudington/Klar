@@ -330,6 +330,9 @@ pub const Emitter = struct {
         inner_type: ?llvm.TypeRef = null,
         /// True if this is an Arc type (uses atomic operations).
         is_arc: bool = false,
+        /// True for a Cell#[T]: `inner_type` is set for get/set, but the value is stack
+        /// storage, never an Rc allocation, so it is not dropped or cloned as one.
+        is_cell: bool = false,
         /// For closure variables, the return type of the closure function.
         /// This is needed because we can't determine the return type from the closure struct type alone.
         closure_return_type: ?llvm.TypeRef = null,
@@ -2682,6 +2685,7 @@ pub const Emitter = struct {
                 // For Rc/Arc types, track the inner type for dereferencing
                 const inner_type = self.tryGetRcInnerType(decl.value);
                 const is_arc = self.isArcType(decl.value);
+                const is_cell = self.isCellExpr(decl.value);
                 // For closure types, extract return type and param types from annotation
                 const closure_info = self.tryGetClosureTypeInfo(decl_type);
                 // Check if this is a string type
@@ -2726,6 +2730,7 @@ pub const Emitter = struct {
                     .struct_type_name = struct_type_name,
                     .inner_type = inner_type,
                     .is_arc = is_arc,
+                    .is_cell = is_cell,
                     .closure_return_type = if (closure_info) |ci| ci.return_type else null,
                     .closure_param_types = if (closure_info) |ci| ci.param_types else null,
                     .is_string = is_string,
@@ -2757,9 +2762,9 @@ pub const Emitter = struct {
                     self.emitVarDebugInfo(decl.name, alloca, st, decl.span);
                 }
 
-                // Register Rc/Arc variables for automatic dropping
+                // Register Rc/Arc variables for automatic dropping (a Cell is not one)
                 if (inner_type) |it| {
-                    try self.registerDroppable(decl.name, alloca, it, true, is_arc);
+                    if (!is_cell) try self.registerDroppable(decl.name, alloca, it, true, is_arc);
                 }
 
                 // Register BufWriter variables for automatic flushing on drop
@@ -2832,6 +2837,7 @@ pub const Emitter = struct {
                 // For Rc/Arc types, track the inner type for dereferencing
                 const inner_type = self.tryGetRcInnerType(decl.value);
                 const is_arc = self.isArcType(decl.value);
+                const is_cell = self.isCellExpr(decl.value);
                 // For closure types, extract return type and param types from annotation
                 const closure_info = self.tryGetClosureTypeInfo(decl_type);
                 // Check if this is a string type
@@ -2874,6 +2880,7 @@ pub const Emitter = struct {
                     .struct_type_name = struct_type_name,
                     .inner_type = inner_type,
                     .is_arc = is_arc,
+                    .is_cell = is_cell,
                     .closure_return_type = if (closure_info) |ci| ci.return_type else null,
                     .closure_param_types = if (closure_info) |ci| ci.param_types else null,
                     .is_string = is_string,
@@ -2904,9 +2911,9 @@ pub const Emitter = struct {
                     self.emitVarDebugInfo(decl.name, alloca, st, decl.span);
                 }
 
-                // Register Rc/Arc variables for automatic dropping
+                // Register Rc/Arc variables for automatic dropping (a Cell is not one)
                 if (inner_type) |it| {
-                    try self.registerDroppable(decl.name, alloca, it, true, is_arc);
+                    if (!is_cell) try self.registerDroppable(decl.name, alloca, it, true, is_arc);
                 }
 
                 // Register BufWriter variables for automatic flushing on drop
@@ -5877,6 +5884,27 @@ pub const Emitter = struct {
         return false;
     }
 
+    /// Check if an expression is a Cell#[T]: `Cell.new(v)`, or a variable bound to one.
+    /// tryGetRcInnerType gives Rc, Arc and Cell an inner type alike; this is what tells
+    /// a Cell's stack storage apart from an Rc allocation (Bug 106).
+    fn isCellExpr(self: *Emitter, expr: ast.Expr) bool {
+        if (expr == .method_call) {
+            const method = expr.method_call;
+            if (method.object == .identifier and
+                std.mem.eql(u8, method.object.identifier.name, "Cell") and
+                std.mem.eql(u8, method.method_name, "new"))
+            {
+                return true;
+            }
+        }
+        if (expr == .identifier) {
+            if (self.named_values.get(expr.identifier.name)) |local| {
+                return local.is_cell;
+            }
+        }
+        return false;
+    }
+
     fn isRcType(self: *Emitter, expr: ast.Expr) bool {
         if (expr == .method_call) {
             const method = expr.method_call;
@@ -5896,7 +5924,7 @@ pub const Emitter = struct {
         if (expr == .identifier) {
             const id = expr.identifier;
             if (self.named_values.get(id.name)) |local| {
-                return local.inner_type != null and !local.is_arc;
+                return local.inner_type != null and !local.is_arc and !local.is_cell;
             }
         }
 

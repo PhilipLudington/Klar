@@ -1,0 +1,64 @@
+// Cell#[T] in every binding shape (Bug 106). A Cell is stack storage, so no Cell
+// variable may be dropped as an Rc: run-native-tests.sh also compiles this file to
+// LLVM IR and requires exactly one klar_rc_drop call, the one for rc_still_dropped.
+
+fn let_cell() -> i32 {
+    let counter: Cell#[i32] = Cell.new(10)
+    let initial: i32 = counter.get()
+    counter.set(42)
+    let updated: i32 = counter.get()
+    return updated - initial
+}
+
+fn var_cell() -> i32 {
+    let start: i64 = 5
+    var total: Cell#[i64] = Cell.new(start)
+    let first: i64 = total.get()
+    let step: i64 = 30
+    total.set(first + step)
+    let second: i64 = total.get()
+    return second.as#[i32]
+}
+
+fn alias_cell() -> i32 {
+    let counter: Cell#[i32] = Cell.new(1)
+    let alias: Cell#[i32] = counter
+    alias.set(7)
+    let seen: i32 = counter.get()
+    return seen
+}
+
+fn block_cell() -> i32 {
+    var result: i32 = 0
+    if true {
+        let inner: Cell#[i32] = Cell.new(4)
+        inner.set(6)
+        let got: i32 = inner.get()
+        result = got
+    }
+    return result
+}
+
+fn rc_still_dropped() -> i32 {
+    let shared: Rc#[i32] = Rc.new(9)
+    return 9
+}
+
+fn main() -> i32 {
+    if let_cell() != 32 {
+        return 1
+    }
+    if var_cell() != 35 {
+        return 2
+    }
+    if alias_cell() != 7 {
+        return 3
+    }
+    if block_cell() != 6 {
+        return 4
+    }
+    if rc_still_dropped() != 9 {
+        return 5
+    }
+    return 0
+}
