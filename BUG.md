@@ -3279,3 +3279,38 @@ VM exits 15 (probe `scratch/rv99/h.kl`, macOS arm64, 2026-10-17).
 
 **Found by:** /qa-review on fix/bug-99-deref-compound-assign, 2026-10-17 — GenA; reviewer's
 evidence, confirmed by re-running the probe.
+
+---
+
+## [ ] Bug 113: A call through a function-typed parameter is typed `fn(..i32) -> i32`, so any other signature fails native build
+
+**Status:** Open
+
+**System:** function-typed parameters — the parameter binders in `src/codegen/emit.zig`
+(`emitFunction`, `emitMonomorphizedFunction`) record no `closure_return_type` /
+`closure_param_types`, so `emitClosureCallTyped` falls back to `i32` for every argument
+and the return
+
+**Deferred:** after v0.6.0 — not in the cut set Philip approved 2026-10-17; the build
+refuses rather than miscompiling, and an `i32` signature works.
+
+**Description:** A parameter of type `fn(A) -> R` is bound without its signature, so the
+call `f(x)` in the body is built as `i32 (ptr, i32)`. With `A` or `R` other than `i32`
+LLVM verification rejects the module. Plain and generic functions both fail.
+
+**Steps to reproduce:**
+1. `fn applyf(f: fn(f64) -> f64, x: f64) -> f64 { return f(x) }`; in `main`:
+   `let half: fn(f64) -> f64 = |v: f64| -> f64 { return v / 2.0 }`,
+   `if applyf(half, 9.0) != 4.5 { return 4 }`, `return 0`.
+2. `klar build` the file. Repeat with `fn apply#[T](f: fn(T) -> T, x: T) -> T` called as
+   `apply#[f64](half, 9.0)`.
+
+**Expected:** Both build and exit 0.
+
+**Actual:** `LLVM Module verification failed: Call parameter type does not match function
+signature!` (`call i32 %fn.ptr(ptr %env.ptr, double %x1)`), no binary (probes
+`scratch/g_ng.kl`, `scratch/g_f.kl`, macOS arm64, 2026-10-17).
+
+**Found by:** the Bug 107 pick-up, fix/bug-107-generic-fn-param, 2026-10-17, while
+widening its test to `apply#[f64]`. Not Bug 107's cause (that was the byval pointer read
+as a value), so it was left out of that branch.
