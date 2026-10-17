@@ -446,3 +446,59 @@ when `emitSliceValue` stack-allocates or is bypassed.
 
 **Found by:** /qa-review on fix/bug-97-array-slice-coercion, 2026-10-04 — QA Test Coverage
 Review GAPS; reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 22: Bug 98's alias test pins two readers, weakly, and fails on unfixed code only some runs
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `test/module/type_alias_elements/`; `src/codegen/emit.zig` `resolveExpectedType` (~7952) and the readers routed through it
+**Due when:** touching `test/module/type_alias_elements/` · touching `src/codegen/emit.zig`'s `resolveExpectedType` or `substituteAliases`
+
+**Description:** The test pins a `var` `List#[Id]` local, a free-function `List#[Id]`
+parameter and a `Map` value. Its `map_key` case returns its own local after
+`contains_key(v)`, so a key truncated the same way on insert and lookup still passes. The
+wrong-module pick depends on a pointer-keyed map walk, so unfixed code goes red only in some
+runs (4 of 6 and 3 of 8 in the Builder's breaks). No alias case reaches a `let` local, an
+impl-method parameter, the array or slice readers, `Set`, the three `with_capacity`
+constructors, `channel_create`, a variant payload, the `resolveTypeExprDirect` fallbacks or a
+nested element (`List#[?Id]`, `Map#[string, List#[Id]]`). That no other direct
+`resolveTypeExpr` call is left in `emit.zig` is checked only by grep.
+
+**Payment:** In `wide.kl`: `map_key` asserts `contains_key(705032707.as#[i64])` is false
+after inserting 5000000003 (the low 32 bits); add a `let` local, an impl-method parameter, a
+`[Id; 2]` local and `[Id]` parameter, `Set.with_capacity#[Id]`, `List.with_capacity#[Id]`,
+`Map.with_capacity#[string, Id]`, `channel_create#[Id]` and `List#[?Id]`, each holding a value
+above the `i32` range. Make a wrong pick near-certain: several sibling modules each declaring
+a differently sized `Id`, or loop the test in `run-module-tests.sh`. Each case must go red
+when its reader calls the checker's `resolveTypeExpr` directly.
+
+**Found by:** /qa-review on fix/bug-98-alias-element-scope, 2026-10-04 — QA Test Coverage
+Review GAPS and WATCH (`emit.zig` `[test-coverage]` seen in 4 prior branches); reviewer's
+reading, not re-verified.
+
+---
+
+## [ ] Debt 23: `resolveTypeExprDirect`'s cross-module fallback reads an alias by bare name, from any module
+
+**Status:** Open
+**Kind:** latent-defect
+**Where:** `src/codegen/emit.zig` `resolveTypeExprDirect` `.named` branch (~7629), `src/checker/checker.zig` `lookupSymbolAcrossModules` (~2679)
+**Due when:** touching `src/codegen/emit.zig`'s `resolveTypeExprDirect` · touching `lookupSymbolAcrossModules`
+
+**Description:** When the scoped resolve returns null, the `.named` branch falls back to
+`lookupSymbolAcrossModules(n.name)`, which walks a pointer-keyed map of module scopes. A name
+the current module cannot place therefore resolves to whichever module's symbol of that name
+the walk reaches first, which is the mechanism behind Bug 98. Not shown reachable today: the
+scoped resolve finds every alias the current module declares or imports.
+
+**Payment:** Find a named type the scoped resolve misses while another module declares the
+same name (an alias used only inside a generic body monomorphized from another module is the
+first candidate), and show it reading the wrong width. If none exists, restrict the fallback
+to `pub` symbols of imported modules, or remove it once the Zig multi-module selfhost build
+no longer needs it (MEMORY: removing it broke that build once).
+
+**Found by:** /qa-review on fix/bug-98-alias-element-scope, 2026-10-04 — GenA WATCH
+(`emit.zig` `[correctness]` seen in 6 prior branches, promoted on recurrence); reviewer's
+reading, not re-verified.

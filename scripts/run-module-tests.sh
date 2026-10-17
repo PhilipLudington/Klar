@@ -203,6 +203,28 @@ else
     echo "⊘ type_alias_scope (test not found, skipping)"
 fi
 
+echo "--- type_alias_elements: a private alias as a collection's element, key or value type ---"
+temp_bin="/tmp/klar_module_type_alias_elements"
+if [ -d "$TEST_DIR/type_alias_elements" ]; then
+    if $KLAR build $TEST_DIR/type_alias_elements/main.kl -o "$temp_bin" 2>/dev/null && [ -x "$temp_bin" ]; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "42" ]; then
+            echo "✓ type_alias_elements (exit: $result)"
+            record_success "type_alias_elements"
+        else
+            echo "✗ type_alias_elements (expected: 42, got: $result)"
+            record_failure "type_alias_elements" "expected 42, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ type_alias_elements (build failed)"
+        record_failure "type_alias_elements" "build failed"
+    fi
+else
+    echo "⊘ type_alias_elements (test not found, skipping)"
+fi
+
 # Test 7: Sibling directory imports (test file imports from sibling lib/)
 # This tests that imports resolve relative to cwd, not just relative to entry file
 echo "--- sibling: Import from sibling directory ---"

@@ -1,0 +1,6 @@
+// narrow.kl - a private `type Id` with a different target from wide.kl's.
+type Id = i32
+
+pub fn narrow_val() -> Id {
+    return 7
+}
