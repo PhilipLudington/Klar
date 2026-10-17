@@ -3165,3 +3165,32 @@ read back (probes `scratch/p98d/two.kl`, `scratch/p98d/one.kl`, 3 of 3 runs each
 
 **Found by:** /qa-review on fix/bug-98-alias-element-scope, 2026-10-04 — GenA named the gap
 in `substituteAliases`; the main loop's probes showed it failing.
+
+---
+
+## [ ] Bug 110: A statement that starts with `*` continues the expression on the line above
+
+**Status:** Open
+
+**System:** statement boundaries — the binary-operator loop of the expression parser in
+`src/parser.zig`, which reads a `*` at the start of a new line as multiplication
+
+**Deferred:** after the current milestone. The checker refuses the merged expression, so
+nothing miscompiles, and putting the two deref statements on non-adjacent lines (or in
+separate functions) works.
+
+**Description:** A line ending in an expression followed by a line beginning `*p …` parses
+as one expression, `<previous> * p …`, so two deref statements cannot follow each other.
+
+**Steps to reproduce:**
+1. `fn bump(p: inout i32) -> void { ⏎ *p += 10 ⏎ *p -= 3 ⏎ }`, called with `ref a`.
+2. `klar check` the file.
+
+**Expected:** It checks clean; each line is its own statement.
+
+**Actual:** `2:11 [invalid_operation]: right operand must be numeric` and
+`cannot assign to this expression` at the `10` of line 2 (probe `scratch/b110/two.kl`,
+macOS arm64, 2026-10-17).
+
+**Found by:** /continue-plan on fix/bug-99-deref-compound-assign, 2026-10-17, writing Bug
+99's test.
