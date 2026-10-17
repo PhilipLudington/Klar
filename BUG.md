@@ -3206,9 +3206,6 @@ arms in `src/codegen/emit.zig` (`emitAssignment` and `emitDerefAssignment`, ~547
 use plain `buildAdd`/`buildSub`/`buildMul` instead of the `*.with.overflow` path (~4745)
 that binary `+`, `-`, `*` take
 
-**Deferred:** after v0.6.0 — wrong only on overflow, which a trial program does not reach
-in ordinary use; goes in the v0.6.0 Known issues.
-
 **Description:** Klar defines plain integer arithmetic to trap on overflow (wrapping is
 `+%`, saturating `+|`). Natively, `a = a + 1` traps, but `a += 1` on the same value wraps,
 directly and through an `inout` reference. `/=` and `%=` already go through
