@@ -1,0 +1,55 @@
+// Bug 107: a monomorphized generic function whose parameter is passed byval
+// (a closure, or a struct over 8 bytes) reads the parameter's value, not its pointer.
+
+struct Point {
+    x: f64,
+    y: f64,
+}
+
+fn apply#[T](f: fn(T) -> T, x: T) -> T {
+    return f(x)
+}
+
+fn identity#[T](x: T) -> T {
+    return x
+}
+
+fn pick#[T](a: T, b: T, first: bool) -> T {
+    if first {
+        return a
+    }
+    return b
+}
+
+fn after_scalar#[T](n: i32, x: T) -> T {
+    if n > 0 {
+        return x
+    }
+    return x
+}
+
+fn main() -> i32 {
+    let inc: fn(i32) -> i32 = |x: i32| -> i32 { return x + 1 }
+    let e: i32 = apply#[i32](inc, 5)
+    if e != 6 {
+        return 1
+    }
+
+    let p: Point = Point { x: 1.5, y: 2.5 }
+    let q: Point = identity#[Point](p)
+    if q.x != 1.5 or q.y != 2.5 {
+        return 2
+    }
+
+    let r: Point = Point { x: 7.0, y: 8.0 }
+    let s: Point = pick#[Point](p, r, false)
+    if s.x != 7.0 or s.y != 8.0 {
+        return 3
+    }
+
+    let u: Point = after_scalar#[Point](3, r)
+    if u.x != 7.0 or u.y != 8.0 {
+        return 4
+    }
+    return 0
+}

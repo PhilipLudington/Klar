@@ -574,3 +574,28 @@ single Cell match that `tryGetRcInnerType` calls.
 **Found by:** /qa-review on fix/bug-106-cell-get, 2026-10-17 — TestCov GAPS and WATCH,
 GenA WATCH (`emit.zig` `[duplication]` seen in 3 prior branches), GenB WATCH
 (`run-native-tests.sh` `[test-coverage]` seen in 4); reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 27: Byval parameter binding is pinned only for generic functions, not for sret plain functions or methods
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/codegen/emit.zig` `emitFunction` (~2385, `isByvalParam(byval_info, llvm_param_idx - 1 - param_offset)`), the method binders (~2052, ~38819); `test/native/generic_byval_sret.kl`
+**Due when:** touching `bindParamAlloca` or `isByvalParam` in `src/codegen/emit.zig` · when method declarations start passing parameters byval
+
+**Description:** Bug 107's fix routes both function binders through `bindParamAlloca`.
+Its tests pin generic functions only. Two shapes are unpinned. (1) A plain (non-generic)
+function that returns through sret and takes a struct over 8 bytes after a scalar. That
+is the only case that exercises the `- param_offset` index in `emitFunction`. (2) A method,
+plain or generic-impl, taking a struct over 8 bytes or a closure. Methods declare no byval
+parameters today (claim C5, argued from code). A later change that made them byval would
+bring Bug 107 back in methods with every test green.
+
+**Payment:** Add `fn shift(n: i32, p: Point3) -> Point3 { return p }` to
+`generic_byval_sret.kl` or a sibling, and assert all three fields. Add
+`impl Box { fn take(self, p: Point3) -> f64 { return p.z } }` plus a generic-impl method
+with `T = Point3`, each asserting a field.
+
+**Found by:** /qa-review on fix/bug-107-generic-fn-param, 2026-10-17 — TestCov GAPS;
+reviewer's reading, not re-verified.

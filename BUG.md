@@ -3090,9 +3090,9 @@ plus the `cell_drop_lowering` IR check in `scripts/run-native-tests.sh` (exactly
 
 ---
 
-## [ ] Bug 107: A generic function with a `fn(T) -> T` parameter segfaults natively when it calls it
+## [x] Bug 107: A generic function with a `fn(T) -> T` parameter segfaults natively when it calls it
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** generic function-typed parameters — monomorphization of a generic function whose
 parameter is a function type, in `src/codegen/emit.zig` (`declareMonomorphizedFunction` and
@@ -3115,6 +3115,21 @@ native runner reports it as passing (Bug 7). `meta pure` is not involved: the cr
 
 **Found by:** PR 56 session's exit-code count from the `./run-tests.sh` output at `b9d81b2`,
 2026-10-04; re-run individually and narrowed by the Bug 98 pick-up, 2026-10-04.
+
+**Cause:** not the call through `f`. `declareMonomorphizedFunction` passes every parameter
+over 8 bytes byval, a pointer to the caller's copy, and a closure (`{ ptr, ptr }`) is 16
+bytes. `emitMonomorphizedFunction` stored that pointer into the parameter's alloca as if
+it were the value, so the body read the pointer's bytes as the closure and called garbage.
+A struct over 8 bytes passed to any generic function was read the same way: no crash, the
+wrong fields (`identity#[Point]` with two `f64` fields).
+
+**Fix:** `bindParamAlloca` (`src/codegen/emit.zig`) is the one path both function bodies,
+`emitFunction` and `emitMonomorphizedFunction`, bind a parameter through: a byval
+parameter is loaded through its pointer and copied. `isByvalParam` reads the
+`byval_functions` entry by user parameter index, so an sret return does not shift it.
+
+**Test:** `test/native/meta_pure_generic.kl` (now expects 0), `test/native/generic_byval_params.kl`
+and `test/native/generic_byval_sret.kl`.
 
 ---
 
@@ -3264,3 +3279,38 @@ VM exits 15 (probe `scratch/rv99/h.kl`, macOS arm64, 2026-10-17).
 
 **Found by:** /qa-review on fix/bug-99-deref-compound-assign, 2026-10-17 — GenA; reviewer's
 evidence, confirmed by re-running the probe.
+
+---
+
+## [ ] Bug 113: A call through a function-typed parameter is typed `fn(..i32) -> i32`, so any other signature fails native build
+
+**Status:** Open
+
+**System:** function-typed parameters — the parameter binders in `src/codegen/emit.zig`
+(`emitFunction`, `emitMonomorphizedFunction`) record no `closure_return_type` /
+`closure_param_types`, so `emitClosureCallTyped` falls back to `i32` for every argument
+and the return
+
+**Deferred:** after v0.6.0 — not in the cut set Philip approved 2026-10-17; the build
+refuses rather than miscompiling, and an `i32` signature works.
+
+**Description:** A parameter of type `fn(A) -> R` is bound without its signature, so the
+call `f(x)` in the body is built as `i32 (ptr, i32)`. With `A` or `R` other than `i32`
+LLVM verification rejects the module. Plain and generic functions both fail.
+
+**Steps to reproduce:**
+1. `fn applyf(f: fn(f64) -> f64, x: f64) -> f64 { return f(x) }`; in `main`:
+   `let half: fn(f64) -> f64 = |v: f64| -> f64 { return v / 2.0 }`,
+   `if applyf(half, 9.0) != 4.5 { return 4 }`, `return 0`.
+2. `klar build` the file. Repeat with `fn apply#[T](f: fn(T) -> T, x: T) -> T` called as
+   `apply#[f64](half, 9.0)`.
+
+**Expected:** Both build and exit 0.
+
+**Actual:** `LLVM Module verification failed: Call parameter type does not match function
+signature!` (`call i32 %fn.ptr(ptr %env.ptr, double %x1)`), no binary (probes
+`scratch/g_ng.kl`, `scratch/g_f.kl`, macOS arm64, 2026-10-17).
+
+**Found by:** the Bug 107 pick-up, fix/bug-107-generic-fn-param, 2026-10-17, while
+widening its test to `apply#[f64]`. Not Bug 107's cause (that was the byval pointer read
+as a value), so it was left out of that branch.
