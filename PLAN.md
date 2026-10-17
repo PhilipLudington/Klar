@@ -11,8 +11,8 @@ fixture runs and Bugs 15–59 from the `/qa-audit --calibrate klar-e7b54e7` run
 (report: `~/.claude/qa-reviews/Klar/audit/2026-09-04/qa-audit-report.md`).
 
 Current status: Next Up queue populated (2026-09-04); Phase 0 not started; Phase 1
-(stable v0.6.0 for an external performance trial) added 2026-10-17, cut set not yet
-chosen.
+(stable v0.6.0 for an external performance trial) added 2026-10-17, cut set
+chosen 2026-10-17 (the "v0.6.0 cut set" group at the top of Next Up).
 
 ## Next Up
 
@@ -70,6 +70,33 @@ in user programs first, then checker/contract correctness, then tooling, then de
       than adding classic branch protection beside it; no bypass actors. (Philip,
       2026-09-29) (completed 2026-09-29: `gh api repos/PhilipLudington/Klar/rules/branches/main`
       lists `deletion` and `non_fast_forward` and nothing else)
+
+**v0.6.0 cut set (blocks Phase 1: the tagged release; approved by Philip 2026-10-17)**
+- [ ] Deref compound assignment — Bug 99: `*p += …` and every other `op=` through an `inout`
+      parameter hangs the compiler (`u8`) or fails LLVM verification (`i32`), because the
+      load type is `LLVMGetElementType` of an opaque pointer (`src/codegen/emit.zig:5518`).
+      (qa-review 2026-09-30)
+- [ ] Cell — Bug 106: a second `let x: T = cell.get()` after `cell.set(v)` segfaults the
+      native program; `test/native/cell_basic.kl` crashes and passes. (found: PR 56 exit-code
+      count, 2026-10-04)
+- [ ] Generic function-typed parameters — Bug 107: `apply#[T](f: fn(T) -> T, x: T)` calling
+      `f(x)` segfaults the native program; `test/native/meta_pure_generic.kl` crashes and
+      passes. (found: PR 56 exit-code count, 2026-10-04)
+- [ ] String drop — Bug 108: any use of a `String` after `.drop()` segfaults the native
+      program; `test/native/string_drop.kl` crashes and passes. Land Bug 7's widened fix
+      (default expects 0) with or after these three. (found: PR 56 exit-code count,
+      2026-10-04)
+- [ ] Bug 34 — codegen `getTypeSize` sizes `char` as 1 byte and omits padding; enum payload
+      stores overlap (`src/codegen/emit.zig:38333`, `:38342`). (qa-audit 2026-09-04)
+- [ ] Bug 5 — builtin emitters alloca at the call site; `fs_stat`/`process_run` in a loop
+      grow the stack every iteration (`emit.zig`); hoist to the entry block. (qa-review 2026-09-03)
+- [ ] Bug 63 — `let x = 1; x = 2` passes `klar check` and compiles natively (`src/checker/expressions.zig:392`
+      never reads `sym.mutable`; the statement-level check at `statements.zig:78` is unreachable).
+      Check mutability in the binary-assign path; failing test first. (qa-audit 2026-09-05)
+- [ ] Bug 49 — `build`/`check` exit 0 on failure at `e7b54e7` (`src/main.zig:3420`). Fix it
+      directly: the failing test (a broken file, expect a non-zero exit from both commands) is
+      the measurement; if it passes at HEAD, keep it as the regression test and close the
+      bug. (qa-audit 2026-09-04)
 
 **Crashes and wrong results in running programs**
 - [x] Native channels — Bug 90: a `Sender` reached by an index (`txs[0].send(v)`) or a `for`
@@ -134,20 +161,6 @@ in user programs first, then checker/contract correctness, then tooling, then de
       substitution. (qa-review 2026-09-30) (completed 2026-10-04: every checker read of a
       type expression in the emitter goes through `resolveExpectedType`, which substitutes
       the module's own aliases first)
-- [ ] Deref compound assignment — Bug 99: `*p += …` and every other `op=` through an `inout`
-      parameter hangs the compiler (`u8`) or fails LLVM verification (`i32`), because the
-      load type is `LLVMGetElementType` of an opaque pointer (`src/codegen/emit.zig:5518`).
-      (qa-review 2026-09-30)
-- [ ] Cell — Bug 106: a second `let x: T = cell.get()` after `cell.set(v)` segfaults the
-      native program; `test/native/cell_basic.kl` crashes and passes. (found: PR 56 exit-code
-      count, 2026-10-04)
-- [ ] Generic function-typed parameters — Bug 107: `apply#[T](f: fn(T) -> T, x: T)` calling
-      `f(x)` segfaults the native program; `test/native/meta_pure_generic.kl` crashes and
-      passes. (found: PR 56 exit-code count, 2026-10-04)
-- [ ] String drop — Bug 108: any use of a `String` after `.drop()` segfaults the native
-      program; `test/native/string_drop.kl` crashes and passes. Land Bug 7's widened fix
-      (default expects 0) with or after these three. (found: PR 56 exit-code count,
-      2026-10-04)
 - [x] Bugs 15 + 16 + 17 — GC: allocation no longer collects; the VM collects at the top of each
       instruction (`GC.collectIfRequested`), and `markValue` traces Future payloads. Stress-GC
       runs live in the unit tests (`src/vm_gc_test.zig`); the runner flag stays the Phase 0 task
@@ -164,21 +177,14 @@ in user programs first, then checker/contract correctness, then tooling, then de
       reads two bytes (`src/compiler.zig:966`, `src/vm.zig:882`), or-pattern success jump never
       patched (`src/compiler.zig:1503`). One branch: implement variant/type matching in the VM
       or refuse them at compile time; patch every `end` jump. (qa-audit 2026-09-05)
-- [ ] Bug 63 — `let x = 1; x = 2` passes `klar check` and compiles natively (`src/checker/expressions.zig:392`
-      never reads `sym.mutable`; the statement-level check at `statements.zig:78` is unreachable).
-      Check mutability in the binary-assign path; failing test first. (qa-audit 2026-09-05)
 - [ ] Bug 64 — HTTP stdlib uses codepoint `len()` where bytes are meant: `Content-Length`
       (`stdlib/http_client.kl:196`, `http_server.kl:281`), `slice(…, data.len())` body bounds, and
       `find_str_in`'s search limit. `byte_len()` at each site; a module test with a non-ASCII body
       first. (qa-review calibration 2026-09-06)
-- [ ] Bug 34 — codegen `getTypeSize` sizes `char` as 1 byte and omits padding; enum payload
-      stores overlap (`src/codegen/emit.zig:38333`, `:38342`). (qa-audit 2026-09-04)
 - [ ] Bug 48 — REPL resets the AST arena every line while function bodies point into it
       (`src/repl.zig:228`); declarations get a non-reset arena. (qa-audit 2026-09-04)
 - [ ] Bug 47 — `substring` returns `""` when `end` exceeds the count, both runtimes
       (`src/vm.zig:1601`, `src/interpreter.zig:1347`); clamp. (qa-audit 2026-09-04)
-- [ ] Bug 5 — builtin emitters alloca at the call site; `fs_stat`/`process_run` in a loop
-      grow the stack every iteration (`emit.zig`); hoist to the entry block. (qa-review 2026-09-03)
 - [ ] Bug 6 — x86_64 macOS `stat`/`readdir` declared unversioned while offsets are the
       `$INODE64` layout. (qa-review 2026-09-03)
 - [ ] Bug 13 — `fcntl` declared non-variadic; `FD_CLOEXEC`/`O_NONBLOCK` silently not set on
@@ -233,8 +239,6 @@ in user programs first, then checker/contract correctness, then tooling, then de
       (`src/bytecode.zig:491`). (qa-audit 2026-09-04)
 
 **CLI, driver and LSP**
-- [ ] Bug 49 — `build`/`check` exit 0 on failure at `e7b54e7`; measure at HEAD first
-      (`src/main.zig:3420`), then fix. (qa-audit 2026-09-04)
 - [ ] Bug 50 — `run --interpret`/`--vm` discard `main`'s return (`src/main.zig:1087`, `:6149`). (qa-audit 2026-09-04)
 - [ ] Bug 51 — imported-module parse failure `catch continue`, four pipelines
       (`src/main.zig:1198,3086,4460,6009`); fatal, as the test runner does. (qa-audit 2026-09-04)
@@ -298,8 +302,8 @@ fix lands with a failing test and stays fixed.
       a captured upvalue, each result checked; (3) an async function that returns an array,
       a collection before `await`, then indexing the awaited array (Bug 16 end to end).
       (found: qa-review 2026-09-26, Bugs 15/16)
-- [ ] Measure Bug 49 at HEAD (`klar build broken.kl; echo $?`) and Bug 45's `env_get` return
-      type; update both entries.
+- [ ] Measure Bug 45's `env_get` return type at HEAD; update its entry. (Bug 49 moved to
+      the v0.6.0 cut set in Next Up, 2026-10-17.)
 - [ ] Run the Bug 7/9/10/11/12 repros from their entries; close or open each.
 
 ### Testing Strategy
@@ -332,10 +336,13 @@ other (`build.zig.zon` says 0.4.0, `src/version.zig` says 0.5.0).
   `main` keeps moving.
 
 ### Tasks
-- [ ] Choose the cut set: which open Next Up lines must land before the tag. The test is
+- [x] Choose the cut set: which open Next Up lines must land before the tag. The test is
       whether a program the trial would plausibly write — native build, `-O2`, structs,
       collections, strings, file and process I/O — can hit the bug. Lines that fail the
-      test stay after the tag and go in Known issues. Philip approves the set.
+      test stay after the tag and go in Known issues. Philip approves the set. (completed
+      2026-10-17: Bugs 99, 106, 107, 108 with Bug 7, 34, 5, 63, 49 — the "v0.6.0 cut set"
+      group at the top of Next Up. Networking Bugs 8, 13, 64 left out, since the trial
+      project does no networking for now; add them if that changes.)
 - [ ] Land the cut set through the normal Next Up flow; the cut is the first `main`
       commit after the last of them where `./run-tests.sh` is green and the nightly CI
       run is green.
