@@ -10,7 +10,9 @@ the 2026-09-03/04 review and audit runs produced: `BUG.md` Bugs 5–13 from the 
 fixture runs and Bugs 15–59 from the `/qa-audit --calibrate klar-e7b54e7` run
 (report: `~/.claude/qa-reviews/Klar/audit/2026-09-04/qa-audit-report.md`).
 
-Current status: Next Up queue populated (2026-09-04); Phase 0 not started.
+Current status: Next Up queue populated (2026-09-04); Phase 0 not started; Phase 1
+(stable v0.6.0 for an external performance trial) added 2026-10-17, cut set not yet
+chosen.
 
 ## Next Up
 
@@ -306,6 +308,63 @@ fix lands with a failing test and stays fixed.
 
 ---
 
+## Phase 1: Stable release v0.6.0 for an external performance trial
+
+**Goal:** Cut a tagged, installable, documented v0.6.0 at a good stopping point in the
+backlog, so an outside party can evaluate Klar's performance on a paid project against a
+version that does not move under them.
+**Estimated Effort:** 2–4 days once the cut set has landed
+
+Why: an interested party may run a paid project in Klar and wants to test its
+performance first (Philip, 2026-10-17). The last release, v0.5.0 (tagged 2026-03-16), is
+135 commits behind `main`, ships no binaries, and its version numbers disagree with each
+other (`build.zig.zon` says 0.4.0, `src/version.zig` says 0.5.0).
+
+### Deliverables
+- A named cut: the commit on `main` the release is tagged from, and the Next Up lines that
+  had to land before it.
+- One version string, 0.6.0, everywhere a version is printed or declared.
+- A `CHANGELOG.md` v0.6.0 entry and GitHub release notes, with a Known issues section.
+- A recorded performance baseline at the tagged commit (`docs/benchmarks/v0.6.0.md`).
+- Prebuilt binaries for macOS arm64 and Linux x86_64 on the GitHub release, plus an
+  install page that works from a clean machine.
+- A `release/0.6` branch for fixes the trial needs, released as 0.6.x patches while
+  `main` keeps moving.
+
+### Tasks
+- [ ] Choose the cut set: which open Next Up lines must land before the tag. The test is
+      whether a program the trial would plausibly write — native build, `-O2`, structs,
+      collections, strings, file and process I/O — can hit the bug. Lines that fail the
+      test stay after the tag and go in Known issues. Philip approves the set.
+- [ ] Land the cut set through the normal Next Up flow; the cut is the first `main`
+      commit after the last of them where `./run-tests.sh` is green and the nightly CI
+      run is green.
+- [ ] Make the version agree: `build.zig.zon` and `src/version.zig` at 0.6.0, and
+      `klar --version`, the REPL banner and the LLVM producer string all print it.
+- [ ] Write the v0.6.0 `CHANGELOG.md` entry from `v0.5.0..<cut>`. In the same commit,
+      delete the stray first line of `CHANGELOG.md` ("Now I have enough context. Let me
+      compose the changelog.") and correct the v0.5.0 date (entry says 2026-01-28, tag is
+      2026-03-16). The public v0.5.0 GitHub release body opens with the same stray line;
+      fix it when publishing v0.6.0.
+- [ ] Known issues: list every open `BUG.md` entry a native-backend program can hit, one
+      line each, in the release notes.
+- [ ] Performance baseline: run `scripts/run-benchmarks.sh` at the cut, VM and native
+      `-O2`, and record each result with the machine, OS, Zig and LLVM versions in
+      `docs/benchmarks/v0.6.0.md`, so the trial's numbers have something to compare to.
+- [ ] Release binaries: build `klar` for macOS arm64 and Linux x86_64 against LLVM 21 and
+      check each runs `klar build` on a hello-world on a machine without the dev toolchain;
+      write `docs/` install steps for the binary and for building from source.
+- [ ] Tag `v0.6.0` at the cut, branch `release/0.6` from it, and publish the GitHub
+      release with the notes and binaries (Philip's action: the repo is public).
+
+### Testing Strategy
+A fresh clone at `v0.6.0` builds with LLVM 21 and passes `./run-tests.sh`; the nightly CI
+run at the tagged commit is green; each release binary prints `Klar 0.6.0` and builds and
+runs `benchmarks/fib.kl` natively on a clean machine; re-running the benchmarks at the tag
+lands within 10% of the recorded baseline on the same machine.
+
+---
+
 ## Risk Register
 
 | Risk | Impact | Likelihood | Mitigation |
@@ -317,4 +376,6 @@ fix lands with a failing test and stays fixed.
 ## Timeline
 
 Next Up is worked top-down between PRs. Phase 0 runs alongside the first few bug branches
-because its two suites are what those branches' failing tests plug into.
+because its two suites are what those branches' failing tests plug into. Phase 1 (v0.6.0)
+starts once its cut set is chosen; until the tag it takes priority over the rest of
+Next Up, which resumes on `main` after the tag.
