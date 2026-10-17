@@ -1,0 +1,33 @@
+// Bug 107: a monomorphized generic function that returns through sret still reads
+// its byval parameters by their own index (the sret pointer is not a user parameter).
+
+struct Point3 {
+    x: f64,
+    y: f64,
+    z: f64,
+}
+
+fn keep#[T](x: T) -> T {
+    return x
+}
+
+fn after_scalar#[T](n: i32, x: T) -> T {
+    if n > 0 {
+        return x
+    }
+    return x
+}
+
+fn main() -> i32 {
+    let p: Point3 = Point3 { x: 1.5, y: 2.5, z: 3.5 }
+    let q: Point3 = keep#[Point3](p)
+    if q.x != 1.5 or q.y != 2.5 or q.z != 3.5 {
+        return 1
+    }
+
+    let r: Point3 = after_scalar#[Point3](4, p)
+    if r.x != 1.5 or r.y != 2.5 or r.z != 3.5 {
+        return 2
+    }
+    return 0
+}

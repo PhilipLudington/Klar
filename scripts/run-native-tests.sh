@@ -174,6 +174,7 @@ get_expected() {
         cell_shapes) echo 0 ;;  # Cell in let, var, alias and block bindings (Bug 106)
         meta_pure_generic) echo 0 ;;  # apply#[T](f: fn(T) -> T, x) calls f (Bug 107)
         generic_byval_params) echo 0 ;;  # byval closure and struct params of a generic fn (Bug 107)
+        generic_byval_sret) echo 0 ;;  # byval params of a generic fn that returns through sret (Bug 107)
         list_string_drop) echo 42 ;;
         list_index_assign) echo 42 ;;
         list_nested_basic) echo 42 ;;
