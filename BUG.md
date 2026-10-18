@@ -3326,9 +3326,8 @@ as a value), so it was left out of that branch.
 `closure_param_types`, so `emitClosureCallTyped` falls back to `i32` for every argument
 and the return
 
-**Deferred:** after v0.6.0 — filed 2026-10-17 after the cut set was chosen; whether it
-joins the set is Philip's call, WAITING ON PHILIP (asked 2026-10-17). The build refuses rather than
-miscompiling.
+**Cut set:** v0.6.0 — added by Philip 2026-10-17 (PLAN.md Next Up, "v0.6.0 cut set",
+the Bug 113 line): rides with Bug 113, same System.
 
 **Description:** `emitClosure` binds each closure parameter into `named_values` by hand
 with only `value`, `ty` and `is_signed` (`src/codegen/emit.zig` ~13216), so a struct
