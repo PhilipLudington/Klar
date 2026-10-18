@@ -3133,9 +3133,9 @@ and `test/native/generic_byval_sret.kl`.
 
 ---
 
-## [ ] Bug 108: Using a `String` after `.drop()` segfaults natively
+## [x] Bug 108: Using a `String` after `.drop()` segfaults natively
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** String drop — the native `String.drop()` lowering in `src/codegen/emit.zig`
 (the heap-header `String` representation)
@@ -3158,6 +3158,16 @@ leaving the variable pointing at it.
 
 **Found by:** PR 56 session's exit-code count from the `./run-tests.sh` output at `b9d81b2`,
 2026-10-04; re-run individually and narrowed by the Bug 98 pick-up, 2026-10-04.
+
+**Fix:** `emitStringDrop` (`src/codegen/emit.zig`) freed the data buffer *and* the heap
+header, then stored null into the variable's header pointer; every later String method
+dereferences that header with no null check, so the next use read address 0. It now frees
+the buffer only and resets the header in place to `{ null, 0, 0 }`, the state
+`String.new()` builds, as `emitListDrop` already does for a List. A second `drop()` frees
+`free(NULL)`, a no-op.
+
+**Test:** `test/native/string_drop.kl` (the native runner now expects exit 0 for it; exit
+139 before the fix).
 
 ---
 

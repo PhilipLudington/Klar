@@ -599,3 +599,49 @@ with `T = Point3`, each asserting a field.
 
 **Found by:** /qa-review on fix/bug-107-generic-fn-param, 2026-10-17 — TestCov GAPS;
 reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 28: A String copy read after the original's drop(), and a String read after its List's drop(), are unpinned
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/codegen/emit.zig` `emitStringDrop` (~24032), `emitListDrop` (~18583); `test/native/string_drop.kl`, `test/native/list_string_drop.kl`
+**Due when:** touching `emitStringDrop` or `emitListDrop` in `src/codegen/emit.zig` · touching `test/native/string_drop.kl`
+
+**Description:** Bug 108's fix keeps the String header on drop() and resets it to empty
+in place, and its doc comment gives copies sharing the header as the reason. No test
+takes a copy, drops the original and reads the copy. Separately, the fix's claim that
+`List#[String].drop()` frees only strings nothing reads afterwards is unpinned: no test
+copies an element out of the list, drops the list and reads the element.
+
+**Payment:** In `string_drop.kl`: `var a: String = String.from("abc"); let b: String = a;
+a.drop()`, then assert `b.len() == 0`, push to one and assert the other sees it. In
+`list_string_drop.kl`: `let e: String = list[0]`, drop the list, then read `e`, and either
+pin what it does or make reading it a compile error.
+
+**Found by:** /qa-review on fix/bug-108-string-drop, 2026-10-18 — TestCov GAPS;
+reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 29: `emitStringDrop` frees the data buffer without knowing it was malloc'd
+
+**Status:** Open
+**Kind:** latent-defect
+**Where:** `src/codegen/emit.zig` `emitStringDrop` (~24060, `free(data_ptr)`)
+**Due when:** touching `emitStringDrop` in `src/codegen/emit.zig` · when a String can be built over a literal or borrowed buffer
+
+**Description:** `drop()` calls `free` on whatever the header's data pointer holds. If any
+path builds a String whose buffer is a string literal or borrowed memory, dropping it
+frees memory malloc never returned. Nobody has checked every String constructor. This was
+true before Bug 108's fix too. `emit.zig` `[correctness]` WATCH items have now been seen
+in 10 earlier branches.
+
+**Payment:** List every place that stores a data pointer into a String header
+(`allocateStringHeader` users, `String.from`, method results) and confirm each one is a
+malloc'd copy. If one is not, write the test that drops it (expect a crash or an ASan
+report) and file it to BUG.md.
+
+**Found by:** /qa-review on fix/bug-108-string-drop, 2026-10-18 — GenA WATCH (`emit.zig`
+`[correctness]` seen in 10 prior branches); reviewer's reading, not re-verified.
