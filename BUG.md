@@ -3291,8 +3291,8 @@ evidence, confirmed by re-running the probe.
 `closure_param_types`, so `emitClosureCallTyped` falls back to `i32` for every argument
 and the return
 
-**Deferred:** after v0.6.0 — not in the cut set Philip approved 2026-10-17; the build
-refuses rather than miscompiling, and an `i32` signature works.
+**Cut set:** v0.6.0 — added by Philip 2026-10-17 (PLAN.md Next Up, "v0.6.0 cut set"):
+higher-order code a trial program would plausibly write hits it.
 
 **Description:** A parameter of type `fn(A) -> R` is bound without its signature, so the
 call `f(x)` in the body is built as `i32 (ptr, i32)`. With `A` or `R` other than `i32`
@@ -3314,3 +3314,44 @@ signature!` (`call i32 %fn.ptr(ptr %env.ptr, double %x1)`), no binary (probes
 **Found by:** the Bug 107 pick-up, fix/bug-107-generic-fn-param, 2026-10-17, while
 widening its test to `apply#[f64]`. Not Bug 107's cause (that was the byval pointer read
 as a value), so it was left out of that branch.
+
+---
+
+## [ ] Bug 114: A closure that reads a field of its struct parameter fails native build with `UnsupportedFeature`
+
+**Status:** Open
+
+**System:** function-typed parameters — the parameter binders in `src/codegen/emit.zig`
+(`emitFunction`, `emitMonomorphizedFunction`) record no `closure_return_type` /
+`closure_param_types`, so `emitClosureCallTyped` falls back to `i32` for every argument
+and the return
+
+**Deferred:** after v0.6.0 — filed 2026-10-17 after the cut set was chosen; whether it
+joins the set is Philip's call, WAITING ON PHILIP (asked 2026-10-17). The build refuses rather than
+miscompiling.
+
+**Description:** `emitClosure` binds each closure parameter into `named_values` by hand
+with only `value`, `ty` and `is_signed` (`src/codegen/emit.zig` ~13216), so a struct
+parameter carries no struct type name. Field access on it (`p.x`) then has no struct to
+resolve against and codegen returns `UnsupportedFeature`. The same System as Bug 113: a
+hand-built parameter binding that drops the type metadata a `let` binding records, here
+in the closure binder rather than the function binders. A closure that only takes the
+struct and never reads a field builds, and a closure that returns a struct builds and
+runs; struct size does not matter (a one-field struct fails too).
+
+**Steps to reproduce:**
+1. `struct Point { x: i32, y: i32 }`; in `main`:
+   `let getx: fn(Point) -> i32 = |p: Point| -> i32 { return p.x }`,
+   `let pt: Point = Point { x: 7, y: 3 }`, `if getx(pt) != 7 { return 4 }`, `return 0`.
+2. `klar build` the file.
+
+**Expected:** It builds and exits 0.
+
+**Actual:** `Codegen error: UnsupportedFeature`, no binary. The closure definition alone
+(no call) fails the same way; `|p: Point| -> i32 { return 1 }` builds (probes
+`scratch/closure_struct.kl`, `scratch/closure_struct_nocall.kl`,
+`scratch/closure_struct_small.kl`, `scratch/closure_struct_unused.kl`, macOS arm64,
+2026-10-17, on `main` at da2e8d5).
+
+**Found by:** the Bug 107 Builder while writing that branch's tests (2026-10-17); it
+filed nothing then. Reproduced and filed at the next pick-up, plan/bug-113-cut-set.
