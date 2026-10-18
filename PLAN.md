@@ -85,10 +85,11 @@ in user programs first, then checker/contract correctness, then tooling, then de
       passes. (found: PR 56 exit-code count, 2026-10-04) (completed 2026-10-17,
       fix/bug-107-generic-fn-param: a generic body read its byval parameters' pointers as
       their values)
-- [ ] String drop — Bug 108: any use of a `String` after `.drop()` segfaults the native
+- [x] String drop — Bug 108: any use of a `String` after `.drop()` segfaults the native
       program; `test/native/string_drop.kl` crashes and passes. Land Bug 7's widened fix
       (default expects 0) with or after these three. (found: PR 56 exit-code count,
-      2026-10-04)
+      2026-10-04) (completed 2026-10-17, fix/bug-108-string-drop: `drop()` freed the
+      header every String method reads; it now resets it to empty)
 - [ ] Compound-assignment overflow — Bug 111: native `+=`, `-=` and `*=` wrap silently
       on overflow while `a = a + 1` traps; route them through the `*.with.overflow`
       path (`src/codegen/emit.zig` `emitAssignment`, `emitDerefAssignment` ~5479).

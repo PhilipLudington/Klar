@@ -24029,18 +24029,19 @@ pub const Emitter = struct {
         return self.buildStringFromHeader(result_header);
     }
 
-    /// Emit string.drop() - frees the string's memory.
-    /// Frees data ptr, frees header, nulls out the outer struct's header_ptr.
+    /// Emit string.drop() - frees the string's buffer and resets it to empty.
+    /// Frees the data ptr and resets the header in place to { null, 0, 0 }, the
+    /// state String.new() builds. The header is kept, as emitListDrop keeps a
+    /// List's: every String method dereferences it, and copies share it, so
+    /// freeing it would leave the variable and its copies dangling (Bug 108).
     fn emitStringDrop(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const string_type = self.getStringStructType();
         const header_type = self.getStringHeaderType();
         const ptr_type = llvm.Types.pointer(self.ctx);
 
         // Load header_ptr from outer struct
-        const header_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "drop.header_field");
-        const header_ptr = self.builder.buildLoad(ptr_type, header_field, "drop.header_ptr");
+        const header_ptr = self.derefStringHeader(str_ptr);
 
         // Check if header pointer is null (safety for edge cases)
         const null_ptr = llvm.c.LLVMConstPointerNull(ptr_type);
@@ -24063,17 +24064,17 @@ pub const Emitter = struct {
         var free_args = [_]llvm.ValueRef{data_ptr};
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &free_args, "");
 
-        // free(header_ptr)
-        var free_header_args = [_]llvm.ValueRef{header_ptr};
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &free_header_args, "");
+        // Reset the header in place to { null, 0, 0 }
+        _ = self.builder.buildStore(llvm.Const.null_(ptr_type), data_ptr_ptr);
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "drop.len_field");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_field);
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 2, "drop.cap_field");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), cap_field);
 
         _ = self.builder.buildBr(done_bb);
 
         // --- Done block ---
         self.builder.positionAtEnd(done_bb);
-
-        // Null out the outer struct's header_ptr
-        _ = self.builder.buildStore(llvm.Const.null_(ptr_type), header_field);
 
         return llvm.Const.int32(self.ctx, 0);
     }
