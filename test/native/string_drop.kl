@@ -40,7 +40,8 @@ fn main() -> i32 {
     // Drop empty string (should be safe), then use it
     var s2: String = String.new()
     s2.drop()
-    s2.push_str("ok")
+    s2.push('o')
+    s2.push('k')
     if s2.len() != 2 {
         return 8
     }
