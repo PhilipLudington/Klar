@@ -1223,7 +1223,9 @@ ASTs from a non-reset arena, as source strings already are.
 
 ## [ ] Bug 49: `klar build` and `klar check` exit 0 when compilation fails
 
-**Status:** Investigating
+**Status:** Open (measured at HEAD 2026-10-18, see Actual)
+
+**System:** driver exit status — `checkFile`, `buildNative` and `main` in `src/main.zig`
 
 **Description:** At `e7b54e7`, `buildNative` and `checkFile` print type/codegen errors and
 `return` normally (`src/main.zig:2620`), so the process exits 0, while `fmt` and `test`
@@ -1238,7 +1240,12 @@ now converts that to a non-zero status is the thing to check before fixing.
 
 **Expected:** Non-zero.
 
-**Actual:** `0` at `e7b54e7`; to be measured at HEAD.
+**Actual:** `0` at `e7b54e7`, and still `0` at `b663b0c` (2026-10-18, macOS arm64) for
+every failure measured: a type error (`let x: i32 = "s"`) under both `check` and `build`,
+and a failed ownership check under `check` (`klar check move_probe.kl` prints
+`Ownership check failed with 1 error(s): 4:13 [use_after_move]` and exits 0, where
+`move_probe.kl` is `var a: String = String.from("abc")`, `let b: String = a`,
+`println(a.as_str())`). Scripts and CI therefore cannot see any of these failures.
 
 **Found by:** `/qa-audit --calibrate klar-e7b54e7`, 2026-09-04 — driver territory, HIGH
 `[error-handling]`; verified by reading at `e7b54e7`, unverified at HEAD.
@@ -1305,6 +1312,16 @@ produce binaries, and a use-after-move in an imported module passes `check`.
 **Expected:** Both refuse.
 
 **Actual:** "All checks passed"; the binary builds.
+
+**Reproduced 2026-10-18 at `b663b0c`, entry module:** `drop_copy_probe.kl`
+(`var a: String = String.from("abc")`, `let b: String = a`, `a.drop()`, then
+`println(b.len().to_string())` and `println(a.len().to_string())`). `klar check` reports
+`4:5 [use_after_move]` and `6:13 [use_after_move]`, yet `klar build` builds it and the
+binary prints `0` and `0`. This is a memory-safety hole in shipped behavior: a
+use-after-move runs as native code that shares or frees memory behind the moved-from
+name (after Bug 108's fix the dropped String's other name silently reads empty). Found
+from a side note on PR 65, discussed with Philip; decision record
+`docs/decisions/2026-10-18-explicit-move-clone.md`.
 
 **Found by:** `/qa-audit --calibrate klar-e7b54e7`, 2026-09-04 — driver territory, HIGH
 `[architecture]`; verified by reading at both commits. Fix: run the ownership pass over
@@ -3364,3 +3381,33 @@ runs; struct size does not matter (a one-field struct fails too).
 
 **Found by:** the Bug 107 Builder while writing that branch's tests (2026-10-17); it
 filed nothing then. Reproduced and filed at the next pick-up, plan/bug-113-cut-set.
+
+---
+
+## [ ] Bug 115: A move into a `var` binding is not tracked, so the moved-from name stays usable
+
+**Status:** Open
+
+**System:** ownership move tracking — `OwnershipChecker.analyzeVar`
+(`src/ownership/checker.zig` ~246), which defines the new variable but never marks the
+initializer's identifier moved, as `analyzeLet` (~226) does
+
+**Description:** `let b: String = a` marks `a` moved, and a later use of `a` is
+`use_after_move`. `var b: String = a` does not, so `a` stays usable and both names share
+one String: a change through `b` shows through `a`. Klar's ownership docs
+(`docs/memory/ownership.md` § Move Semantics) say assignment moves a non-Copy value
+whatever the binding kind.
+
+**Steps to reproduce:**
+1. `push_copy_probe.kl`: `fn main() -> i32 { var a: String = String.from("abc")`,
+   `var b: String = a`, `b.push('x')`, `println(a.as_str())`, `return a.len() }`.
+2. `klar check` it, then `klar build` it and run the binary.
+
+**Expected:** `klar check` reports `use_after_move` at the `a.as_str()` line.
+
+**Actual:** `All checks passed`, and the binary prints `abcx` (2026-10-18, macOS arm64,
+`main` at `b663b0c`). Once Bug 52 makes `build` run the ownership pass, this gap still
+lets the program through.
+
+**Found by:** a side note on PR 65 (Bug 108) and the session's probes, 2026-10-18,
+discussed with Philip; decision record `docs/decisions/2026-10-18-explicit-move-clone.md`.

@@ -116,6 +116,19 @@ in user programs first, then checker/contract correctness, then tooling, then de
       the measurement; if it passes at HEAD, keep it as the regression test and close the
       bug. (qa-audit 2026-09-04)
 
+**Move checking and explicit move/clone (Philip, 2026-10-18; not in the v0.6.0 cut set)**
+- [ ] Ownership move tracking — Bug 115: `var b: String = a` never marks `a` moved
+      (`src/ownership/checker.zig` `analyzeVar`, where `analyzeLet` does), so both names
+      share one String and `klar check` passes. Lands before the design below, which
+      relies on the checker refusing a use after a move; Bugs 52 (build skips the
+      ownership pass) and 49 (`check` exits 0 on failure) are the other two gaps.
+      (found: PR 65 side note, 2026-10-18)
+- [ ] Design — explicit move/clone: write a design section (docs/design/) making a
+      move or a copy of a non-Copy value explicit at the use site, with keywords
+      `move a` and `clone a`; `clone` dispatches to the `Clone` trait the way `==`
+      does to `Eq`, and calling `a.clone()` directly becomes an error. No code until
+      Philip approves the design. (Philip, 2026-10-18)
+
 **Crashes and wrong results in running programs**
 - [x] Native channels — Bug 90: a `Sender` reached by an index (`txs[0].send(v)`) or a `for`
       binding is not an endpoint; the send is dropped and the receiver hangs,
