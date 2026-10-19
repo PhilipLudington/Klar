@@ -645,3 +645,44 @@ report) and file it to BUG.md.
 
 **Found by:** /qa-review on fix/bug-108-string-drop, 2026-10-18 — GenA WATCH (`emit.zig`
 `[correctness]` seen in 10 prior branches); reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 30: `xcrunSDKPath`'s fallback branches are unpinned
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/codegen/linker.zig` `xcrunSDKPath` (~361-379)
+**Due when:** touching `src/codegen/linker.zig` `findMacOSSDK` or `xcrunSDKPath`
+
+**Description:** Bug 116's test pins only the case where xcrun answers. No test reaches the
+branches that return null and fall back to the fixed SDK paths: a non-zero exit, a signal,
+empty or whitespace-only output, output that fills the 4096-byte buffer, or a spawn failure.
+The command is hard-coded and the result lands in a global buffer, so the branches cannot be
+driven as the code stands.
+
+**Payment:** Split the output and exit handling into a pure helper, e.g.
+`sdkPathFromXcrun(stdout: []const u8, term: ?Term) ?[]const u8`, and assert null for each
+case above, plus `"/path/MacOSX.sdk\n"` → `"/path/MacOSX.sdk"`.
+
+**Found by:** /qa-review on fix/bug-116-macos-sdk, 2026-10-19 — test-checker GAPS;
+reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 31: `src/main.zig` is far over the file-size limit; the test runner is one clean seam
+
+**Status:** Open
+**Kind:** extraction
+**Where:** `src/main.zig` (7433 raw lines on 2026-10-19), `runTestPath`/`runTestFile` cluster (~4881-5925)
+**Due when:** touching `src/main.zig` `runTestPath` or `runTestFile`
+
+**Description:** The CLI entry point is about 3.7× the 2000-line raw ceiling and keeps
+growing (+378/−216 over its last 15 commits). File Growth has flagged it on three branches.
+
+**Payment:** Move the test runner cluster (`runTestPath`, `runTestFile` and their helpers,
+about 1000 lines) to `src/test_runner.zig`.
+
+**Found by:** /qa-review on fix/bug-116-macos-sdk, 2026-10-19 — file-size-checker WATCH,
+also seen on fix-bug-68-69-compat-flags and fix-gc-reachability; reviewer's reading, not
+re-verified.
