@@ -3411,3 +3411,38 @@ lets the program through.
 
 **Found by:** a side note on PR 65 (Bug 108) and the session's probes, 2026-10-18,
 discussed with Philip; decision record `docs/decisions/2026-10-18-explicit-move-clone.md`.
+
+---
+
+## [ ] Bug 116: macOS native link hands `/usr/bin/ld` the Command Line Tools SDK, not the active toolchain's
+
+**Status:** Open
+
+**System:** macOS SDK lookup — `findMacOSSDK` (`src/codegen/linker.zig` ~334), the
+`-syslibroot` of `linkForPlatform`'s macOS branch
+
+**Description:** `findMacOSSDK` returns the first of two fixed paths that exists,
+`/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk` ahead of Xcode's, while the linker
+it is handed to is `/usr/bin/ld`, the shim that runs the `ld` of the developer directory
+`xcode-select` (or `DEVELOPER_DIR`) names. When the Command Line Tools ship a newer SDK
+than the selected Xcode's `ld` understands, every native link fails. The nightly macOS
+runner image `macos-26-arm64` 20261013.0424.1 has exactly that: the CLT `MacOSX.sdk` is
+`MacOSX27.0.sdk`, whose `libSystem.B.tbd` lists `arm64e.x1-macos`, and the Xcode `ld`
+rejects it.
+
+**Steps to reproduce:**
+1. On a Mac whose `xcode-select -p` is Xcode, compare `xcrun --show-sdk-path` with the
+   path `findMacOSSDK` returns.
+2. On the nightly runner, `klar build` any program.
+
+**Expected:** The SDK is the active toolchain's, the one `xcrun --show-sdk-path` names,
+and the link succeeds.
+
+**Actual:** Step 1: `findMacOSSDK` returns the CLT path while xcrun names
+`/Applications/Xcode.app/.../MacOSX.sdk` (macOS arm64, 2026-10-19). Step 2: `ld: tapi
+error: malformed file .../CommandLineTools/SDKs/MacOSX27.0.sdk/usr/lib/libSystem.B.tbd:4:20:
+error: unknown architecture arm64e.x1-macos` on every build: 399 native, 33 module, 6
+args and 520 selfhost tests failed in nightly run 39132726672 (2026-10-18, `main` at
+`b663b0c`).
+
+**Found by:** nightly CI, 2026-10-18, read at the next `/continue-plan` pick-up.

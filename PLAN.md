@@ -21,6 +21,11 @@ phase tasks. Bug fixes follow `~/.claude/rules/bug-format.md` § Fixing a bug: t
 test is committed first and seen failing, then the fix. Order: wrong results and crashes
 in user programs first, then checker/contract correctness, then tooling, then debt.
 
+- [ ] Nightly CI red at b663b0c (macOS (full suite)) — Bug 116: the macOS linker gets the
+      Command Line Tools SDK, not the active toolchain's, and the runner's `ld` cannot read
+      that SDK's `libSystem.B.tbd` — https://github.com/PhilipLudington/Klar/actions/runs/39132726672
+      (found: nightly 2026-10-18)
+
 **CI (blocks every PR: the workflow has been red since 2026-04-20)**
 - [x] CI — baseline the stale workflow: change only Zig 0.15.2 → 0.16.0 (all four jobs) and
       add `workflow_dispatch`; leave runners, LLVM and action versions as they are. Record
