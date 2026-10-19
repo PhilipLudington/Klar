@@ -3414,9 +3414,9 @@ discussed with Philip; decision record `docs/decisions/2026-10-18-explicit-move-
 
 ---
 
-## [ ] Bug 116: macOS native link hands `/usr/bin/ld` the Command Line Tools SDK, not the active toolchain's
+## [x] Bug 116: macOS native link hands `/usr/bin/ld` the Command Line Tools SDK, not the active toolchain's
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** macOS SDK lookup — `findMacOSSDK` (`src/codegen/linker.zig` ~334), the
 `-syslibroot` of `linkForPlatform`'s macOS branch
@@ -3446,3 +3446,11 @@ args and 520 selfhost tests failed in nightly run 39132726672 (2026-10-18, `main
 `b663b0c`).
 
 **Found by:** nightly CI, 2026-10-18, read at the next `/continue-plan` pick-up.
+
+**Fix:** `findMacOSSDK` asks `xcrun --show-sdk-path` first (`xcrunSDKPath`,
+`src/codegen/linker.zig`), which names the selected toolchain's SDK and honors `SDKROOT`;
+the two fixed paths remain only as the fallback when xcrun cannot answer.
+
+**Test:** `src/codegen/linker.zig` — "findMacOSSDK names the SDK of the toolchain
+/usr/bin/ld runs, as xcrun reports it" (now wired into the unit test root,
+`src/main.zig`).
