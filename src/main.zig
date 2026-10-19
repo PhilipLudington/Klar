@@ -7420,6 +7420,7 @@ test {
     _ = @import("vm_value.zig");
     _ = @import("vm_builtins.zig");
     _ = @import("codegen/mod.zig");
+    _ = @import("codegen/linker.zig");
     _ = @import("gc.zig");
     _ = @import("vm_gc_test.zig");
     _ = @import("disasm.zig");

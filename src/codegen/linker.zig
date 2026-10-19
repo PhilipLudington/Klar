@@ -584,3 +584,21 @@ fn linkWasmTarget(
         else => return LinkerError.LinkerFailed,
     }
 }
+
+test "findMacOSSDK names the SDK of the toolchain /usr/bin/ld runs, as xcrun reports it" {
+    // Pins Bug 116: `/usr/bin/ld` runs the selected developer directory's ld, so the
+    // -syslibroot must be that toolchain's SDK. The Command Line Tools SDK came first,
+    // and when the CLT ship a newer SDK than the selected ld can read, every link failed.
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
+    var child = compat.Child.init(&.{ "xcrun", "--show-sdk-path" }, std.testing.allocator);
+    child.stdout_behavior = .Pipe;
+    child.spawn() catch return error.SkipZigTest;
+    const out = try child.stdout.?.readToEndAlloc(std.testing.allocator, 4096);
+    defer std.testing.allocator.free(out);
+    const term = try child.wait();
+    if (term != .Exited or term.Exited != 0) return error.SkipZigTest;
+
+    const expected = std.mem.trim(u8, out, " \t\r\n");
+    try std.testing.expectEqualStrings(expected, findMacOSSDK());
+}
