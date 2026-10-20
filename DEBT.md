@@ -693,3 +693,47 @@ about 1000 lines) to `src/test_runner.zig`.
 **Found by:** /qa-review on fix/bug-116-macos-sdk, 2026-10-19 — file-size-checker WATCH,
 also seen on fix-bug-68-69-compat-flags and fix-gc-reachability; reviewer's reading, not
 re-verified.
+
+---
+
+## [ ] Debt 32: Native compound assignment's zero-divisor, signed-deref and IR-trap paths are unpinned
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/codegen/emit.zig` `emitCompoundValue`, `emitDerefAssignment`; `test/native/runtime_traps.kl`
+**Due when:** touching `src/codegen/emit.zig` `emitCompoundValue` or `emitNumericOp`
+
+**Description:** Bugs 111 and 117 pinned one operator per compound-assignment target. Still
+unpinned: `%=` by zero (only a variable `/=` by zero is tested), a signed overflow through a
+deref (the only deref overflow test is `inout u8`, so `isExprSigned` misreading the deref
+operand as unsigned would pass), the element and field targets beyond `+=` and `*=`, and the
+IR-level trap check in `runtime_traps.kl`, which has no `op=` site.
+
+**Payment:** `runtime_checks/mod_assign_by_zero.kl` (`x %= args.len() - 1`, expected trap);
+`runtime_checks/deref_add_assign_i32_overflow.kl` (`*p += 1` on an `inout i32` holding
+2147483647); add `x += n` and `arr[0] *= n` to `runtime_traps.kl` and raise
+`TRAP_BLOCK_FLOOR`.
+
+**Found by:** /qa-review on fix/bug-111-compound-assign-overflow, 2026-10-19 — test-checker
+GAPS and WATCH; reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 33: Interpolating an `f32` prints garbage natively
+
+**Status:** Open
+**Kind:** latent-defect
+**Where:** `src/codegen/emit.zig` string interpolation of float values
+**Due when:** touching `src/codegen/emit.zig` string interpolation, or `src/codegen/strings_emit.zig`
+
+**Description:** `"{f}"` with `f: f32` printed `5.28427e-315` and `nan` in a native probe,
+with no compound assignment involved; the f32 is likely passed to a `%g` formatter without
+promotion to double. Seen by the generalist while probing Bug 117; not reproduced since.
+
+**Payment:** Reproduce with `let f: f32 = 1.5.as#[f32]` and `println("{f}")` under
+`klar run`; if it misprints, file it as a bug with that test, then promote the f32 with
+`fpext` before formatting.
+
+**Found by:** /qa-review on fix/bug-111-compound-assign-overflow, 2026-10-19 — code-reviewer
+WATCH (emit.zig `[correctness]` WATCH seen in 11 prior branches); reviewer's reading, not
+re-verified.
