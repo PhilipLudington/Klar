@@ -105,14 +105,16 @@ in user programs first, then checker/contract correctness, then tooling, then de
       before the performance baseline. (qa-review 2026-10-17) (completed 2026-10-19:
       every `op=` target computes its value through `emitCompoundValue`, the arithmetic
       `emitBinary` uses)
-- [ ] Function-typed parameter calls — Bugs 113, 114: a call through a parameter typed
+- [x] Function-typed parameter calls — Bugs 113, 114: a call through a parameter typed
       `fn(f64) -> f64` (any signature other than i32) fails native LLVM verification,
       in plain and generic functions, because the call is typed `fn(..i32) -> i32`
       (Bug 113); a closure that reads a field of its struct parameter fails native
       build with `UnsupportedFeature`, because `emitClosure` binds the parameter with
       no struct type name (Bug 114). Added to the cut set by Philip 2026-10-17:
       higher-order code a trial program would plausibly write hits both.
-      (found: fix/bug-107-generic-fn-param, 2026-10-17)
+      (found: fix/bug-107-generic-fn-param, 2026-10-17) (completed 2026-10-20: every
+      binder records a function-typed name's signature, and closure parameters bind
+      through `paramLocalValue` as plain-function parameters do)
 - [ ] Bug 34 — codegen `getTypeSize` sizes `char` as 1 byte and omits padding; enum payload
       stores overlap (`src/codegen/emit.zig:38333`, `:38342`). (qa-audit 2026-09-04)
 - [ ] Bug 5 — builtin emitters alloca at the call site; `fs_stat`/`process_run` in a loop

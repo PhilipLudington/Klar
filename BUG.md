@@ -3318,9 +3318,9 @@ evidence, confirmed by re-running the probe.
 
 ---
 
-## [ ] Bug 113: A call through a function-typed parameter is typed `fn(..i32) -> i32`, so any other signature fails native build
+## [x] Bug 113: A call through a function-typed parameter is typed `fn(..i32) -> i32`, so any other signature fails native build
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** function-typed parameters — the parameter binders in `src/codegen/emit.zig`
 (`emitFunction`, `emitMonomorphizedFunction`) record no `closure_return_type` /
@@ -3351,11 +3351,20 @@ signature!` (`call i32 %fn.ptr(ptr %env.ptr, double %x1)`), no binary (probes
 widening its test to `apply#[f64]`. Not Bug 107's cause (that was the byval pointer read
 as a value), so it was left out of that branch.
 
+**Fix:** `tryGetClosureTypeInfo` records the parameter types as well as the return (it
+returned `null` for them, so a `let`-bound closure called with an `f64` failed the same
+way), `tryGetClosureTypeInfoFromType` does the same for a checker type, and every binder
+records the signature: `let`/`var` as before, plain-function and closure parameters
+through `paramLocalValue`, monomorphized parameters from the concrete type
+(`src/codegen/emit.zig`, fix/bug-113-fn-typed-params, 2026-10-20).
+
+**Test:** `test/native/fn_typed_param_calls.kl`.
+
 ---
 
-## [ ] Bug 114: A closure that reads a field of its struct parameter fails native build with `UnsupportedFeature`
+## [x] Bug 114: A closure that reads a field of its struct parameter fails native build with `UnsupportedFeature`
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** function-typed parameters — the parameter binders in `src/codegen/emit.zig`
 (`emitFunction`, `emitMonomorphizedFunction`) record no `closure_return_type` /
@@ -3390,6 +3399,13 @@ runs; struct size does not matter (a one-field struct fails too).
 
 **Found by:** the Bug 107 Builder while writing that branch's tests (2026-10-17); it
 filed nothing then. Reproduced and filed at the next pick-up, plan/bug-113-cut-set.
+
+**Fix:** `emitClosure` binds its parameters through `paramLocalValue`, the binder plain
+functions use, so a closure parameter carries a function parameter's metadata (struct
+name, reference, collection, string and signature) (`src/codegen/emit.zig`,
+fix/bug-113-fn-typed-params, 2026-10-20).
+
+**Test:** `test/native/closure_struct_param.kl`.
 
 ---
 

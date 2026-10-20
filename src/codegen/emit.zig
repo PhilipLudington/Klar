@@ -184,6 +184,8 @@ pub const Emitter = struct {
     decl_alias_scopes: std.AutoHashMap(*const ast.FunctionDecl, ?[]const u8),
     /// Owns the type expressions `substituteAliases` rebuilds for the checker.
     alias_arena: std.heap.ArenaAllocator,
+    /// Owns the parameter-type slices `closureSignature` records for function-typed names.
+    closure_sig_arena: std.heap.ArenaAllocator,
     /// Layout calculator for composite types.
     layout_calc: layout.LayoutCalculator,
     /// Counter for generating unique closure names.
@@ -474,6 +476,7 @@ pub const Emitter = struct {
             .pub_type_aliases = std.StringHashMap(ast.TypeExpr).init(allocator),
             .decl_alias_scopes = std.AutoHashMap(*const ast.FunctionDecl, ?[]const u8).init(allocator),
             .alias_arena = std.heap.ArenaAllocator.init(allocator),
+            .closure_sig_arena = std.heap.ArenaAllocator.init(allocator),
             .layout_calc = layout.LayoutCalculator.init(allocator, platform),
             .closure_counter = 0,
             .closure_types = std.StringHashMap(ClosureTypeInfo).init(allocator),
@@ -712,6 +715,7 @@ pub const Emitter = struct {
         self.pub_type_aliases.deinit();
         self.decl_alias_scopes.deinit();
         self.alias_arena.deinit();
+        self.closure_sig_arena.deinit();
         // Free closure type info allocations
         var cit = self.closure_types.valueIterator();
         while (cit.next()) |info| {
@@ -2386,75 +2390,11 @@ pub const Emitter = struct {
                 break :blk self.bindParamAlloca(param_value, param_ty, param_name, is_byval);
             };
 
-            const is_signed = self.isTypeExprSigned(param_type);
-
-            // For struct type parameters, record the struct type name for field resolution
-            // For reference parameters, we need to track that the alloca contains a pointer
-            const param_struct_name: ?[]const u8 = switch (param_type) {
-                .named => |n| n.name,
-                .reference => |ref| switch (self.resolveAliasTypeExpr(ref.inner)) {
-                    .named => |n| n.name,
-                    else => null,
-                },
-                else => null,
-            };
-
-            // Check if this is a reference parameter
-            const is_ref = param_type == .reference;
-            const ref_inner_type: ?llvm.TypeRef = if (is_ref) blk: {
-                // Get the LLVM type for the pointed-to struct
-                break :blk try self.typeExprToLLVM(param_type.reference.inner);
-            } else null;
-
-            // Check if this is an array type parameter (for field access on array elements)
-            const is_array = param_type == .array or param_type == .slice;
-            const array_info = self.getArrayTypeInfo(param_type);
-
-            // Check if this is a string type parameter
-            const is_string = self.isTypeString(param_type);
-
-            // Check collection type metadata for List/Map/Set parameters
-            const list_element_type = self.getListTypeInfo(param_type);
-            const map_info = self.getMapTypeInfo(param_type);
-            const set_info = self.getSetTypeInfo(param_type);
-            const is_string_data = self.isTypeStringData(param_type);
-
-            // Resolve semantic type for type checking (needed for char.to_string(), etc.)
-            const semantic_type = self.resolveTypeExprDirect(param_type);
-
-            // Check if this is an extern fn type (C function pointer)
-            const is_extern_fn = if (semantic_type) |st| st == .extern_fn else false;
-            const extern_fn_llvm_type: ?llvm.TypeRef = if (is_extern_fn)
-                self.buildExternFnLLVMType(semantic_type.?.extern_fn) catch null
-            else
-                null;
-
-            self.named_values.put(param.name, .{
-                .value = alloca,
-                .is_alloca = true,
-                .ty = param_ty,
-                .is_signed = is_signed,
-                .struct_type_name = param_struct_name,
-                .is_reference = is_ref,
-                .reference_inner_type = ref_inner_type,
-                .is_array = is_array,
-                .array_size = if (array_info) |ai| ai.size else null,
-                .array_element_type = if (array_info) |ai| ai.element_type else null,
-                .list_element_type = list_element_type,
-                .is_map = map_info != null,
-                .map_key_type = if (map_info) |mi| mi.key_type else null,
-                .map_value_type = if (map_info) |mi| mi.value_type else null,
-                .is_set = set_info != null,
-                .set_element_type = set_info,
-                .is_string_data = is_string_data,
-                .is_string = is_string,
-                .semantic_type = semantic_type,
-                .is_extern_fn = is_extern_fn,
-                .extern_fn_type = extern_fn_llvm_type,
-            }) catch return EmitError.OutOfMemory;
+            const local = try self.paramLocalValue(alloca, param_ty, param_type);
+            self.named_values.put(param.name, local) catch return EmitError.OutOfMemory;
 
             // Emit debug info for parameter
-            if (semantic_type) |st| {
+            if (local.semantic_type) |st| {
                 self.emitParamDebugInfo(param.name, alloca, st, @intCast(ast_param_idx + 1), param.span);
             }
         }
@@ -5888,18 +5828,34 @@ pub const Emitter = struct {
 
         const fn_type = type_expr.function;
 
-        // Convert return type to LLVM
         const return_type = self.typeExprToLLVM(fn_type.return_type) catch return null;
+        const param_types = self.closure_sig_arena.allocator().alloc(llvm.TypeRef, fn_type.params.len) catch return null;
+        for (fn_type.params, 0..) |param, i| {
+            param_types[i] = self.typeExprToLLVM(param) catch return null;
+        }
 
-        // For param types, we only need them if we're actually going to call the closure
-        // with the typed call path. Since we primarily need the return type, and param
-        // types can be inferred from the actual call arguments, we can skip allocating
-        // param_types to avoid the memory management complexity.
-        // The emitter will use null param_types and fall back to inferring from args.
-
+        // Both are recorded: a call through the name is built from this signature, and
+        // a missing one falls back to `i32` for every argument and the return (Bug 113).
         return ClosureTypeInfo2{
             .return_type = return_type,
-            .param_types = null, // Simplified: param types inferred from call args
+            .param_types = param_types,
+        };
+    }
+
+    /// `tryGetClosureTypeInfo` for a checker type: a monomorphized body's parameters are
+    /// typed by the checker, not by a type expression.
+    fn tryGetClosureTypeInfoFromType(self: *Emitter, ty: types.Type) ?ClosureTypeInfo2 {
+        if (ty != .function) return null;
+
+        const fn_type = ty.function;
+        const param_types = self.closure_sig_arena.allocator().alloc(llvm.TypeRef, fn_type.params.len) catch return null;
+        for (fn_type.params, 0..) |param, i| {
+            param_types[i] = self.typeToLLVM(param);
+        }
+
+        return ClosureTypeInfo2{
+            .return_type = self.typeToLLVM(fn_type.return_type),
+            .param_types = param_types,
         };
     }
 
@@ -13178,12 +13134,8 @@ pub const Emitter = struct {
             const alloca = self.builder.buildAlloca(param_ty, param_name);
             _ = self.builder.buildStore(param_value, alloca);
 
-            self.named_values.put(param.name, .{
-                .value = alloca,
-                .is_alloca = true,
-                .ty = param_ty,
-                .is_signed = self.isTypeExprSigned(param.type_),
-            }) catch return EmitError.OutOfMemory;
+            const local = try self.paramLocalValue(alloca, param_ty, self.resolveAliasTypeExpr(param.type_));
+            self.named_values.put(param.name, local) catch return EmitError.OutOfMemory;
         }
 
         // Emit the closure body
@@ -38455,6 +38407,76 @@ pub const Emitter = struct {
         return index < info.len and info[index] != null;
     }
 
+    /// The local a parameter declared by a type expression is bound as, the one path
+    /// plain functions and closures both take, so a parameter carries the same type
+    /// metadata as a `let` of its type: a struct parameter its struct name for field
+    /// access (Bug 114), a function-typed one its signature for calls (Bug 113).
+    /// `param_type` has its alias already resolved.
+    fn paramLocalValue(self: *Emitter, alloca: llvm.ValueRef, param_ty: llvm.TypeRef, param_type: ast.TypeExpr) EmitError!LocalValue {
+        // For struct type parameters, record the struct type name for field resolution
+        // For reference parameters, we need to track that the alloca contains a pointer
+        const param_struct_name: ?[]const u8 = switch (param_type) {
+            .named => |n| n.name,
+            .reference => |ref| switch (self.resolveAliasTypeExpr(ref.inner)) {
+                .named => |n| n.name,
+                else => null,
+            },
+            else => null,
+        };
+
+        // Check if this is a reference parameter
+        const is_ref = param_type == .reference;
+        const ref_inner_type: ?llvm.TypeRef = if (is_ref) blk: {
+            // Get the LLVM type for the pointed-to struct
+            break :blk try self.typeExprToLLVM(param_type.reference.inner);
+        } else null;
+
+        // Check if this is an array type parameter (for field access on array elements)
+        const array_info = self.getArrayTypeInfo(param_type);
+
+        // Check collection type metadata for List/Map/Set parameters
+        const map_info = self.getMapTypeInfo(param_type);
+        const set_info = self.getSetTypeInfo(param_type);
+
+        const closure_info = self.tryGetClosureTypeInfo(param_type);
+
+        // Resolve semantic type for type checking (needed for char.to_string(), etc.)
+        const semantic_type = self.resolveTypeExprDirect(param_type);
+
+        // Check if this is an extern fn type (C function pointer)
+        const is_extern_fn = if (semantic_type) |st| st == .extern_fn else false;
+        const extern_fn_llvm_type: ?llvm.TypeRef = if (is_extern_fn)
+            self.buildExternFnLLVMType(semantic_type.?.extern_fn) catch null
+        else
+            null;
+
+        return .{
+            .value = alloca,
+            .is_alloca = true,
+            .ty = param_ty,
+            .is_signed = self.isTypeExprSigned(param_type),
+            .struct_type_name = param_struct_name,
+            .closure_return_type = if (closure_info) |ci| ci.return_type else null,
+            .closure_param_types = if (closure_info) |ci| ci.param_types else null,
+            .is_reference = is_ref,
+            .reference_inner_type = ref_inner_type,
+            .is_array = param_type == .array or param_type == .slice,
+            .array_size = if (array_info) |ai| ai.size else null,
+            .array_element_type = if (array_info) |ai| ai.element_type else null,
+            .list_element_type = self.getListTypeInfo(param_type),
+            .is_map = map_info != null,
+            .map_key_type = if (map_info) |mi| mi.key_type else null,
+            .map_value_type = if (map_info) |mi| mi.value_type else null,
+            .is_set = set_info != null,
+            .set_element_type = set_info,
+            .is_string_data = self.isTypeStringData(param_type),
+            .is_string = self.isTypeString(param_type),
+            .semantic_type = semantic_type,
+            .is_extern_fn = is_extern_fn,
+            .extern_fn_type = extern_fn_llvm_type,
+        };
+    }
+
     /// Bind an incoming parameter to a fresh local alloca, the one path every function
     /// body (plain and monomorphized) binds its parameters through. A byval parameter
     /// is a pointer to the caller's copy, so its value is loaded through it and copied,
@@ -38558,6 +38580,7 @@ pub const Emitter = struct {
             const map_value_type: ?types.Type = if (concrete_param_type == .map) concrete_param_type.map.value else null;
             const set_element_type: ?types.Type = if (concrete_param_type == .set) concrete_param_type.set.element else null;
             const is_string_data = concrete_param_type == .string_data;
+            const closure_info = self.tryGetClosureTypeInfoFromType(concrete_param_type);
 
             self.named_values.put(param.name, .{
                 .value = alloca,
@@ -38565,6 +38588,8 @@ pub const Emitter = struct {
                 .ty = param_ty,
                 .is_signed = is_signed,
                 .struct_type_name = param_struct_name,
+                .closure_return_type = if (closure_info) |ci| ci.return_type else null,
+                .closure_param_types = if (closure_info) |ci| ci.param_types else null,
                 .is_reference = is_ref,
                 .reference_inner_type = ref_inner_type,
                 .list_element_type = list_element_type,
