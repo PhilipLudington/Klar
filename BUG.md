@@ -3520,27 +3520,32 @@ float `fadd`/`fsub`/`fmul`/`fdiv`/`frem` through `emitNumericOp`, as binary oper
 
 ---
 
-## [ ] Bug 118: Calling a function with a `String` parameter on `"abc".to_string()` segfaults
+## [ ] Bug 118: `.to_string()` on a `string` returns a `String` that segfaults on first use
 
 **Status:** Open
 
-**System:** String parameter passing — native codegen and the VM, path not yet located
+**System:** `string.to_string()` lowering — native codegen and the bytecode VM, path not
+yet located
 
-**Description:** A plain function taking `s: String` and returning `s.len()`, called with
-a `String` from `"abc".to_string()`, crashes the program natively and under `klar run`.
-No closures or function-typed names are involved.
+**Description:** Any use of a `String` made by calling `.to_string()` on a `string`
+crashes the program, natively and under `klar run`; `--interpret` exits 0. No function
+parameters are involved: `s.len()` (probe c.kl), the same from a `let a: string` (g.kl),
+and `println(s.as_str())` (e.kl) all crash. `String.from("abc")` passed to a function
+(b.kl) and `42.to_string()` (f.kl) work. Re-probed 2026-10-20 at 6e7a42c, probes
+`scratch/b118/*.kl`; the original report blamed `String` parameters.
 
 **Steps to reproduce:**
-1. `fn ln(s: String) -> i32 { return s.len() }` and
-   `fn main() -> i32 { let s: String = "abc".to_string()  if ln(s) != 3 { return 3 }  return 0 }`.
-2. `klar build` it and run the binary, then `klar run` it.
+1. `fn main() -> i32 { let s: String = "abc".to_string()  if s.len() != 3 { return 3 }  return 0 }`
+   (c.kl).
+2. `klar build` it and run the binary, then `klar run` it, then `klar run --interpret`.
 
-**Expected:** Exit 0.
+**Expected:** Exit 0 all three ways.
 
-**Actual:** Exit 139 (segfault) both ways (probe `scratch/h.kl`, macOS arm64, 2026-10-20).
+**Actual:** Exit 139 (segfault) natively and under `klar run`; exit 0 under
+`--interpret` (macOS arm64, 2026-10-20).
 
 **Found by:** /qa-review on fix/bug-113-fn-typed-params, 2026-10-20 — code-reviewer;
-reviewer's probe, not re-run.
+trigger re-probed and widened the same day.
 
 ---
 
