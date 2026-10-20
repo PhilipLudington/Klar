@@ -3599,3 +3599,33 @@ after the fix/bug-113-fn-typed-params changes, macOS arm64, 2026-10-20.
 
 **Found by:** /qa-review fix-check on fix/bug-113-fn-typed-params, 2026-10-20 — code-reviewer;
 re-run by the main session at c9e1b16.
+
+---
+
+## [ ] Bug 121: A type parameter no argument mentions is dropped from the instantiation, so later ones shift
+
+**Status:** Open
+**Deferred:** after v0.6.0 — a build error, not a crash or wrong result, and it failed the
+same way before fix/bug-113-fn-typed-params
+
+**System:** monomorphization of generic calls — the inference block of
+`checkCall` (`src/checker/checker.zig` ~4170–4226), which records only the type variables
+unified from the arguments and ignores explicit `#[...]` arguments, and the emitter's
+`namedTypeToLLVM`, which maps `type_params[i]` to `type_args[i]`
+
+**Description:** For `ret_only#[T, U](a: U)`, `type_args` holds only `U`'s type, so inside
+the monomorphized body `T` lowers to `U`'s type and `U` to the `i32` default. Before the
+fix branch both fell to `i32`.
+
+**Steps to reproduce:**
+1. `fn ret_only#[T, U](a: U) -> U { let z: U = a  return z }`, `main` binds
+   `let r: f64 = ret_only#[i32, f64](2.5)` and returns 1 if `r != 2.5`.
+2. `klar build` it.
+
+**Expected:** It builds and exits 0 (or `klar check` rejects an uninferrable `T`).
+
+**Actual:** `Function return type does not match operand type of return inst!` (probe
+`scratch/w4.kl`, 2026-10-20).
+
+**Found by:** /qa-review fix-check on fix/bug-113-fn-typed-params, 2026-10-20 — code-reviewer;
+reviewer's probe, not re-run.
