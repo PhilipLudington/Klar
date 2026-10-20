@@ -3516,3 +3516,55 @@ Bug 111's arms.
 float `fadd`/`fsub`/`fmul`/`fdiv`/`frem` through `emitNumericOp`, as binary operators do.
 
 **Test:** `test/native/float_compound_assign.kl`.
+
+---
+
+## [ ] Bug 118: Calling a function with a `String` parameter on `"abc".to_string()` segfaults
+
+**Status:** Open
+
+**System:** String parameter passing — native codegen and the VM, path not yet located
+
+**Description:** A plain function taking `s: String` and returning `s.len()`, called with
+a `String` from `"abc".to_string()`, crashes the program natively and under `klar run`.
+No closures or function-typed names are involved.
+
+**Steps to reproduce:**
+1. `fn ln(s: String) -> i32 { return s.len() }` and
+   `fn main() -> i32 { let s: String = "abc".to_string()  if ln(s) != 3 { return 3 }  return 0 }`.
+2. `klar build` it and run the binary, then `klar run` it.
+
+**Expected:** Exit 0.
+
+**Actual:** Exit 139 (segfault) both ways (probe `scratch/h.kl`, macOS arm64, 2026-10-20).
+
+**Found by:** /qa-review on fix/bug-113-fn-typed-params, 2026-10-20 — code-reviewer;
+reviewer's probe, not re-run.
+
+---
+
+## [ ] Bug 119: A field read on a call through a function-typed name (`f(x).v`) fails native build in a generic body
+
+**Status:** Open
+**Deferred:** after v0.6.0 — a build error with a one-line workaround (`let w: W = f(x)`
+then `w.v`), not a crash or wrong result
+
+**System:** function-typed name calls — `emitClosureCallTyped` and field access on its
+result (`src/codegen/emit.zig`), which has no struct name for the call's result
+
+**Description:** Inside a generic body, `f(x).v` where `f: fn(T) -> W` stops the build
+with `UnsupportedFeature`; binding the call to a `let` first builds. Same area as Bug 114.
+
+**Steps to reproduce:**
+1. `struct W { v: f64 }`, `fn mk(x: f64) -> W { return W { v: x } }`,
+   `fn go2#[T](x: T, f: fn(T) -> W) -> f64 { return f(x).v }`, `main` returns
+   `go2#[f64](1.5, mk)` compared to `1.5`.
+2. `klar build` it.
+
+**Expected:** It builds and the field reads 1.5.
+
+**Actual:** `Codegen error (monomorphization): UnsupportedFeature` (probe `scratch/n.kl`,
+2026-10-20); the `let w: W = f(x)` form (probe `scratch/p.kl`) builds.
+
+**Found by:** /qa-review on fix/bug-113-fn-typed-params, 2026-10-20 — code-reviewer;
+reviewer's probe, not re-run.

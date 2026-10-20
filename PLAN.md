@@ -127,6 +127,10 @@ in user programs first, then checker/contract correctness, then tooling, then de
       the measurement; if it passes at HEAD, keep it as the regression test and close the
       bug. (qa-audit 2026-09-04)
 
+**Crashes found after the cut set was chosen (not in the v0.6.0 cut set)**
+- [ ] String parameters — Bug 118: `fn ln(s: String) -> i32 { return s.len() }` called on
+      `"abc".to_string()` segfaults natively and under `klar run`. (qa-review 2026-10-20)
+
 **Move checking and explicit move/clone (Philip, 2026-10-18; not in the v0.6.0 cut set)**
 - [ ] Ownership move tracking — Bug 115: `var b: String = a` never marks `a` moved
       (`src/ownership/checker.zig` `analyzeVar`, where `analyzeLet` does), so both names
