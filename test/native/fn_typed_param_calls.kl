@@ -22,6 +22,18 @@ fn via_let#[T](x: T) -> T {
     return id(x)
 }
 
+// Two type parameters: each name must lower to its own type argument
+fn via_let2#[A, B](a: A, b: B) -> B {
+    let g: fn(A, B) -> B = |p: A, q: B| -> B { return q }
+    let k: A = a
+    return g(k, b)
+}
+
+fn first2#[A, B](a: A, b: B) -> A {
+    let k: A = a
+    return k
+}
+
 fn main() -> i32 {
     let half: fn(f64) -> f64 = |v: f64| -> f64 { return v / 2.0 }
 
@@ -63,6 +75,15 @@ fn main() -> i32 {
     // A let closure typed with the generic parameter, inside a monomorphized body
     if via_let#[f64](2.5) != 2.5 {
         return 8
+    }
+    if via_let2#[i64, f64](three_billion, 2.5) != 2.5 {
+        return 9
+    }
+    if first2#[f64, i32](2.5, 1) != 2.5 {
+        return 10
+    }
+    if first2#[i32, f64](1, 2.5) != 1 {
+        return 11
     }
 
     return 0
