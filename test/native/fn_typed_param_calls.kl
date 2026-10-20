@@ -17,6 +17,11 @@ fn apply#[T](f: fn(T) -> T, x: T) -> T {
     return f(x)
 }
 
+fn via_let#[T](x: T) -> T {
+    let id: fn(T) -> T = |a: T| -> T { return a }
+    return id(x)
+}
+
 fn main() -> i32 {
     let half: fn(f64) -> f64 = |v: f64| -> f64 { return v / 2.0 }
 
@@ -53,6 +58,11 @@ fn main() -> i32 {
     let dbl: fn(i64) -> i64 = |n: i64| -> i64 { return n + n }
     if apply#[i64](dbl, three_billion) != six_billion {
         return 7
+    }
+
+    // A let closure typed with the generic parameter, inside a monomorphized body
+    if via_let#[f64](2.5) != 2.5 {
+        return 8
     }
 
     return 0
