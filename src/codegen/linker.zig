@@ -330,9 +330,18 @@ fn findMSVCLinker(allocator: std.mem.Allocator) ![]const u8 {
     return link_path;
 }
 
+/// Holds the path `xcrun --show-sdk-path` printed, so findMacOSSDK can return it.
+var xcrun_sdk_buf: [4096]u8 = undefined;
+
 /// Find the macOS SDK path.
+///
+/// `/usr/bin/ld` runs the ld of the selected developer directory (`xcode-select`,
+/// `DEVELOPER_DIR`), so the SDK must be that toolchain's: xcrun names it, and honors
+/// `SDKROOT`. The fixed paths are only a fallback for a machine without xcrun, since
+/// the Command Line Tools can ship an SDK newer than the selected ld can read (Bug 116).
 fn findMacOSSDK() []const u8 {
-    // Try Xcode Command Line Tools first (most common)
+    if (xcrunSDKPath()) |path| return path;
+
     const paths = [_][]const u8{
         "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
         "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk",
@@ -346,6 +355,27 @@ fn findMacOSSDK() []const u8 {
 
     // Fallback - might not work but let the linker complain
     return "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk";
+}
+
+/// The SDK path `xcrun --show-sdk-path` prints, or null when xcrun cannot say.
+fn xcrunSDKPath() ?[]const u8 {
+    var child = compat.Child.init(&.{ "xcrun", "--show-sdk-path" }, std.heap.page_allocator);
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+    child.spawn() catch return null;
+
+    // stderr is piped and dropped so a machine without xcrun prints nothing; its few
+    // lines fit the pipe buffer, so the child never blocks on it before exiting.
+    const len = child.stdout.?.readAll(&xcrun_sdk_buf) catch 0;
+    const term = child.wait() catch null;
+    child.stdout.?.close();
+    child.stderr.?.close();
+    const exited = term orelse return null;
+    if (exited != .Exited or exited.Exited != 0) return null;
+
+    const path = std.mem.trim(u8, xcrun_sdk_buf[0..len], " \t\r\n");
+    if (path.len == 0 or path.len == xcrun_sdk_buf.len) return null;
+    return path;
 }
 
 /// Link using clang driver (alternative approach).
@@ -583,4 +613,22 @@ fn linkWasmTarget(
         },
         else => return LinkerError.LinkerFailed,
     }
+}
+
+test "findMacOSSDK names the SDK of the toolchain /usr/bin/ld runs, as xcrun reports it" {
+    // Pins Bug 116: `/usr/bin/ld` runs the selected developer directory's ld, so the
+    // -syslibroot must be that toolchain's SDK. The Command Line Tools SDK came first,
+    // and when the CLT ship a newer SDK than the selected ld can read, every link failed.
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
+    var child = compat.Child.init(&.{ "xcrun", "--show-sdk-path" }, std.testing.allocator);
+    child.stdout_behavior = .Pipe;
+    child.spawn() catch return error.SkipZigTest;
+    const out = try child.stdout.?.readToEndAlloc(std.testing.allocator, 4096);
+    defer std.testing.allocator.free(out);
+    const term = try child.wait();
+    if (term != .Exited or term.Exited != 0) return error.SkipZigTest;
+
+    const expected = std.mem.trim(u8, out, " \t\r\n");
+    try std.testing.expectEqualStrings(expected, findMacOSSDK());
 }
