@@ -215,6 +215,10 @@ pub const Emitter = struct {
 
     /// Current function's return type as Klar type (for expected_type in returns).
     current_return_klar_type: ?types.Type,
+    /// The type arguments of the monomorphized function being emitted, by type parameter
+    /// name, so a type expression naming `T` in its body lowers to the concrete type.
+    mono_type_params: []const ast.TypeParam,
+    mono_type_args: []const types.Type,
     /// True when emitting body of an async function declaration.
     current_function_is_async: bool,
 
@@ -488,6 +492,8 @@ pub const Emitter = struct {
             .type_checker = null,
             .expected_type = null,
             .current_return_klar_type = null,
+            .mono_type_params = &.{},
+            .mono_type_args = &.{},
             .current_function_is_async = false,
             .skip_main = false,
             .mangled_enum_names = .empty,
@@ -7387,6 +7393,13 @@ pub const Emitter = struct {
     }
 
     fn namedTypeToLLVM(self: *Emitter, name: []const u8) llvm.TypeRef {
+        // A generic parameter inside a monomorphized body is its concrete type, not the
+        // `i32` default below.
+        for (self.mono_type_params, 0..) |tp, i| {
+            if (i < self.mono_type_args.len and std.mem.eql(u8, tp.name, name)) {
+                return self.typeToLLVM(self.mono_type_args[i]);
+            }
+        }
         // Map Klar type names to LLVM types
         if (std.mem.eql(u8, name, "i8")) return llvm.Types.int8(self.ctx);
         if (std.mem.eql(u8, name, "i16")) return llvm.Types.int16(self.ctx);
@@ -38522,6 +38535,11 @@ pub const Emitter = struct {
         self.current_return_klar_type = func_type.return_type;
         defer self.current_return_type = null;
         defer self.current_return_klar_type = null;
+
+        self.mono_type_params = func.type_params;
+        self.mono_type_args = mono.type_args;
+        defer self.mono_type_params = &.{};
+        defer self.mono_type_args = &.{};
 
         // Create entry block
         const entry = llvm.appendBasicBlock(self.ctx, function, "entry");

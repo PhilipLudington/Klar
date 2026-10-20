@@ -3355,8 +3355,9 @@ as a value), so it was left out of that branch.
 returned `null` for them, so a `let`-bound closure called with an `f64` failed the same
 way), `tryGetClosureTypeInfoFromType` does the same for a checker type, and every binder
 records the signature: `let`/`var` as before, plain-function and closure parameters
-through `paramLocalValue`, monomorphized parameters from the concrete type
-(`src/codegen/emit.zig`, fix/bug-113-fn-typed-params, 2026-10-20).
+through `paramLocalValue`, monomorphized parameters from the concrete type, and a
+generic parameter named in a monomorphized body (`let id: fn(T) -> T`) lowers to its
+concrete type (`src/codegen/emit.zig`, fix/bug-113-fn-typed-params, 2026-10-20).
 
 **Test:** `test/native/fn_typed_param_calls.kl`.
 
