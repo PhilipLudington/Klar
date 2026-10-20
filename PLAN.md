@@ -21,6 +21,10 @@ phase tasks. Bug fixes follow `~/.claude/rules/bug-format.md` § Fixing a bug: t
 test is committed first and seen failing, then the fix. Order: wrong results and crashes
 in user programs first, then checker/contract correctness, then tooling, then debt.
 
+- [x] Nightly CI red at cde6bdf (Linux x86_64 (gate)) — `float_compound_assign` fails to
+      link: `undefined reference to 'fmod'`, since f64 `%` lowers to libm's `fmod` and the
+      Linux link line has no `-lm` — https://github.com/PhilipLudington/Klar/actions/runs/39440684403
+      (found: nightly 2026-10-20) (completed 2026-10-20: every Linux link ends with `-lm`)
 - [x] Nightly CI red at b663b0c (macOS (full suite)) — Bug 116: the macOS linker gets the
       Command Line Tools SDK, not the active toolchain's, and the runner's `ld` cannot read
       that SDK's `libSystem.B.tbd` — https://github.com/PhilipLudington/Klar/actions/runs/39132726672
