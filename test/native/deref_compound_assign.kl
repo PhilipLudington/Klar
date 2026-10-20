@@ -48,6 +48,14 @@ fn main() -> i32 {
     mod_u8(ref b, 7.as#[u8])
     if b != 4.as#[u8] { return 15 }
 
+    // u8 above 127: a signed `/=` or `%=` would read 200 as -56
+    var bh: u8 = 200.as#[u8]
+    div_u8(ref bh, 3.as#[u8])
+    if bh != 66.as#[u8] { return 16 }
+    var bm: u8 = 200.as#[u8]
+    mod_u8(ref bm, 7.as#[u8])
+    if bm != 4.as#[u8] { return 17 }
+
     // i64: values past i32 range survive every operator
     var c: i64 = 7.as#[i64]
     add_i64(ref c, 5000000000.as#[i64])

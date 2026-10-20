@@ -33,5 +33,22 @@ fn main() -> i32 {
     increment(ref m)
     if m != 13 { return 4 }
 
+    // A scalar read through `ref i64` keeps all 64 bits
+    let big: i64 = 5000000007.as#[i64]
+    if read_i64(ref big) != 5000000007.as#[i64] { return 5 }
+
+    // Interpolating `(*p)` reads the pointee at its own width (a bare `{*p}`
+    // is not an interpolation: `*` does not start an interpolated expression)
+    var wide: i64 = 5000000007.as#[i64]
+    if show_i64(ref wide) != "5000000007" { return 6 }
+
     return 0
+}
+
+fn read_i64(x: ref i64) -> i64 {
+    return *x
+}
+
+fn show_i64(p: inout i64) -> string {
+    return "{(*p)}"
 }

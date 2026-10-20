@@ -505,9 +505,9 @@ reading, not re-verified.
 
 ---
 
-## [ ] Debt 24: Deref reads and `op=` through a non-i32 reference are pinned only by the u8/i64 happy path
+## [x] Debt 24: Deref reads and `op=` through a non-i32 reference are pinned only by the u8/i64 happy path
 
-**Status:** Open
+**Status:** Paid
 **Kind:** test-gap
 **Where:** `test/native/deref_compound_assign.kl`, `test/native/ref_inout.kl`, `src/codegen/emit.zig` `inferExprType` `.deref` arm (~9111)
 **Due when:** touching `inferDerefType` or `emitDerefAssignment` in `src/codegen/emit.zig` · touching `test/native/deref_compound_assign.kl`
@@ -524,6 +524,13 @@ a value above 2^32. One native test that interpolates `"{*p}"` for an `inout i64
 
 **Found by:** /qa-review on fix/bug-99-deref-compound-assign, 2026-10-17 — TestCov GAPS;
 reviewer's reading, not re-verified.
+
+**Paid:** 2026-10-19, fix/bug-111-compound-assign-overflow (due: the branch rewrote
+`emitDerefAssignment`'s arms). `deref_compound_assign.kl` divides a u8 200 by 3 (66) and
+takes 200 % 7 (4) through `inout u8`; `ref_inout.kl` reads an i64 above 2^32 through
+`ref i64` and interpolates `"{(*p)}"` for an `inout i64` above 2^32. The interpolation is
+`{(*p)}`, not the payment's `{*p}`: `*` does not start an interpolated expression, so
+`"{*p}"` is the literal text.
 
 ---
 
