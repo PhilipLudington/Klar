@@ -505,9 +505,9 @@ reading, not re-verified.
 
 ---
 
-## [ ] Debt 24: Deref reads and `op=` through a non-i32 reference are pinned only by the u8/i64 happy path
+## [x] Debt 24: Deref reads and `op=` through a non-i32 reference are pinned only by the u8/i64 happy path
 
-**Status:** Open
+**Status:** Paid
 **Kind:** test-gap
 **Where:** `test/native/deref_compound_assign.kl`, `test/native/ref_inout.kl`, `src/codegen/emit.zig` `inferExprType` `.deref` arm (~9111)
 **Due when:** touching `inferDerefType` or `emitDerefAssignment` in `src/codegen/emit.zig` · touching `test/native/deref_compound_assign.kl`
@@ -524,6 +524,13 @@ a value above 2^32. One native test that interpolates `"{*p}"` for an `inout i64
 
 **Found by:** /qa-review on fix/bug-99-deref-compound-assign, 2026-10-17 — TestCov GAPS;
 reviewer's reading, not re-verified.
+
+**Paid:** 2026-10-19, fix/bug-111-compound-assign-overflow (due: the branch rewrote
+`emitDerefAssignment`'s arms). `deref_compound_assign.kl` divides a u8 200 by 3 (66) and
+takes 200 % 7 (4) through `inout u8`; `ref_inout.kl` reads an i64 above 2^32 through
+`ref i64` and interpolates `"{(*p)}"` for an `inout i64` above 2^32. The interpolation is
+`{(*p)}`, not the payment's `{*p}`: `*` does not start an interpolated expression, so
+`"{*p}"` is the literal text.
 
 ---
 
@@ -685,4 +692,48 @@ about 1000 lines) to `src/test_runner.zig`.
 
 **Found by:** /qa-review on fix/bug-116-macos-sdk, 2026-10-19 — file-size-checker WATCH,
 also seen on fix-bug-68-69-compat-flags and fix-gc-reachability; reviewer's reading, not
+re-verified.
+
+---
+
+## [ ] Debt 32: Native compound assignment's zero-divisor, signed-deref and IR-trap paths are unpinned
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/codegen/emit.zig` `emitCompoundValue`, `emitDerefAssignment`; `test/native/runtime_traps.kl`
+**Due when:** touching `src/codegen/emit.zig` `emitCompoundValue` or `emitNumericOp`
+
+**Description:** Bugs 111 and 117 pinned one operator per compound-assignment target. Still
+unpinned: `%=` by zero (only a variable `/=` by zero is tested), a signed overflow through a
+deref (the only deref overflow test is `inout u8`, so `isExprSigned` misreading the deref
+operand as unsigned would pass), the element and field targets beyond `+=` and `*=`, and the
+IR-level trap check in `runtime_traps.kl`, which has no `op=` site.
+
+**Payment:** `runtime_checks/mod_assign_by_zero.kl` (`x %= args.len() - 1`, expected trap);
+`runtime_checks/deref_add_assign_i32_overflow.kl` (`*p += 1` on an `inout i32` holding
+2147483647); add `x += n` and `arr[0] *= n` to `runtime_traps.kl` and raise
+`TRAP_BLOCK_FLOOR`.
+
+**Found by:** /qa-review on fix/bug-111-compound-assign-overflow, 2026-10-19 — test-checker
+GAPS and WATCH; reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 33: Interpolating an `f32` prints garbage natively
+
+**Status:** Open
+**Kind:** latent-defect
+**Where:** `src/codegen/emit.zig` string interpolation of float values
+**Due when:** touching `src/codegen/emit.zig` string interpolation, or `src/codegen/strings_emit.zig`
+
+**Description:** `"{f}"` with `f: f32` printed `5.28427e-315` and `nan` in a native probe,
+with no compound assignment involved; the f32 is likely passed to a `%g` formatter without
+promotion to double. Seen by the generalist while probing Bug 117; not reproduced since.
+
+**Payment:** Reproduce with `let f: f32 = 1.5.as#[f32]` and `println("{f}")` under
+`klar run`; if it misprints, file it as a bug with that test, then promote the f32 with
+`fpext` before formatting.
+
+**Found by:** /qa-review on fix/bug-111-compound-assign-overflow, 2026-10-19 — code-reviewer
+WATCH (emit.zig `[correctness]` WATCH seen in 11 prior branches); reviewer's reading, not
 re-verified.

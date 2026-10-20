@@ -1,0 +1,12 @@
+// Bug 111: compound `+=` through an `inout u8` must trap on unsigned overflow natively.
+// Expected: trap
+// Returning normally (exit 0) means `*p +=` wrapped, or checked 200 + 100 as signed.
+
+fn bump(p: inout u8, v: u8) -> void { *p += v }
+
+fn main(args: [String]) -> i32 {
+    var b: u8 = 200.as#[u8]
+    bump(ref b, 100.as#[u8])
+    println("200 + 100 as u8 left {b}")
+    return 0
+}

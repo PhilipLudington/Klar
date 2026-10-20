@@ -1,0 +1,10 @@
+// Bug 111: compound `*=` on an i64 variable must trap on overflow natively, like `*`.
+// Expected: trap
+// Returning normally (exit 0) means `*=` wrapped without an overflow check.
+
+fn main(args: [String]) -> i32 {
+    var x: i64 = 5000000000.as#[i64]
+    x *= 5000000000.as#[i64] * args.len().as#[i64]
+    println("5e9 *= 5e9 left {x}")
+    return 0
+}

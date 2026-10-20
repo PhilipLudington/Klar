@@ -1,0 +1,10 @@
+// Bug 111: compound `-=` on an i32 variable must trap on overflow natively, like `-`.
+// Expected: trap
+// Returning normally (exit 0) means `-=` wrapped without an overflow check.
+
+fn main(args: [String]) -> i32 {
+    var x: i32 = -2147483647
+    x -= args.len() + 1
+    println("min - 1 left {x}")
+    return 0
+}

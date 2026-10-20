@@ -1,0 +1,14 @@
+// Bug 111: compound `*=` on a struct field must trap on overflow natively.
+// Expected: trap
+// Returning normally (exit 0) means `h.n *=` wrapped without an overflow check.
+
+struct Holder {
+    n: i32,
+}
+
+fn main(args: [String]) -> i32 {
+    var h: Holder = Holder { n: 65536 }
+    h.n *= 65536 * args.len()
+    println("h.n left {h.n}")
+    return 0
+}
