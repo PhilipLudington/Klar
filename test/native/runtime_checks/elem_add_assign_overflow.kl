@@ -1,0 +1,10 @@
+// Bug 111: compound `+=` on an array element must trap on overflow natively.
+// Expected: trap
+// Returning normally (exit 0) means `arr[i] +=` wrapped without an overflow check.
+
+fn main(args: [String]) -> i32 {
+    var arr: [i32; 2] = [2147483647, 0]
+    arr[0] += args.len()
+    println("arr[0] left {arr[0]}")
+    return 0
+}

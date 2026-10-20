@@ -1,0 +1,57 @@
+// Bug 117: every compound assignment on an f64 builds float instructions natively,
+// on a variable, an array element, a struct field and through an inout reference.
+// Integer instructions on a double fail LLVM verification, so the build failed.
+
+struct Acc {
+    v: f64,
+}
+
+fn add_ref(p: inout f64, v: f64) -> void { *p += v }
+fn sub_ref(p: inout f64, v: f64) -> void { *p -= v }
+fn mul_ref(p: inout f64, v: f64) -> void { *p *= v }
+fn div_ref(p: inout f64, v: f64) -> void { *p /= v }
+fn mod_ref(p: inout f64, v: f64) -> void { *p %= v }
+
+fn main() -> i32 {
+    // Variable: ((1.5 + 2.0 - 0.5) * 3.0 / 2.0) % 4.0 = 4.5 % 4.0 = 0.5
+    var x: f64 = 1.5
+    x += 2.0
+    if x != 3.5 { return 1 }
+    x -= 0.5
+    if x != 3.0 { return 2 }
+    x *= 3.0
+    if x != 9.0 { return 3 }
+    x /= 2.0
+    if x != 4.5 { return 4 }
+    x %= 4.0
+    if x != 0.5 { return 5 }
+
+    // Array element
+    var arr: [f64; 2] = [1.5, 0.0]
+    arr[0] += 2.0
+    arr[0] -= 0.5
+    arr[0] *= 3.0
+    arr[0] /= 2.0
+    arr[0] %= 4.0
+    if arr[0] != 0.5 { return 11 }
+
+    // Struct field
+    var acc: Acc = Acc { v: 1.5 }
+    acc.v += 2.0
+    acc.v -= 0.5
+    acc.v *= 3.0
+    acc.v /= 2.0
+    acc.v %= 4.0
+    if acc.v != 0.5 { return 21 }
+
+    // Through an inout reference
+    var r: f64 = 1.5
+    add_ref(ref r, 2.0)
+    sub_ref(ref r, 0.5)
+    mul_ref(ref r, 3.0)
+    div_ref(ref r, 2.0)
+    mod_ref(ref r, 4.0)
+    if r != 0.5 { return 31 }
+
+    return 0
+}
