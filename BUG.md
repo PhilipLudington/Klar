@@ -3454,3 +3454,35 @@ the two fixed paths remain only as the fallback when xcrun cannot answer.
 **Test:** `src/codegen/linker.zig` — "findMacOSSDK names the SDK of the toolchain
 /usr/bin/ld runs, as xcrun reports it" (now wired into the unit test root,
 `src/main.zig`).
+
+---
+
+## [ ] Bug 117: Native compound assignment on an `f64` fails LLVM verification
+
+**Status:** Open
+
+**System:** compound-assignment overflow — the `.add_assign`/`.sub_assign`/`.mul_assign`
+arms in `src/codegen/emit.zig` (`emitAssignment` and `emitDerefAssignment`, ~5479), which
+use plain `buildAdd`/`buildSub`/`buildMul` instead of the `*.with.overflow` path (~4745)
+that binary `+`, `-`, `*` take
+
+**Description:** Every compound-assignment arm builds integer instructions whatever the
+operand type: `add`/`sub`/`mul` directly, `sdiv`/`srem` through `emitCheckedDivRem`'s
+non-integer fall-through. On an `f64` the module fails verification ("Integer arithmetic
+operators only work with integral types"), so no float `op=` builds natively, on a
+variable, an array element, a field or through an `inout` reference. Binary `+` on the
+same values picks `fadd`.
+
+**Steps to reproduce:**
+1. `var x: f64 = 1.5`, then `x += 2.0`, `return 0` from `main`.
+2. `klar build` it. Repeat with `-=`, `*=`, `/=`, `%=`.
+
+**Expected:** It builds, and `x` is 3.5.
+
+**Actual:** `LLVM Module verification failed: Integer arithmetic operators only work with
+integral types! %addtmp = add double %loadtmp, 2.000000e+00`, for each of the five
+operators (`sdiv double`, `srem double` for the last two); `klar build` still exits 0
+(Bug 49). Probes `scratch/b111/f.kl`, `fdiv.kl`, `fmod.kl`, macOS arm64, 2026-10-19.
+
+**Found by:** /continue-plan on fix/bug-111-compound-assign-overflow, 2026-10-19, probing
+Bug 111's arms.

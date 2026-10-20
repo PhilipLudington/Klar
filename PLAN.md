@@ -96,9 +96,10 @@ in user programs first, then checker/contract correctness, then tooling, then de
       (default expects 0) with or after these three. (found: PR 56 exit-code count,
       2026-10-04) (completed 2026-10-17, fix/bug-108-string-drop: `drop()` freed the
       header every String method reads; it now resets it to empty)
-- [ ] Compound-assignment overflow — Bug 111: native `+=`, `-=` and `*=` wrap silently
+- [ ] Compound-assignment overflow — Bugs 111, 117: native `+=`, `-=` and `*=` wrap silently
       on overflow while `a = a + 1` traps; route them through the `*.with.overflow`
-      path (`src/codegen/emit.zig` `emitAssignment`, `emitDerefAssignment` ~5479).
+      path (`src/codegen/emit.zig` `emitAssignment`, `emitDerefAssignment` ~5479). The
+      same arms build integer instructions on an `f64`, so no float `op=` builds (Bug 117).
       Added to the cut set by Philip 2026-10-17: a trial program that overflows gets
       a wrong answer with no error, and the check changes `op=` timing, so it lands
       before the performance baseline. (qa-review 2026-10-17)
