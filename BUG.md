@@ -3569,3 +3569,33 @@ with `UnsupportedFeature`; binding the call to a `let` first builds. Same area a
 
 **Found by:** /qa-review on fix/bug-113-fn-typed-params, 2026-10-20 — code-reviewer;
 reviewer's probe, not re-run.
+
+---
+
+## [ ] Bug 120: A generic function that calls another generic with its own type parameter fails native build
+
+**Status:** Open
+**Deferred:** after v0.6.0 — a build error, not a crash or wrong result; a concrete call
+(`inner#[f64]`) builds
+
+**System:** monomorphization of generic calls inside a generic body — the checker's
+`recordMonomorphization` for a call whose type argument is the caller's type variable
+(`src/checker/checker.zig` ~4170), and the emitter's lookup of that instantiation
+
+**Description:** Inside `outer#[T]`, `inner#[T](x)` is recorded with `T` still a type
+variable, so the monomorphized `outer$f64` calls an `inner` instantiation whose signature
+does not take an `f64`.
+
+**Steps to reproduce:**
+1. `fn inner#[U](u: U) -> U { return u }`, `fn outer#[T](x: T) -> T { return inner#[T](x) }`,
+   `main` returns 1 if `outer#[f64](2.5) != 2.5`, else 0.
+2. `klar build` it.
+
+**Expected:** It builds and exits 0.
+
+**Actual:** `LLVM Module verification failed: Call parameter type does not match function
+signature!` (`load double` passed to an `i32` parameter); probe `scratch/r4.kl`, before and
+after the fix/bug-113-fn-typed-params changes, macOS arm64, 2026-10-20.
+
+**Found by:** /qa-review fix-check on fix/bug-113-fn-typed-params, 2026-10-20 — code-reviewer;
+re-run by the main session at c9e1b16.
