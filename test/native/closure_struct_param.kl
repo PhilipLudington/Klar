@@ -1,0 +1,41 @@
+// Test: a closure parameter is bound with the type metadata of a function parameter (Bug 114)
+// A struct parameter needs its struct name for field access; a function-typed one its signature.
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+struct Wide {
+    big: i64,
+    ratio: f64,
+}
+
+fn main() -> i32 {
+    let getx: fn(Point) -> i32 = |p: Point| -> i32 { return p.x }
+    let pt: Point = Point { x: 7, y: 3 }
+    if getx(pt) != 7 {
+        return 1
+    }
+
+    let sum: fn(Point) -> i32 = |p: Point| -> i32 { return p.x + p.y }
+    if sum(pt) != 10 {
+        return 2
+    }
+
+    let weigh: fn(Wide) -> f64 = |w: Wide| -> f64 { return w.big.as#[f64] * w.ratio }
+    let six_billion: i64 = 6000000000
+    let wd: Wide = Wide { big: six_billion, ratio: 0.5 }
+    if weigh(wd) != 3000000000.0 {
+        return 3
+    }
+
+    // A function-typed closure parameter, called inside the closure
+    let half: fn(f64) -> f64 = |v: f64| -> f64 { return v / 2.0 }
+    let twice: fn(fn(f64) -> f64, f64) -> f64 = |f: fn(f64) -> f64, v: f64| -> f64 { return f(f(v)) }
+    if twice(half, 18.0) != 4.5 {
+        return 4
+    }
+
+    return 0
+}

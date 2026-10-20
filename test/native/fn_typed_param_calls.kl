@@ -1,0 +1,59 @@
+// Test: a call through a function-typed name is built from its declared signature (Bug 113)
+// Every signature other than fn(i32) -> i32 used to be called as fn(..i32) -> i32.
+
+fn applyf(f: fn(f64) -> f64, x: f64) -> f64 {
+    return f(x)
+}
+
+fn combine(f: fn(i64, f64) -> f64, a: i64, b: f64) -> f64 {
+    return f(a, b)
+}
+
+fn test_bool(pred: fn(i64) -> bool, n: i64) -> bool {
+    return pred(n)
+}
+
+fn apply#[T](f: fn(T) -> T, x: T) -> T {
+    return f(x)
+}
+
+fn main() -> i32 {
+    let half: fn(f64) -> f64 = |v: f64| -> f64 { return v / 2.0 }
+
+    // A let-bound closure called directly
+    if half(9.0) != 4.5 {
+        return 1
+    }
+
+    // A plain function's parameter
+    if applyf(half, 9.0) != 4.5 {
+        return 2
+    }
+
+    // Mixed argument types and a non-i32 return
+    let six_billion: i64 = 6000000000
+    let three_billion: i64 = 3000000000
+    let scale: fn(i64, f64) -> f64 = |n: i64, s: f64| -> f64 { return n.as#[f64] * s }
+    if combine(scale, six_billion, 0.5) != 3000000000.0 {
+        return 3
+    }
+
+    let is_big: fn(i64) -> bool = |n: i64| -> bool { return n > 100.as#[i64] }
+    if not test_bool(is_big, six_billion) {
+        return 4
+    }
+    if test_bool(is_big, 7.as#[i64]) {
+        return 5
+    }
+
+    // A monomorphized generic function's parameter
+    if apply#[f64](half, 9.0) != 4.5 {
+        return 6
+    }
+    let dbl: fn(i64) -> i64 = |n: i64| -> i64 { return n + n }
+    if apply#[i64](dbl, three_billion) != six_billion {
+        return 7
+    }
+
+    return 0
+}

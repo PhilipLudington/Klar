@@ -178,6 +178,8 @@ get_expected() {
         generic_byval_params) echo 0 ;;  # byval closure and struct params of a generic fn (Bug 107)
         generic_byval_sret) echo 0 ;;  # byval params of a generic fn that returns through sret (Bug 107)
         string_drop) echo 0 ;;  # a dropped String is empty and reusable (Bug 108)
+        fn_typed_param_calls) echo 0 ;;  # calls through fn-typed params and lets use their signature (Bug 113)
+        closure_struct_param) echo 0 ;;  # a closure's struct and fn-typed params keep their metadata (Bug 114)
         list_string_drop) echo 42 ;;
         list_index_assign) echo 42 ;;
         list_nested_basic) echo 42 ;;
