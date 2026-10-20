@@ -3318,9 +3318,9 @@ evidence, confirmed by re-running the probe.
 
 ---
 
-## [ ] Bug 113: A call through a function-typed parameter is typed `fn(..i32) -> i32`, so any other signature fails native build
+## [x] Bug 113: A call through a function-typed parameter is typed `fn(..i32) -> i32`, so any other signature fails native build
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** function-typed parameters — the parameter binders in `src/codegen/emit.zig`
 (`emitFunction`, `emitMonomorphizedFunction`) record no `closure_return_type` /
@@ -3351,11 +3351,21 @@ signature!` (`call i32 %fn.ptr(ptr %env.ptr, double %x1)`), no binary (probes
 widening its test to `apply#[f64]`. Not Bug 107's cause (that was the byval pointer read
 as a value), so it was left out of that branch.
 
+**Fix:** `tryGetClosureTypeInfo` records the parameter types as well as the return (it
+returned `null` for them, so a `let`-bound closure called with an `f64` failed the same
+way), `tryGetClosureTypeInfoFromType` does the same for a checker type, and every binder
+records the signature: `let`/`var` as before, plain-function and closure parameters
+through `paramLocalValue`, monomorphized parameters from the concrete type, and a
+generic parameter named in a monomorphized body (`let id: fn(T) -> T`) lowers to its
+concrete type (`src/codegen/emit.zig`, fix/bug-113-fn-typed-params, 2026-10-20).
+
+**Test:** `test/native/fn_typed_param_calls.kl`.
+
 ---
 
-## [ ] Bug 114: A closure that reads a field of its struct parameter fails native build with `UnsupportedFeature`
+## [x] Bug 114: A closure that reads a field of its struct parameter fails native build with `UnsupportedFeature`
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** function-typed parameters — the parameter binders in `src/codegen/emit.zig`
 (`emitFunction`, `emitMonomorphizedFunction`) record no `closure_return_type` /
@@ -3390,6 +3400,13 @@ runs; struct size does not matter (a one-field struct fails too).
 
 **Found by:** the Bug 107 Builder while writing that branch's tests (2026-10-17); it
 filed nothing then. Reproduced and filed at the next pick-up, plan/bug-113-cut-set.
+
+**Fix:** `emitClosure` binds its parameters through `paramLocalValue`, the binder plain
+functions use, so a closure parameter carries a function parameter's metadata (struct
+name, reference, collection, string and signature) (`src/codegen/emit.zig`,
+fix/bug-113-fn-typed-params, 2026-10-20).
+
+**Test:** `test/native/closure_struct_param.kl`.
 
 ---
 
@@ -3500,3 +3517,115 @@ Bug 111's arms.
 float `fadd`/`fsub`/`fmul`/`fdiv`/`frem` through `emitNumericOp`, as binary operators do.
 
 **Test:** `test/native/float_compound_assign.kl`.
+
+---
+
+## [ ] Bug 118: Calling a function with a `String` parameter on `"abc".to_string()` segfaults
+
+**Status:** Open
+
+**System:** String parameter passing — native codegen and the VM, path not yet located
+
+**Description:** A plain function taking `s: String` and returning `s.len()`, called with
+a `String` from `"abc".to_string()`, crashes the program natively and under `klar run`.
+No closures or function-typed names are involved.
+
+**Steps to reproduce:**
+1. `fn ln(s: String) -> i32 { return s.len() }` and
+   `fn main() -> i32 { let s: String = "abc".to_string()  if ln(s) != 3 { return 3 }  return 0 }`.
+2. `klar build` it and run the binary, then `klar run` it.
+
+**Expected:** Exit 0.
+
+**Actual:** Exit 139 (segfault) both ways (probe `scratch/h.kl`, macOS arm64, 2026-10-20).
+
+**Found by:** /qa-review on fix/bug-113-fn-typed-params, 2026-10-20 — code-reviewer;
+reviewer's probe, not re-run.
+
+---
+
+## [ ] Bug 119: A field read on a call through a function-typed name (`f(x).v`) fails native build in a generic body
+
+**Status:** Open
+**Deferred:** after v0.6.0 — a build error with a one-line workaround (`let w: W = f(x)`
+then `w.v`), not a crash or wrong result
+
+**System:** function-typed name calls — `emitClosureCallTyped` and field access on its
+result (`src/codegen/emit.zig`), which has no struct name for the call's result
+
+**Description:** Inside a generic body, `f(x).v` where `f: fn(T) -> W` stops the build
+with `UnsupportedFeature`; binding the call to a `let` first builds. Same area as Bug 114.
+
+**Steps to reproduce:**
+1. `struct W { v: f64 }`, `fn mk(x: f64) -> W { return W { v: x } }`,
+   `fn go2#[T](x: T, f: fn(T) -> W) -> f64 { return f(x).v }`, `main` returns
+   `go2#[f64](1.5, mk)` compared to `1.5`.
+2. `klar build` it.
+
+**Expected:** It builds and the field reads 1.5.
+
+**Actual:** `Codegen error (monomorphization): UnsupportedFeature` (probe `scratch/n.kl`,
+2026-10-20); the `let w: W = f(x)` form (probe `scratch/p.kl`) builds.
+
+**Found by:** /qa-review on fix/bug-113-fn-typed-params, 2026-10-20 — code-reviewer;
+reviewer's probe, not re-run.
+
+---
+
+## [ ] Bug 120: A generic function that calls another generic with its own type parameter fails native build
+
+**Status:** Open
+**Deferred:** after v0.6.0 — a build error, not a crash or wrong result; a concrete call
+(`inner#[f64]`) builds
+
+**System:** monomorphization of generic calls inside a generic body — the checker's
+`recordMonomorphization` for a call whose type argument is the caller's type variable
+(`src/checker/checker.zig` ~4170), and the emitter's lookup of that instantiation
+
+**Description:** Inside `outer#[T]`, `inner#[T](x)` is recorded with `T` still a type
+variable, so the monomorphized `outer$f64` calls an `inner` instantiation whose signature
+does not take an `f64`.
+
+**Steps to reproduce:**
+1. `fn inner#[U](u: U) -> U { return u }`, `fn outer#[T](x: T) -> T { return inner#[T](x) }`,
+   `main` returns 1 if `outer#[f64](2.5) != 2.5`, else 0.
+2. `klar build` it.
+
+**Expected:** It builds and exits 0.
+
+**Actual:** `LLVM Module verification failed: Call parameter type does not match function
+signature!` (`load double` passed to an `i32` parameter); probe `scratch/r4.kl`, before and
+after the fix/bug-113-fn-typed-params changes, macOS arm64, 2026-10-20.
+
+**Found by:** /qa-review fix-check on fix/bug-113-fn-typed-params, 2026-10-20 — code-reviewer;
+re-run by the main session at c9e1b16.
+
+---
+
+## [ ] Bug 121: A type parameter no argument mentions is dropped from the instantiation, so later ones shift
+
+**Status:** Open
+**Deferred:** after v0.6.0 — a build error, not a crash or wrong result, and it failed the
+same way before fix/bug-113-fn-typed-params
+
+**System:** monomorphization of generic calls — the inference block of
+`checkCall` (`src/checker/checker.zig` ~4170–4226), which records only the type variables
+unified from the arguments and ignores explicit `#[...]` arguments, and the emitter's
+`namedTypeToLLVM`, which maps `type_params[i]` to `type_args[i]`
+
+**Description:** For `ret_only#[T, U](a: U)`, `type_args` holds only `U`'s type, so inside
+the monomorphized body `T` lowers to `U`'s type and `U` to the `i32` default. Before the
+fix branch both fell to `i32`.
+
+**Steps to reproduce:**
+1. `fn ret_only#[T, U](a: U) -> U { let z: U = a  return z }`, `main` binds
+   `let r: f64 = ret_only#[i32, f64](2.5)` and returns 1 if `r != 2.5`.
+2. `klar build` it.
+
+**Expected:** It builds and exits 0 (or `klar check` rejects an uninferrable `T`).
+
+**Actual:** `Function return type does not match operand type of return inst!` (probe
+`scratch/w4.kl`, 2026-10-20).
+
+**Found by:** /qa-review fix-check on fix/bug-113-fn-typed-params, 2026-10-20 — code-reviewer;
+reviewer's probe, not re-run.

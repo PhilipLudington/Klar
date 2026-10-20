@@ -737,3 +737,84 @@ promotion to double. Seen by the generalist while probing Bug 117; not reproduce
 **Found by:** /qa-review on fix/bug-111-compound-assign-overflow, 2026-10-19 — code-reviewer
 WATCH (emit.zig `[correctness]` WATCH seen in 11 prior branches); reviewer's reading, not
 re-verified.
+
+---
+
+## [ ] Debt 34: The native runner accepts any exit from an unregistered test, so 84 tests' failure returns are never checked
+
+**Status:** Open
+**Kind:** tooling
+**Where:** `scripts/run-native-tests.sh` `get_expected` (`*) echo -1`, ~line 192)
+**Due when:** touching `scripts/run-native-tests.sh` · before the next native test is added
+
+**Description:** `get_expected` falls through to `-1` ("accept any result") for every test
+it does not name. 319 of 418 `test/native/**/*.kl` files are unnamed and are neither trap
+nor build-error tests; 84 of those have a `main` that ends in `return 0` with earlier
+`return N` failure branches, so a regression that takes one of those branches still prints
+`✓` and counts as passed. Found when PR 68's review showed two new tests (`ref_inout`,
+`float_compound_assign`) could not fail; that PR registered only those two. Counted by
+reading the files, not by running them: which of the 84 fail today is unknown.
+
+**Payment:** Run each unregistered test once and record its exit. Then change the default to
+`0`, register the tests whose success value is not 0 (e.g. `return 42`) by name, and
+fix or file as bugs any whose exit today is a failure branch.
+
+**Found by:** side-agent note on PR 68's /flow card, 2026-10-19; counted by the main session
+(static read of `test/native`), not re-run.
+
+---
+
+## [ ] Debt 35: `tryGetClosureTypeInfo` drops a whole signature when one type fails to lower
+
+**Status:** Open
+**Kind:** latent-defect
+**Where:** `src/codegen/emit.zig` `tryGetClosureTypeInfo` (~5832)
+**Due when:** touching `src/codegen/emit.zig` `tryGetClosureTypeInfo`
+
+**Description:** A parameter or return type that `typeExprToLLVM` rejects makes the
+function `catch return null`, so the call silently falls back to `fn(..i32) -> i32`, the
+failure mode of Bug 113. Since that fix, a rejected parameter also drops the return type
+it used to keep. No input that triggers it is known.
+
+**Payment:** Find a type `typeExprToLLVM` rejects in a function type; if a call through it
+miscompiles, file a bug with that test. Then propagate `EmitError` instead of returning null.
+
+**Found by:** /qa-review on fix/bug-113-fn-typed-params, 2026-10-20 — code-reviewer
+(PRE-EXISTING) and test-checker (WATCH, emit.zig `[test-coverage]` seen in 6 prior
+branches); reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 36: Closure parameter metadata and `var`-bound closure calls are untested
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/codegen/emit.zig` `emitClosure` → `paramLocalValue` (~13137), the `var` binder (~5828)
+**Due when:** touching `src/codegen/emit.zig` `emitClosure` · touching `test/native/closure_struct_param.kl`
+
+**Description:** Since Bug 114's fix a closure parameter gets reference, string, collection
+and alias metadata as a function parameter does; only struct and function-typed closure
+parameters are tested. No test calls a `var`-bound closure with a non-`i32` signature.
+
+**Payment:** Extend `closure_struct_param.kl` with closures taking `ref Point`, a `String`,
+a `List#[i64]` and an aliased struct type, and `fn_typed_param_calls.kl` with
+`var g: fn(f64) -> f64 = half` called on `9.0`, each with its own failure return.
+
+**Found by:** /qa-review on fix/bug-113-fn-typed-params, 2026-10-20 — test-checker.
+
+---
+
+## [ ] Debt 37: `closure_sig_arena` freeing has no leak-checked test
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/codegen/emit.zig` `closure_sig_arena` (~184, deinit ~718)
+**Due when:** touching `src/codegen/emit.zig` `closure_sig_arena`
+
+**Description:** The signature slices moved into an arena freed with the emitter; nothing
+emits a function-typed name under a leak-checking allocator, so a lost `deinit` would pass.
+
+**Payment:** A Zig unit test in `emit.zig` that emits `fn applyf(f: fn(f64) -> f64, x: f64) -> f64`
+under `std.testing.allocator`.
+
+**Found by:** /qa-review on fix/bug-113-fn-typed-params, 2026-10-20 — test-checker.
