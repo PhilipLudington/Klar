@@ -737,3 +737,27 @@ promotion to double. Seen by the generalist while probing Bug 117; not reproduce
 **Found by:** /qa-review on fix/bug-111-compound-assign-overflow, 2026-10-19 — code-reviewer
 WATCH (emit.zig `[correctness]` WATCH seen in 11 prior branches); reviewer's reading, not
 re-verified.
+
+---
+
+## [ ] Debt 34: The native runner accepts any exit from an unregistered test, so 84 tests' failure returns are never checked
+
+**Status:** Open
+**Kind:** tooling
+**Where:** `scripts/run-native-tests.sh` `get_expected` (`*) echo -1`, ~line 192)
+**Due when:** touching `scripts/run-native-tests.sh` · before the next native test is added
+
+**Description:** `get_expected` falls through to `-1` ("accept any result") for every test
+it does not name. 319 of 418 `test/native/**/*.kl` files are unnamed and are neither trap
+nor build-error tests; 84 of those have a `main` that ends in `return 0` with earlier
+`return N` failure branches, so a regression that takes one of those branches still prints
+`✓` and counts as passed. Found when PR 68's review showed two new tests (`ref_inout`,
+`float_compound_assign`) could not fail; that PR registered only those two. Counted by
+reading the files, not by running them: which of the 84 fail today is unknown.
+
+**Payment:** Run each unregistered test once and record its exit. Then change the default to
+`0`, register the tests whose success value is not 0 (e.g. `return 42`) by name, and
+fix or file as bugs any whose exit today is a failure branch.
+
+**Found by:** side-agent note on PR 68's /flow card, 2026-10-19; counted by the main session
+(static read of `test/native`), not re-run.
