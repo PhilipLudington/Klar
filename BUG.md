@@ -3253,9 +3253,9 @@ macOS arm64, 2026-10-17).
 
 ---
 
-## [ ] Bug 111: Native `+=`, `-=` and `*=` wrap silently on overflow; `a = a + 1` traps
+## [x] Bug 111: Native `+=`, `-=` and `*=` wrap silently on overflow; `a = a + 1` traps
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** compound-assignment overflow — the `.add_assign`/`.sub_assign`/`.mul_assign`
 arms in `src/codegen/emit.zig` (`emitAssignment` and `emitDerefAssignment`, ~5479), which
@@ -3279,6 +3279,15 @@ directly and through an `inout` reference. `/=` and `%=` already go through
 **Found by:** /qa-review on fix/bug-99-deref-compound-assign, 2026-10-17 — GenA WATCH
 (`emit.zig:5503`, read as matching native semantics); verified by the main loop's probe
 against `a = a + 1`.
+
+**Fix:** Every compound-assignment target (variable, array element, struct field, deref)
+computes its stored value through `emitCompoundValue` (`src/codegen/emit.zig`), which
+maps `op=` to the operation of `emitNumericOp`, the one `emitBinary` also uses for
+`+ - * / %`: `*.with.overflow` on integers, signed or unsigned by the target's type.
+
+**Test:** `test/native/runtime_checks/add_assign_overflow.kl`, `sub_assign_overflow.kl`,
+`mul_assign_overflow.kl`, `elem_add_assign_overflow.kl`, `field_mul_assign_overflow.kl`,
+`deref_add_assign_u8_overflow.kl`.
 
 ---
 
@@ -3457,9 +3466,9 @@ the two fixed paths remain only as the fallback when xcrun cannot answer.
 
 ---
 
-## [ ] Bug 117: Native compound assignment on an `f64` fails LLVM verification
+## [x] Bug 117: Native compound assignment on an `f64` fails LLVM verification
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** compound-assignment overflow — the `.add_assign`/`.sub_assign`/`.mul_assign`
 arms in `src/codegen/emit.zig` (`emitAssignment` and `emitDerefAssignment`, ~5479), which
@@ -3486,3 +3495,8 @@ operators (`sdiv double`, `srem double` for the last two); `klar build` still ex
 
 **Found by:** /continue-plan on fix/bug-111-compound-assign-overflow, 2026-10-19, probing
 Bug 111's arms.
+
+**Fix:** Bug 111's: `emitCompoundValue` reads the loaded value's LLVM type and gives a
+float `fadd`/`fsub`/`fmul`/`fdiv`/`frem` through `emitNumericOp`, as binary operators do.
+
+**Test:** `test/native/float_compound_assign.kl`.

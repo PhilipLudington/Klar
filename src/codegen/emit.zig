@@ -4638,28 +4638,14 @@ pub const Emitter = struct {
 
         return switch (bin.op) {
             // Standard arithmetic (with overflow checking for integers)
-            .add => if (is_float)
-                self.builder.buildFAdd(lhs, rhs, "faddtmp")
-            else if (is_string)
+            .add => if (is_string and !is_float)
                 try self.emitStringConcatLiteral(lhs_str_ptr, rhs_str_ptr)
             else
-                self.emitCheckedAdd(lhs, rhs, is_signed),
-            .sub => if (is_float)
-                self.builder.buildFSub(lhs, rhs, "fsubtmp")
-            else
-                self.emitCheckedSub(lhs, rhs, is_signed),
-            .mul => if (is_float)
-                self.builder.buildFMul(lhs, rhs, "fmultmp")
-            else
-                self.emitCheckedMul(lhs, rhs, is_signed),
-            .div => if (is_float)
-                self.builder.buildFDiv(lhs, rhs, "fdivtmp")
-            else
-                self.emitCheckedDivRem(.div, lhs, rhs, is_signed),
-            .mod => if (is_float)
-                self.builder.buildFRem(lhs, rhs, "fremtmp")
-            else
-                self.emitCheckedDivRem(.rem, lhs, rhs, is_signed),
+                self.emitNumericOp(.add, lhs, rhs, is_float, is_signed),
+            .sub => self.emitNumericOp(.sub, lhs, rhs, is_float, is_signed),
+            .mul => self.emitNumericOp(.mul, lhs, rhs, is_float, is_signed),
+            .div => self.emitNumericOp(.div, lhs, rhs, is_float, is_signed),
+            .mod => self.emitNumericOp(.rem, lhs, rhs, is_float, is_signed),
 
             // Wrapping arithmetic (no overflow check, wraps around)
             .add_wrap => self.builder.buildAdd(lhs, rhs, "addwrap"),
@@ -4718,6 +4704,46 @@ pub const Emitter = struct {
 
             else => llvm.Const.int32(self.ctx, 0), // Placeholder
         };
+    }
+
+    /// The arithmetic that `+ - * / %` and their compound assignments share.
+    const NumericOp = enum { add, sub, mul, div, rem };
+
+    /// Emit one arithmetic operation on two operands of one numeric type: float
+    /// instructions on floats; on integers, overflow-checked add/sub/mul and
+    /// zero- and MIN/-1-checked div/rem, all of which trap.
+    fn emitNumericOp(self: *Emitter, op: NumericOp, lhs: llvm.ValueRef, rhs: llvm.ValueRef, is_float: bool, is_signed: bool) llvm.ValueRef {
+        if (is_float) return switch (op) {
+            .add => self.builder.buildFAdd(lhs, rhs, "faddtmp"),
+            .sub => self.builder.buildFSub(lhs, rhs, "fsubtmp"),
+            .mul => self.builder.buildFMul(lhs, rhs, "fmultmp"),
+            .div => self.builder.buildFDiv(lhs, rhs, "fdivtmp"),
+            .rem => self.builder.buildFRem(lhs, rhs, "fremtmp"),
+        };
+        return switch (op) {
+            .add => self.emitCheckedAdd(lhs, rhs, is_signed),
+            .sub => self.emitCheckedSub(lhs, rhs, is_signed),
+            .mul => self.emitCheckedMul(lhs, rhs, is_signed),
+            .div => self.emitCheckedDivRem(.div, lhs, rhs, is_signed),
+            .rem => self.emitCheckedDivRem(.rem, lhs, rhs, is_signed),
+        };
+    }
+
+    /// The value a compound assignment stores: the target's current value `lhs`
+    /// combined with `rhs` by the operation the binary operator takes, so `a += 1`
+    /// traps on overflow exactly where `a = a + 1` does (Bugs 111, 117).
+    fn emitCompoundValue(self: *Emitter, op: ast.BinaryOp, lhs: llvm.ValueRef, rhs: llvm.ValueRef, is_signed: bool) EmitError!llvm.ValueRef {
+        const numeric_op: NumericOp = switch (op) {
+            .add_assign => .add,
+            .sub_assign => .sub,
+            .mul_assign => .mul,
+            .div_assign => .div,
+            .mod_assign => .rem,
+            else => return EmitError.InvalidAST,
+        };
+        const kind = llvm.getTypeKind(llvm.typeOf(lhs));
+        const is_float = kind == llvm.c.LLVMFloatTypeKind or kind == llvm.c.LLVMDoubleTypeKind;
+        return self.emitNumericOp(numeric_op, lhs, rhs, is_float, is_signed);
     }
 
     /// Arithmetic operation type for overflow checking.
@@ -5144,27 +5170,10 @@ pub const Emitter = struct {
         // For compound assignment, load current value and perform operation
         const value = switch (bin.op) {
             .assign => rhs,
-            .add_assign => blk: {
+            else => blk: {
                 const lhs = self.builder.buildLoad(local.ty, local.value, "loadtmp");
-                break :blk self.builder.buildAdd(lhs, rhs, "addtmp");
+                break :blk try self.emitCompoundValue(bin.op, lhs, rhs, self.isExprSigned(bin.left));
             },
-            .sub_assign => blk: {
-                const lhs = self.builder.buildLoad(local.ty, local.value, "loadtmp");
-                break :blk self.builder.buildSub(lhs, rhs, "subtmp");
-            },
-            .mul_assign => blk: {
-                const lhs = self.builder.buildLoad(local.ty, local.value, "loadtmp");
-                break :blk self.builder.buildMul(lhs, rhs, "multmp");
-            },
-            .div_assign => blk: {
-                const lhs = self.builder.buildLoad(local.ty, local.value, "loadtmp");
-                break :blk self.emitCheckedDivRem(.div, lhs, rhs, self.isExprSigned(bin.left));
-            },
-            .mod_assign => blk: {
-                const lhs = self.builder.buildLoad(local.ty, local.value, "loadtmp");
-                break :blk self.emitCheckedDivRem(.rem, lhs, rhs, self.isExprSigned(bin.left));
-            },
-            else => return EmitError.InvalidAST,
         };
 
         // Handle string type coercion: if value is string_data but target is string (ptr),
@@ -5332,32 +5341,11 @@ pub const Emitter = struct {
         // For compound assignment, need to load current value and operate
         const value = switch (bin.op) {
             .assign => rhs,
-            .add_assign => blk: {
+            else => blk: {
                 const elem_type = llvm.c.LLVMGetElementType(arr_type);
                 const lhs = self.builder.buildLoad(elem_type, elem_ptr, "loadtmp");
-                break :blk self.builder.buildAdd(lhs, rhs, "addtmp");
+                break :blk try self.emitCompoundValue(bin.op, lhs, rhs, self.isExprSigned(bin.left));
             },
-            .sub_assign => blk: {
-                const elem_type = llvm.c.LLVMGetElementType(arr_type);
-                const lhs = self.builder.buildLoad(elem_type, elem_ptr, "loadtmp");
-                break :blk self.builder.buildSub(lhs, rhs, "subtmp");
-            },
-            .mul_assign => blk: {
-                const elem_type = llvm.c.LLVMGetElementType(arr_type);
-                const lhs = self.builder.buildLoad(elem_type, elem_ptr, "loadtmp");
-                break :blk self.builder.buildMul(lhs, rhs, "multmp");
-            },
-            .div_assign => blk: {
-                const elem_type = llvm.c.LLVMGetElementType(arr_type);
-                const lhs = self.builder.buildLoad(elem_type, elem_ptr, "loadtmp");
-                break :blk self.emitCheckedDivRem(.div, lhs, rhs, self.isExprSigned(bin.left));
-            },
-            .mod_assign => blk: {
-                const elem_type = llvm.c.LLVMGetElementType(arr_type);
-                const lhs = self.builder.buildLoad(elem_type, elem_ptr, "loadtmp");
-                break :blk self.emitCheckedDivRem(.rem, lhs, rhs, self.isExprSigned(bin.left));
-            },
-            else => return EmitError.InvalidAST,
         };
 
         // Store the value to the element
@@ -5427,27 +5415,10 @@ pub const Emitter = struct {
         // For compound assignment, need to load current value and operate
         const value = switch (bin.op) {
             .assign => rhs,
-            .add_assign => blk: {
+            else => blk: {
                 const lhs = self.builder.buildLoad(field_type, field_ptr, "loadtmp");
-                break :blk self.builder.buildAdd(lhs, rhs, "addtmp");
+                break :blk try self.emitCompoundValue(bin.op, lhs, rhs, self.isExprSigned(bin.left));
             },
-            .sub_assign => blk: {
-                const lhs = self.builder.buildLoad(field_type, field_ptr, "loadtmp");
-                break :blk self.builder.buildSub(lhs, rhs, "subtmp");
-            },
-            .mul_assign => blk: {
-                const lhs = self.builder.buildLoad(field_type, field_ptr, "loadtmp");
-                break :blk self.builder.buildMul(lhs, rhs, "multmp");
-            },
-            .div_assign => blk: {
-                const lhs = self.builder.buildLoad(field_type, field_ptr, "loadtmp");
-                break :blk self.emitCheckedDivRem(.div, lhs, rhs, self.isExprSigned(bin.left));
-            },
-            .mod_assign => blk: {
-                const lhs = self.builder.buildLoad(field_type, field_ptr, "loadtmp");
-                break :blk self.emitCheckedDivRem(.rem, lhs, rhs, self.isExprSigned(bin.left));
-            },
-            else => return EmitError.InvalidAST,
         };
 
         // Store the value to the field
@@ -5471,27 +5442,10 @@ pub const Emitter = struct {
         const ptr_elem_type = try self.inferDerefType(un.operand);
         const value = switch (bin.op) {
             .assign => rhs,
-            .add_assign => blk: {
+            else => blk: {
                 const lhs = self.builder.buildLoad(ptr_elem_type, ptr, "loadtmp");
-                break :blk self.builder.buildAdd(lhs, rhs, "addtmp");
+                break :blk try self.emitCompoundValue(bin.op, lhs, rhs, self.isExprSigned(bin.left));
             },
-            .sub_assign => blk: {
-                const lhs = self.builder.buildLoad(ptr_elem_type, ptr, "loadtmp");
-                break :blk self.builder.buildSub(lhs, rhs, "subtmp");
-            },
-            .mul_assign => blk: {
-                const lhs = self.builder.buildLoad(ptr_elem_type, ptr, "loadtmp");
-                break :blk self.builder.buildMul(lhs, rhs, "multmp");
-            },
-            .div_assign => blk: {
-                const lhs = self.builder.buildLoad(ptr_elem_type, ptr, "loadtmp");
-                break :blk self.emitCheckedDivRem(.div, lhs, rhs, self.isExprSigned(bin.left));
-            },
-            .mod_assign => blk: {
-                const lhs = self.builder.buildLoad(ptr_elem_type, ptr, "loadtmp");
-                break :blk self.emitCheckedDivRem(.rem, lhs, rhs, self.isExprSigned(bin.left));
-            },
-            else => return EmitError.InvalidAST,
         };
 
         // Store the value through the pointer
