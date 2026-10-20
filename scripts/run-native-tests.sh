@@ -170,6 +170,8 @@ get_expected() {
         unsigned_operand_sources) echo 0 ;;  # a field or element operand keeps its unsigned semantics (Bugs 74, 75 qa-fix)
         array_to_slice_coercion) echo 0 ;;  # any array stored into a slice becomes { ptr, len } (Bug 97)
         deref_compound_assign) echo 0 ;;  # every op= through an inout reference (Bug 99)
+        ref_inout) echo 0 ;;  # i64 above 2^32 read and interpolated through a reference (Debt 24)
+        float_compound_assign) echo 0 ;;  # every op= on an f64 computes the right value (Bug 117)
         cell_basic) echo 42 ;;  # get() after set() into a second let (Bug 106)
         cell_shapes) echo 0 ;;  # Cell in let, var, alias and block bindings (Bug 106)
         meta_pure_generic) echo 0 ;;  # apply#[T](f: fn(T) -> T, x) calls f (Bug 107)
