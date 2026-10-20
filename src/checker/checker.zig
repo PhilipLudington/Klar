@@ -4211,10 +4211,18 @@ pub const TypeChecker = struct {
                     var type_args = std.ArrayListUnmanaged(Type).empty;
                     defer type_args.deinit(self.allocator);
 
-                    // Collect all inferred types from the substitution map
-                    var iter = substitutions.iterator();
-                    while (iter.next()) |entry| {
-                        type_args.append(self.allocator, entry.value_ptr.*) catch {};
+                    // In declaration order, which is ascending type var id (`newTypeVar`
+                    // counts up as the type parameters are declared): the emitter maps
+                    // `type_params[i]` to `type_args[i]`, and the map iterates in hash order.
+                    var var_ids = std.ArrayListUnmanaged(u32).empty;
+                    defer var_ids.deinit(self.allocator);
+                    var key_iter = substitutions.keyIterator();
+                    while (key_iter.next()) |id| {
+                        var_ids.append(self.allocator, id.*) catch {};
+                    }
+                    std.mem.sort(u32, var_ids.items, {}, std.sort.asc(u32));
+                    for (var_ids.items) |id| {
+                        type_args.append(self.allocator, substitutions.get(id).?) catch {};
                     }
 
                     // Look up the original generic function declaration to check trait bounds
