@@ -3706,3 +3706,30 @@ this way fails off-native. It also keeps the Bug 118 cross-backend test from cov
 
 **Found by:** /qa-review on fix/bug-118-string-to-string, 2026-10-20 — code-reviewer-a,
 code-reviewer-b; verified by probe `scratch/sf.kl`.
+
+---
+
+## [ ] Bug 124: `--interpret` leaks every struct literal's `StructValue`
+
+**Status:** Open
+**Deferred:** after v0.6.0 — memory is reclaimed at exit and the program's output is right;
+only the debug allocator's leak report shows it
+
+**System:** interpreter struct values — `evalStructLiteral` (`src/interpreter.zig`)
+
+**Description:** `evalStructLiteral` allocates each `StructValue` with `self.allocator`
+and nothing frees it, so the debug build prints a `DebugAllocator` leak trace after any
+interpreted program that builds a struct.
+
+**Steps to reproduce:**
+1. `struct P { x: i32 }  fn main() -> i32 { let p: P = P { x: 1 }  println(p.x.to_string())  return 0 }`
+   (`scratch/sl.kl`).
+2. `klar run --interpret` it with a debug build.
+
+**Expected:** Prints `1` and nothing else.
+
+**Actual:** Prints `1`, then `error(DebugAllocator): memory address … leaked` from
+`src/interpreter.zig:1734` `evalStructLiteral` (macOS arm64, 2026-10-20 at `6f5c2b2`).
+
+**Found by:** /qa-review fix-check on fix/bug-118-string-to-string, 2026-10-20 —
+code-reviewer-a; verified by probe `scratch/sl.kl`.
