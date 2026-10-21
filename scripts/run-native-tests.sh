@@ -191,6 +191,7 @@ get_expected() {
         int_literal_bases) echo 0 ;;
         string_escape_hex_unicode) echo 0 ;;
         process_spawn_windows) echo 0 ;;
+        string_data_to_string) echo 0 ;;  # String.to_string() is an independent copy (Bug 118)
         *) echo -1 ;;  # -1 means accept any result
     esac
 }
