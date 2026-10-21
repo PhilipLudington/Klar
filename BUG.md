@@ -3752,3 +3752,64 @@ interpreted program that builds a struct.
 
 **Found by:** /qa-review fix-check on fix/bug-118-string-to-string, 2026-10-20 —
 code-reviewer-a; verified by probe `scratch/sl.kl`.
+
+---
+
+## [ ] Bug 125: A char literal keeps only its first byte — `'\u{4E2D}'` is `'u'` and `'é'` does not parse
+
+**Status:** Open
+**Deferred:** after v0.6.0 — ASCII char literals and the `\n \t \r \\ \' \0` escapes are
+right; not in the cut set Philip chose
+
+**System:** char literal decoding — `Lexer.char` (`src/lexer.zig`), `parseCharLiteral` and
+the `.char_literal` pattern arm (`src/parser.zig`)
+
+**Description:** `parseCharLiteral` reads `text[1]` as the value, or `text[2]` after a
+backslash, so `'\u{4E2D}'` becomes the byte `u` (117) on every backend. `Lexer.char`
+advances one byte for an unescaped character, so a multi-byte UTF-8 character such as `é`
+never reaches the closing quote and the token is `.invalid`. `docs/types/primitives.md`
+shows `let emoji: char = '🎉'`. The pattern-literal arm (`src/parser.zig`, `.char = text[1]`)
+has the same one-byte read.
+
+**Steps to reproduce:**
+1. `fn main() -> i32 { let c: char = '\u{4E2D}'  println(c.as#[i32].to_string())  return 0 }`
+   (`scratch/u3.kl`), run natively, `--vm` and `--interpret`.
+2. `fn main() -> i32 { let f: char = 'é'  return 0 }` (`scratch/ch.kl`), `klar run` it.
+
+**Expected:** Step 1 prints `20013`. Step 2 runs and exits 0.
+
+**Actual:** Step 1 prints `117` on all three backends. Step 2 stops with `Parse error:
+error.UnexpectedToken  3:19: expected expression` (macOS arm64, 2026-10-21 at `b1844df`).
+
+**Found by:** fix/bug-34-enum-payload-layout, 2026-10-21, while writing a wide-`char`
+payload test; verified by probes `scratch/u3.kl` and `scratch/ch.kl`.
+
+---
+
+## [ ] Bug 126: Enum payload bytes start at offset 1, so the payload's aligned stores and loads are misaligned
+
+**Status:** Open
+**Deferred:** after v0.6.0 — arm64 and x86_64 tolerate the misaligned accesses, and the
+values read back right since Bug 34's fix
+
+**System:** enum payload layout — `variantPayloadStruct` in `src/codegen/emit.zig` (the
+enum literal's stores, `registerMonomorphizedEnum`, `registerNonGenericEnum`)
+
+**Description:** Both enum registrations build `{ i8 tag, [N x i8] payload }`. The byte
+array has alignment 1, so the payload starts at offset 1 of the enum, while the enum
+literal's stores and `bindPatternVariables`' loads through `extractEnumPayload` carry the
+element type's ABI alignment (`align 4`, `align 8`). An `i64` payload element is stored
+`align 8` at an address that is 1 mod 8: undefined behavior in LLVM, which the optimizer
+may exploit, and a fault on a target without unaligned access. Bug 34's fix aligns each
+element's offset *within* the payload, not the payload itself.
+
+**Steps to reproduce:**
+1. `klar build test/native/enum_payload_layout.kl --emit-llvm`.
+2. Read the `Pair::V(7, 99)` store: `%enum.payload.ptr` is field 1 of `{ i8, [16 x i8] }`.
+
+**Expected:** The payload field starts at an offset that is a multiple of the largest
+payload element alignment (8 here), e.g. an aligned payload field type.
+
+**Actual:** `store i64 99, ptr %enum.payload.elem…, align 8` at enum offset 1 + 8 = 9.
+
+**Found by:** fix/bug-34-enum-payload-layout, 2026-10-21, reading the IR of Bug 34's test.
