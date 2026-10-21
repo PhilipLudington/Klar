@@ -127,8 +127,10 @@ in user programs first, then checker/contract correctness, then tooling, then de
       `docs/decisions/2026-10-20-bug-118-in-cut-set.md`) (completed 2026-10-20: native
       lowers `to_string()` on a `string` or `String` receiver instead of falling through
       to `i32 0`, and the VM frees only bytes it allocated)
-- [ ] Bug 34 — codegen `getTypeSize` sizes `char` as 1 byte and omits padding; enum payload
+- [x] Bug 34 — codegen `getTypeSize` sizes `char` as 1 byte and omits padding; enum payload
       stores overlap (`src/codegen/emit.zig:38333`, `:38342`). (qa-audit 2026-09-04)
+      (completed 2026-10-21: payload slot sizes and offsets come from the data layout of
+      the payload's LLVM types)
 - [ ] Bug 5 — builtin emitters alloca at the call site; `fs_stat`/`process_run` in a loop
       grow the stack every iteration (`emit.zig`); hoist to the entry block. (qa-review 2026-09-03)
 - [ ] Bug 63 — `let x = 1; x = 2` passes `klar check` and compiles natively (`src/checker/expressions.zig:392`

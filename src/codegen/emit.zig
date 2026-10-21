@@ -10934,13 +10934,14 @@ pub const Emitter = struct {
                 llvm.Const.int32(self.ctx, 0), // Start of the byte array
             };
             const payload_ptr = self.builder.buildGEP(enum_type, enum_alloca, &payload_indices, "enum.payload.ptr");
+            const payload_struct = try self.variantPayloadStruct(variant_payload.?);
 
             switch (variant_payload.?) {
                 .tuple => |tuple_types| {
                     // For tuple payloads, store each element at its offset
-                    var offset: usize = 0;
-                    for (lit.payload, tuple_types) |payload_expr, payload_type| {
+                    for (lit.payload, tuple_types, 0..) |payload_expr, _, i| {
                         const value = try self.emitExpr(payload_expr);
+                        const offset = self.variantPayloadOffset(payload_struct, i);
 
                         // Get pointer at current offset in the byte array
                         // In opaque pointer mode, we can store directly
@@ -10955,15 +10956,13 @@ pub const Emitter = struct {
                         );
                         // Store the value - opaque pointers don't need bitcast
                         _ = self.builder.buildStore(value, elem_ptr);
-
-                        offset += self.getTypeSize(payload_type);
                     }
                 },
                 .struct_ => |fields| {
                     // For struct payloads, store fields by offset
-                    var offset: usize = 0;
-                    for (lit.payload, fields) |payload_expr, field| {
+                    for (lit.payload, fields, 0..) |payload_expr, _, i| {
                         const value = try self.emitExpr(payload_expr);
+                        const offset = self.variantPayloadOffset(payload_struct, i);
 
                         var elem_indices = [_]llvm.ValueRef{
                             llvm.Const.int32(self.ctx, @intCast(offset)),
@@ -10975,8 +10974,6 @@ pub const Emitter = struct {
                             "enum.payload.field",
                         );
                         _ = self.builder.buildStore(value, elem_ptr);
-
-                        offset += self.getTypeSize(field.type_);
                     }
                 },
             }
@@ -38050,22 +38047,7 @@ pub const Emitter = struct {
         var max_payload_size: usize = 0;
         for (mono.concrete_type.variants) |variant| {
             if (variant.payload) |payload| {
-                const payload_size = switch (payload) {
-                    .tuple => |tuple_types| blk: {
-                        var size: usize = 0;
-                        for (tuple_types) |t| {
-                            size += self.getTypeSize(t);
-                        }
-                        break :blk size;
-                    },
-                    .struct_ => |struct_fields| blk: {
-                        var size: usize = 0;
-                        for (struct_fields) |f| {
-                            size += self.getTypeSize(f.type_);
-                        }
-                        break :blk size;
-                    },
-                };
+                const payload_size = try self.variantPayloadSize(payload);
                 if (payload_size > max_payload_size) {
                     max_payload_size = payload_size;
                 }
@@ -38160,22 +38142,7 @@ pub const Emitter = struct {
         var max_payload_size: usize = 0;
         for (enum_type.variants) |variant| {
             if (variant.payload) |payload| {
-                const payload_size = switch (payload) {
-                    .tuple => |tuple_types| blk: {
-                        var size: usize = 0;
-                        for (tuple_types) |t| {
-                            size += self.getTypeSize(t);
-                        }
-                        break :blk size;
-                    },
-                    .struct_ => |struct_fields| blk: {
-                        var size: usize = 0;
-                        for (struct_fields) |f| {
-                            size += self.getTypeSize(f.type_);
-                        }
-                        break :blk size;
-                    },
-                };
+                const payload_size = try self.variantPayloadSize(payload);
                 if (payload_size > max_payload_size) {
                     max_payload_size = payload_size;
                 }
@@ -38224,36 +38191,41 @@ pub const Emitter = struct {
         }) catch return EmitError.OutOfMemory;
     }
 
-    /// Get the size in bytes for a type (simplified estimation for enum layout)
-    fn getTypeSize(self: *Emitter, typ: types.Type) usize {
-        return switch (typ) {
-            .primitive => |p| switch (p) {
-                .bool_ => 1,
-                .i8_, .u8_, .char_ => 1,
-                .i16_, .u16_ => 2,
-                .i32_, .u32_, .f32_ => 4,
-                .i64_, .u64_, .f64_, .isize_, .usize_ => 8,
-                .i128_, .u128_ => 16,
-                .string_ => 8, // pointer (heap-indirected)
-            },
-            .void_ => 0,
-            .optional => 16, // Conservative: has_value flag + payload pointer
-            .struct_ => |s| blk: {
-                var size: usize = 0;
-                for (s.fields) |f| {
-                    size += self.getTypeSize(f.type_);
-                }
-                break :blk if (size == 0) 8 else size;
-            },
-            // Collection types have fixed struct layouts:
-            // List: { header_ptr } = 8 bytes (heap-indirected)
-            .list => list_constants.list_struct_size,
-            // Map: { header_ptr } = 8 bytes (heap-indirected)
-            .map => map_constants.map_struct_size,
-            // Set: { entries: ptr, len: i32, cap: i32, tombstones: i32 } = 8 + 4 + 4 + 4 = 20 bytes
-            .set => 20,
-            else => 8, // Default pointer size for complex types
+    /// The layout of one variant's payload: an unnamed LLVM struct of the payload's
+    /// element types. Its size and each element's offset come from the module's
+    /// data layout, so the slot fits the values stored into it and every element
+    /// starts at its aligned offset (Bug 34).
+    fn variantPayloadStruct(self: *Emitter, payload: types.VariantPayload) EmitError!llvm.TypeRef {
+        const count = switch (payload) {
+            .tuple => |tuple_types| tuple_types.len,
+            .struct_ => |fields| fields.len,
         };
+        const elem_types = self.allocator.alloc(llvm.TypeRef, count) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(elem_types);
+        for (elem_types, 0..) |*elem_type, i| {
+            const ty = switch (payload) {
+                .tuple => |tuple_types| tuple_types[i],
+                .struct_ => |fields| fields[i].type_,
+            };
+            const llvm_ty = self.typeToLLVM(ty);
+            // A void element takes no bytes; LLVM rejects void as a struct element.
+            elem_type.* = if (llvm.getTypeKind(llvm_ty) == llvm.c.LLVMVoidTypeKind)
+                llvm.Types.struct_(self.ctx, &.{}, false)
+            else
+                llvm_ty;
+        }
+        return llvm.Types.struct_(self.ctx, elem_types, false);
+    }
+
+    /// Bytes a variant's payload needs in the enum's payload slot.
+    fn variantPayloadSize(self: *Emitter, payload: types.VariantPayload) EmitError!usize {
+        return @intCast(self.getDataLayoutSize(try self.variantPayloadStruct(payload)));
+    }
+
+    /// Byte offset of element `index` within a `variantPayloadStruct` layout.
+    fn variantPayloadOffset(self: *Emitter, payload_struct: llvm.TypeRef, index: usize) usize {
+        const data_layout = llvm.c.LLVMGetModuleDataLayout(self.module.ref);
+        return @intCast(llvm.c.LLVMOffsetOfElement(data_layout, payload_struct, @intCast(index)));
     }
 
     // =========================================================================

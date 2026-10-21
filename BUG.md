@@ -873,9 +873,12 @@ bound variants against `enum_def.variants` unless a wildcard is present.
 
 ---
 
-## [ ] Bug 34: Codegen — `getTypeSize` sizes `char` as 1 byte and omits alignment padding, so enum payload stores overlap
+## [x] Bug 34: Codegen — `getTypeSize` sizes `char` as 1 byte and omits alignment padding, so enum payload stores overlap
 
-**Status:** Open
+**Status:** Fixed
+
+**System:** enum payload layout — `variantPayloadStruct` in `src/codegen/emit.zig` (the
+enum literal's stores, `registerMonomorphizedEnum`, `registerNonGenericEnum`)
 
 **Description:** `getTypeSize` (`src/codegen/emit.zig:38329` at HEAD, `:31565` at `e7b54e7`)
 lists `.char_` with the 1-byte types (`:38333`) while `typeToLLVM` lowers `char` to `i32`
@@ -897,6 +900,22 @@ both read back garbage.
 **Found by:** `/qa-audit --calibrate klar-e7b54e7`, 2026-09-04 — codegen territory,
 CRITICAL + HIGH `[correctness]`; verified by reading at both commits. Fix: return 4 for
 `char_`, align each offset and the total as `layout.zig:177` does.
+
+**Reproduced 2026-10-21:** a multi-element payload cannot be destructured in a match (the
+parser stops at `T::C(c, n)`), so step 1 cannot print both fields. The bug shows in two
+other ways: a `char` payload gets a 1-byte slot, so `Glyph::Ch('x')` reads back as
+16958837 after a by-value copy, and a `Hold(Mixed)` payload with `Mixed { a: i8, b: i64 }`
+gets 9 bytes for a 16-byte struct, so `b` reads back as garbage. Steps 1 and 2's stores
+sit at offset 1 in the IR.
+
+**Fix:** `getTypeSize` is gone. `variantPayloadStruct` builds an unnamed LLVM struct of a
+variant's payload element types (each through `typeToLLVM`, the types the stores use);
+`variantPayloadSize` takes its size from the module's data layout and
+`variantPayloadOffset` each element's offset (`LLVMOffsetOfElement`). The enum literal's
+tuple and struct stores, and both enum registrations' slot sizes, go through them.
+
+**Test:** `test/native/enum_payload_layout.kl` (exit 0 in `scripts/run-native-tests.sh`),
+and the runner's `enum_payload_offsets` IR check on the same file.
 
 ---
 
