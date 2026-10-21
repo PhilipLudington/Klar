@@ -3555,7 +3555,10 @@ copy of the same code), and a `String` receiver through `emitStringClone`. VM:
 `invokeMethod`'s `to_string` freed whatever `valueToString` returned, including a
 string receiver's GC-owned bytes (a double free) and a bool's static `"true"`/`"false"`
 (a bus error); it now frees only when `valueToStringAlloc` says it allocated, and the
-`valueToString` wrapper that dropped that flag is gone.
+`valueToString` wrapper that dropped that flag is gone. Interpreter: `evalMethodCall`'s
+`to_string` formatted every receiver with the debug formatter, which quotes a `string`
+(`"hello"` came back with length 7); a `string` receiver now converts to a copy of its
+own bytes.
 
 **Test:** `test/args/string_to_string_backends.kl` (all three backends, from
 `scripts/run-args-tests.sh`), `test/native/string_data_to_string.kl`.
