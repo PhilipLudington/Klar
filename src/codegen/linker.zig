@@ -284,6 +284,14 @@ fn linkForPlatform(
         }
     }
 
+    // LLVM lowers f64 `%` (frem) to a call to libm's fmod. macOS gets libm through
+    // -lSystem and the Windows CRTs carry it; glibc keeps it apart, so Linux links it
+    // always. Last on the line: gcc passes --as-needed, which drops a library that comes
+    // before the objects needing it.
+    if (platform.os == .linux) {
+        args.append(allocator, "-lm") catch return LinkerError.OutOfMemory;
+    }
+
     var child = compat.Child.init(args.items, allocator);
     child.stderr_behavior = .Inherit;
     child.stdout_behavior = .Inherit;

@@ -818,3 +818,45 @@ emits a function-typed name under a leak-checking allocator, so a lost `deinit` 
 under `std.testing.allocator`.
 
 **Found by:** /qa-review on fix/bug-113-fn-typed-params, 2026-10-20 — test-checker.
+
+---
+
+## [ ] Debt 38: `linkWithClang`'s Linux branch omits `-lm` and the user's link flags
+
+**Status:** Open
+**Kind:** latent-defect
+**Where:** `src/codegen/linker.zig` `linkWithClang` (~390-440, Linux branch ~414)
+**Due when:** touching `src/codegen/linker.zig` `linkWithClang`
+
+**Description:** `linkForPlatform` now ends every Linux link with `-lm`, so f64 `%` (LLVM
+`frem` → libm `fmod`) links. `linkWithClang` is a second public Linux link path that adds
+no `-lm` and ignores `link_libs`/`link_paths`, so any f64 `%` linked through it would fail
+with `undefined reference to 'fmod'`. Nothing calls it today, so it cannot fail yet.
+
+**Payment:** Delete `linkWithClang` if it stays unused; otherwise append `-lm` last on
+Linux and pass the user's link options. Repro still needed: a caller on Linux linking an
+object that contains `frem`.
+
+**Found by:** /qa-review on fix/nightly-linux-libm, 2026-10-20 — code-reviewer; reviewer's
+reading, not re-verified.
+
+---
+
+## [ ] Debt 39: The Linux link line's `-lm` placement is pinned only by a full CI link
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/codegen/linker.zig` `linkForPlatform` (~291)
+**Due when:** touching `src/codegen/linker.zig` `linkForPlatform`
+
+**Description:** Only `test/native/float_compound_assign.kl` on the Linux CI job checks
+the `-lm` fix, through the host-gcc path with no extra libraries. Nothing checks that
+`-lm` comes after `link_libs` and `extra_objects` (gcc's `--as-needed` drops it otherwise),
+that the cross-gcc path gets it, or that macOS and Windows do not.
+
+**Payment:** Split argument building out of `linkForPlatform` into a pure function that
+returns the args, and add a Zig unit test: a `.linux` platform with `link_libs = {"foo"}`
+ends `"-lfoo", "-lm"`; `.macos` and `.windows` carry no `-lm`.
+
+**Found by:** /qa-review on fix/nightly-linux-libm, 2026-10-20 — test-checker GAPS;
+reviewer's reading, not re-verified.

@@ -21,6 +21,10 @@ phase tasks. Bug fixes follow `~/.claude/rules/bug-format.md` § Fixing a bug: t
 test is committed first and seen failing, then the fix. Order: wrong results and crashes
 in user programs first, then checker/contract correctness, then tooling, then debt.
 
+- [x] Nightly CI red at cde6bdf (Linux x86_64 (gate)) — `float_compound_assign` fails to
+      link: `undefined reference to 'fmod'`, since f64 `%` lowers to libm's `fmod` and the
+      Linux link line has no `-lm` — https://github.com/PhilipLudington/Klar/actions/runs/39440684403
+      (found: nightly 2026-10-20) (completed 2026-10-20: every Linux link ends with `-lm`)
 - [x] Nightly CI red at b663b0c (macOS (full suite)) — Bug 116: the macOS linker gets the
       Command Line Tools SDK, not the active toolchain's, and the runner's `ld` cannot read
       that SDK's `libSystem.B.tbd` — https://github.com/PhilipLudington/Klar/actions/runs/39132726672
@@ -115,6 +119,12 @@ in user programs first, then checker/contract correctness, then tooling, then de
       (found: fix/bug-107-generic-fn-param, 2026-10-17) (completed 2026-10-20: every
       binder records a function-typed name's signature, and closure parameters bind
       through `paramLocalValue` as plain-function parameters do)
+- [ ] String from `.to_string()` — Bug 118: `let s: String = "abc".to_string()` then
+      `s.len()` (or any other use) segfaults natively and under `klar run`; `--interpret`
+      and `String.from("abc")` work. Added to the cut set by Philip 2026-10-20: turning a
+      `string` into a `String` is ordinary in a trial program, and it crashes with no
+      message. (qa-review 2026-10-20; trigger narrowed 2026-10-20, see
+      `docs/decisions/2026-10-20-bug-118-in-cut-set.md`)
 - [ ] Bug 34 — codegen `getTypeSize` sizes `char` as 1 byte and omits padding; enum payload
       stores overlap (`src/codegen/emit.zig:38333`, `:38342`). (qa-audit 2026-09-04)
 - [ ] Bug 5 — builtin emitters alloca at the call site; `fs_stat`/`process_run` in a loop
@@ -126,10 +136,6 @@ in user programs first, then checker/contract correctness, then tooling, then de
       directly: the failing test (a broken file, expect a non-zero exit from both commands) is
       the measurement; if it passes at HEAD, keep it as the regression test and close the
       bug. (qa-audit 2026-09-04)
-
-**Crashes found after the cut set was chosen (not in the v0.6.0 cut set)**
-- [ ] String parameters — Bug 118: `fn ln(s: String) -> i32 { return s.len() }` called on
-      `"abc".to_string()` segfaults natively and under `klar run`. (qa-review 2026-10-20)
 
 **Move checking and explicit move/clone (Philip, 2026-10-18; not in the v0.6.0 cut set)**
 - [ ] Ownership move tracking — Bug 115: `var b: String = a` never marks `a` moved
