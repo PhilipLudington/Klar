@@ -119,12 +119,14 @@ in user programs first, then checker/contract correctness, then tooling, then de
       (found: fix/bug-107-generic-fn-param, 2026-10-17) (completed 2026-10-20: every
       binder records a function-typed name's signature, and closure parameters bind
       through `paramLocalValue` as plain-function parameters do)
-- [ ] String from `.to_string()` — Bug 118: `let s: String = "abc".to_string()` then
+- [x] String from `.to_string()` — Bug 118: `let s: String = "abc".to_string()` then
       `s.len()` (or any other use) segfaults natively and under `klar run`; `--interpret`
       and `String.from("abc")` work. Added to the cut set by Philip 2026-10-20: turning a
       `string` into a `String` is ordinary in a trial program, and it crashes with no
       message. (qa-review 2026-10-20; trigger narrowed 2026-10-20, see
-      `docs/decisions/2026-10-20-bug-118-in-cut-set.md`)
+      `docs/decisions/2026-10-20-bug-118-in-cut-set.md`) (completed 2026-10-20: native
+      lowers `to_string()` on a `string` or `String` receiver instead of falling through
+      to `i32 0`, and the VM frees only bytes it allocated)
 - [ ] Bug 34 — codegen `getTypeSize` sizes `char` as 1 byte and omits padding; enum payload
       stores overlap (`src/codegen/emit.zig:38333`, `:38342`). (qa-audit 2026-09-04)
 - [ ] Bug 5 — builtin emitters alloca at the call site; `fs_stat`/`process_run` in a loop

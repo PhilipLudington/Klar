@@ -11359,7 +11359,9 @@ pub const Emitter = struct {
                 if (std.mem.eql(u8, method.method_name, "clear")) {
                     return self.emitStringClear(ptr);
                 }
-                if (std.mem.eql(u8, method.method_name, "clone")) {
+                if (std.mem.eql(u8, method.method_name, "clone") or
+                    std.mem.eql(u8, method.method_name, "to_string"))
+                {
                     return self.emitStringClone(ptr);
                 }
                 if (std.mem.eql(u8, method.method_name, "drop")) {
@@ -11716,6 +11718,9 @@ pub const Emitter = struct {
         if (self.isStringExpr(method.object)) {
             if (std.mem.eql(u8, method.method_name, "len")) {
                 return self.emitStringLen(object);
+            }
+            if (std.mem.eql(u8, method.method_name, "to_string")) {
+                return self.emitStringFromPtr(object);
             }
             if (std.mem.eql(u8, method.method_name, "is_empty")) {
                 return self.emitStringIsEmpty(object);
@@ -23342,53 +23347,11 @@ pub const Emitter = struct {
         return self.buildStringFromHeader(header_ptr);
     }
 
-    /// Emit String.from(s) - creates a string from a string literal.
-    /// Implemented inline: calculates length, allocates memory, copies content.
+    /// Emit String.from(s) - creates a String from a primitive string.
     fn emitStringFrom(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         if (method.args.len != 1) return EmitError.InvalidAST;
-
-        // Emit the string literal argument (pointer to null-terminated string)
         const str_literal = try self.emitExpr(method.args[0]);
-
-        const header_type = self.getStringHeaderType();
-        const i32_type = llvm.Types.int32(self.ctx);
-        const i64_type = llvm.Types.int64(self.ctx);
-
-        // Call strlen to get the length
-        const strlen_fn = self.getOrDeclareStrlen();
-        var strlen_args = [_]llvm.ValueRef{str_literal};
-        const len_i64 = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "str.len");
-
-        // Convert to i32 (String uses i32 for len)
-        const len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, len_i64, i32_type, "str.len_i32");
-
-        // Allocate memory: len + 1 for null terminator
-        const one_i32 = llvm.Const.int32(self.ctx, 1);
-        const alloc_len = llvm.c.LLVMBuildAdd(self.builder.ref, len_i32, one_i32, "str.alloc_len");
-        const alloc_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, alloc_len, i64_type, "str.alloc_len_i64");
-
-        // Call malloc for data
-        const malloc_fn = self.getOrDeclareMalloc();
-        var malloc_args = [_]llvm.ValueRef{alloc_len_i64};
-        const new_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "str.ptr");
-
-        // Call memcpy to copy content (including null terminator)
-        const memcpy_fn = self.getOrDeclareMemcpy();
-        var memcpy_args = [_]llvm.ValueRef{ new_ptr, str_literal, alloc_len_i64 };
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
-
-        // Allocate header on heap and fill: { ptr, len, capacity }
-        const header_ptr = self.allocateStringHeader();
-        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "str.hdr.ptr_field");
-        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "str.hdr.len_field");
-        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 2, "str.hdr.cap_field");
-
-        _ = self.builder.buildStore(new_ptr, ptr_field);
-        _ = self.builder.buildStore(len_i32, len_field);
-        _ = self.builder.buildStore(alloc_len, cap_field); // capacity = len + 1 (includes null byte)
-
-        // Wrap header_ptr in outer struct { header_ptr }
-        return self.buildStringFromHeader(header_ptr);
+        return self.emitStringFromPtr(str_literal);
     }
 
     /// Promote a raw string pointer (from a string literal) to a String value.

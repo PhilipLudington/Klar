@@ -1419,9 +1419,11 @@ pub const VM = struct {
         if (std.mem.eql(u8, method_name, "to_string")) {
             if (arg_count != 0) return RuntimeError.WrongArity;
             _ = try self.pop(); // Pop receiver
-            const str_data = try self.valueToString(receiver);
-            defer self.allocator.free(str_data);
-            const str = try ObjString.createGC(&self.gc, str_data);
+            // A string receiver's bytes belong to the GC and a bool's are static,
+            // so free only what valueToStringAlloc allocated.
+            const str_info = try self.valueToStringAlloc(receiver);
+            defer if (str_info.needs_free) self.allocator.free(str_info.str);
+            const str = try ObjString.createGC(&self.gc, str_info.str);
             try self.push(.{ .string = str });
             return;
         }
@@ -1767,11 +1769,6 @@ pub const VM = struct {
             },
             .struct_type, .enum_variant => .void_,
         };
-    }
-
-    fn valueToString(self: *VM, value: Value) ![]const u8 {
-        const info = try self.valueToStringAlloc(value);
-        return info.str;
     }
 
     const StringAllocInfo = struct {

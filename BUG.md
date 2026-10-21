@@ -3520,12 +3520,12 @@ float `fadd`/`fsub`/`fmul`/`fdiv`/`frem` through `emitNumericOp`, as binary oper
 
 ---
 
-## [ ] Bug 118: `.to_string()` on a `string` returns a `String` that segfaults on first use
+## [x] Bug 118: `.to_string()` on a `string` returns a `String` that segfaults on first use
 
-**Status:** Open
+**Status:** Fixed
 
-**System:** `string.to_string()` lowering — native codegen and the bytecode VM, path not
-yet located
+**System:** `to_string()` lowering — `emitMethodCall` (`src/codegen/emit.zig`) and
+`VM.invokeMethod` (`src/vm.zig`)
 
 **Description:** Any use of a `String` made by calling `.to_string()` on a `string`
 crashes the program, natively and under `klar run`; `--interpret` exits 0. No function
@@ -3546,6 +3546,19 @@ and `println(s.as_str())` (e.kl) all crash. `String.from("abc")` passed to a fun
 
 **Found by:** /qa-review on fix/bug-113-fn-typed-params, 2026-10-20 — code-reviewer;
 trigger re-probed and widened the same day.
+
+**Fix:** Native: `emitMethodCall` had no `to_string` arm for a `string` or a `String`
+receiver, so the call fell through to the unrecognized-method placeholder `i32 0`, which
+was stored into the `String` slot and read as a header pointer. A `string` receiver now
+goes through `emitStringFromPtr` (which `String.from` also calls now, in place of its own
+copy of the same code), and a `String` receiver through `emitStringClone`. VM:
+`invokeMethod`'s `to_string` freed whatever `valueToString` returned, including a
+string receiver's GC-owned bytes (a double free) and a bool's static `"true"`/`"false"`
+(a bus error); it now frees only when `valueToStringAlloc` says it allocated, and the
+`valueToString` wrapper that dropped that flag is gone.
+
+**Test:** `test/args/string_to_string_backends.kl` (all three backends, from
+`scripts/run-args-tests.sh`), `test/native/string_data_to_string.kl`.
 
 ---
 
