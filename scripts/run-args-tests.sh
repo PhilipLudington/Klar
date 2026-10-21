@@ -178,6 +178,30 @@ else
 fi
 
 echo ""
+echo "--- Test: string.to_string() across all backends (Bug 118) ---"
+
+output=$($KLAR run "$TEST_DIR/string_to_string_backends.kl" 2>&1)
+if [ $? -eq 0 ] && ! echo "$output" | grep -qi "error"; then
+    pass "string.to_string(): native backend"
+else
+    fail "string.to_string(): native backend failed"
+fi
+
+output=$($KLAR run "$TEST_DIR/string_to_string_backends.kl" --vm 2>&1)
+if [ $? -eq 0 ] && ! echo "$output" | grep -qi "error"; then
+    pass "string.to_string(): vm backend"
+else
+    fail "string.to_string(): vm backend failed"
+fi
+
+output=$($KLAR run "$TEST_DIR/string_to_string_backends.kl" --interpret 2>&1)
+if [ $? -eq 0 ] && ! echo "$output" | grep -qi "error"; then
+    pass "string.to_string(): interpreter backend"
+else
+    fail "string.to_string(): interpreter backend failed"
+fi
+
+echo ""
 echo "--- Test: async/await flow across all backends ---"
 
 output=$($KLAR run "$TEST_DIR/async_await_backends.kl" 2>&1)

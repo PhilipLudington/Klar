@@ -1,0 +1,25 @@
+// `.to_string()` on a `String` makes an independent copy (Bug 118)
+
+fn main() -> i32 {
+    var a: String = String.from("abc")
+    var b: String = a.to_string()
+    if b.len() != 3 {
+        return 1
+    }
+
+    // The copy owns its own buffer: growing one leaves the other alone
+    b.push_str("de")
+    if b.len() != 5 {
+        return 2
+    }
+    if a.len() != 3 {
+        return 3
+    }
+
+    // A temporary receiver
+    let c: String = String.from("xyz").to_string()
+    if c.len() != 3 {
+        return 4
+    }
+    return 0
+}

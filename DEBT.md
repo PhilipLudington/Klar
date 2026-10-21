@@ -860,3 +860,65 @@ ends `"-lfoo", "-lm"`; `.macos` and `.windows` carry no `-lm`.
 
 **Found by:** /qa-review on fix/nightly-linux-libm, 2026-10-20 — test-checker GAPS;
 reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 40: The VM's `bool.to_string()` bus-error fix (Bug 118) has no test
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/vm.zig` `invokeMethod` `to_string` (~1422)
+**Due when:** touching `test/args/string_to_string_backends.kl` · when Bug 122 is fixed
+
+**Description:** Bug 118's fix stopped the VM freeing a bool's static `"true"`/`"false"`
+text, which was a bus error. Nothing runs `bool.to_string()` under `--vm`, so a
+regression of `needs_free` for bools would pass every gate.
+
+**Payment:** Add a bool case to `test/args/string_to_string_backends.kl` that asserts
+`true.to_string().len()` is 4 and `false`'s is 5 with `assert_eq`, so it fails on every
+backend. Natively it stays red until Bug 122 is fixed, so land it with that fix.
+
+**Found by:** /qa-review on fix/bug-118-string-to-string, 2026-10-20 — test-checker GAPS,
+code-reviewer-b; reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 41: `to_string()` on a `String` receiver is tested only natively
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `test/args/string_to_string_backends.kl`, `src/vm.zig` `invokeMethod`, `src/interpreter.zig` `to_string`
+**Due when:** when Bug 123 is fixed · touching `test/args/string_to_string_backends.kl`
+
+**Description:** `test/native/string_data_to_string.kl` pins the `String`-receiver copy
+natively. The VM and interpreter paths for a `String` receiver run in no test, because
+`String.from` is undefined off-native (Bug 123).
+
+**Payment:** Once Bug 123 is fixed, add `String.from("abc").to_string()` cases (a binding
+and a temporary, growing the copy and checking the source) to
+`test/args/string_to_string_backends.kl` with `assert_eq`.
+
+**Found by:** /qa-review on fix/bug-118-string-to-string, 2026-10-20 — test-checker GAPS;
+reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 42: `emitStringFromPtr` measures a `string` with `strlen`, so an embedded NUL truncates it
+
+**Status:** Open
+**Kind:** latent-defect
+**Where:** `src/codegen/emit.zig` `emitStringFromPtr` (~23359)
+**Due when:** touching `src/codegen/emit.zig` `emitStringFromPtr`
+
+**Description:** `String.from` and now `string.to_string()` both size the new String with
+`strlen` on the source pointer. A `string` holding a `\0` byte would come out short. No
+probe has produced such a `string` from Klar source yet; the WATCH note has recurred on
+this file across 12 branches.
+
+**Payment:** Build a `string` with an embedded NUL (an escape in a literal, or
+`from_byte(0)` concatenation), call `.to_string()` natively, and compare `len()` with the
+source's. If it is short, pass the source's known length into `emitStringFromPtr` instead
+of calling `strlen`, and promote this entry to BUG.md.
+
+**Found by:** /qa-review on fix/bug-118-string-to-string, 2026-10-20 — code-reviewer-a
+WATCH, promoted on recurrence; reviewer's reading, not re-verified.

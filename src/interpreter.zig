@@ -1164,6 +1164,11 @@ pub const Interpreter = struct {
 
         // Built-in methods on all types
         if (std.mem.eql(u8, method.method_name, "to_string")) {
+            // Text converts to its own bytes; valueToString is the debug form and quotes it.
+            if (object == .string) {
+                const copy = self.stringAllocator().dupe(u8, object.string) catch return RuntimeError.OutOfMemory;
+                return self.builder.string(copy);
+            }
             const str = values.valueToString(self.stringAllocator(), object) catch return RuntimeError.OutOfMemory;
             return self.builder.string(str);
         }

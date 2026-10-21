@@ -3520,12 +3520,12 @@ float `fadd`/`fsub`/`fmul`/`fdiv`/`frem` through `emitNumericOp`, as binary oper
 
 ---
 
-## [ ] Bug 118: `.to_string()` on a `string` returns a `String` that segfaults on first use
+## [x] Bug 118: `.to_string()` on a `string` returns a `String` that segfaults on first use
 
-**Status:** Open
+**Status:** Fixed
 
-**System:** `string.to_string()` lowering — native codegen and the bytecode VM, path not
-yet located
+**System:** `to_string()` lowering — `emitMethodCall` (`src/codegen/emit.zig`) and
+`VM.invokeMethod` (`src/vm.zig`)
 
 **Description:** Any use of a `String` made by calling `.to_string()` on a `string`
 crashes the program, natively and under `klar run`; `--interpret` exits 0. No function
@@ -3546,6 +3546,22 @@ and `println(s.as_str())` (e.kl) all crash. `String.from("abc")` passed to a fun
 
 **Found by:** /qa-review on fix/bug-113-fn-typed-params, 2026-10-20 — code-reviewer;
 trigger re-probed and widened the same day.
+
+**Fix:** Native: `emitMethodCall` had no `to_string` arm for a `string` or a `String`
+receiver, so the call fell through to the unrecognized-method placeholder `i32 0`, which
+was stored into the `String` slot and read as a header pointer. A `string` receiver now
+goes through `emitStringFromPtr` (which `String.from` also calls now, in place of its own
+copy of the same code), and a `String` receiver through `emitStringClone`. VM:
+`invokeMethod`'s `to_string` freed whatever `valueToString` returned, including a
+string receiver's GC-owned bytes (a double free) and a bool's static `"true"`/`"false"`
+(a bus error); it now frees only when `valueToStringAlloc` says it allocated, and the
+`valueToString` wrapper that dropped that flag is gone. Interpreter: `evalMethodCall`'s
+`to_string` formatted every receiver with the debug formatter, which quotes a `string`
+(`"hello"` came back with length 7); a `string` receiver now converts to a copy of its
+own bytes.
+
+**Test:** `test/args/string_to_string_backends.kl` (all three backends, from
+`scripts/run-args-tests.sh`), `test/native/string_data_to_string.kl`.
 
 ---
 
@@ -3634,3 +3650,86 @@ fix branch both fell to `i32`.
 
 **Found by:** /qa-review fix-check on fix/bug-113-fn-typed-params, 2026-10-20 — code-reviewer;
 reviewer's probe, not re-run.
+
+---
+
+## [ ] Bug 122: Native `bool.to_string()` returns `"1"` / `"0"` instead of `"true"` / `"false"`
+
+**Status:** Open
+
+**System:** `to_string()` lowering — `emitMethodCall` (`src/codegen/emit.zig`) and
+`VM.invokeMethod` (`src/vm.zig`)
+
+**Description:** A `bool` is an `i1` in LLVM, so `true.to_string()` passes the integer
+arm's `LLVMIntegerTypeKind` fallback in `emitMethodCall` and is formatted by
+`emitIntToString` as a number. The checker types the result `String`, so the program
+runs and gets the wrong text with no error. The VM's bool `to_string()` bus error was
+fixed with Bug 118; the interpreter's could not be confirmed, since its `as_str()` on a
+`String` fails with `InvalidOperation` first.
+
+**Steps to reproduce:**
+1. `fn main() -> i32 { let t: String = true.to_string()  println(t.as_str())  return 0 }`
+   (`scratch/b118/j.kl` also prints `false.to_string()`).
+2. `klar run` it.
+
+**Expected:** Prints `true` (and `false`).
+
+**Actual:** Prints `1` (and `0`) (macOS arm64, 2026-10-20 at `ac5f439`).
+
+**Found by:** fix/bug-118-string-to-string probes, 2026-10-20.
+
+---
+
+## [ ] Bug 123: `String.from(...)` is an undefined name under `--vm` and `--interpret`
+
+**Status:** Open
+**Deferred:** after v0.6.0 — a clear runtime error rather than a wrong result, and only
+off the native backend
+
+**System:** `String` statics off-native — `VM` global lookup (`src/vm.zig`) and the
+interpreter's identifier resolution (`src/interpreter.zig`)
+
+**Description:** `String.from("abc")` type-checks and runs natively, but the VM and the
+interpreter do not know the name `String`, so any program that builds an owned `String`
+this way fails off-native. It also keeps the Bug 118 cross-backend test from covering a
+`String` receiver on those two backends.
+
+**Steps to reproduce:**
+1. `fn main() -> i32 { let s: String = String.from("abc")  println(s.len().to_string())  return 0 }`
+   (`scratch/sf.kl`).
+2. `klar run` it, then `klar run --vm`, then `klar run --interpret`.
+
+**Expected:** Prints `3` all three ways.
+
+**Actual:** Native prints `3`; `--vm` prints `Runtime error in main: UndefinedVariable`;
+`--interpret` prints `Undefined variable: 'String'` (macOS arm64, 2026-10-20 at `7de853a`).
+
+**Found by:** /qa-review on fix/bug-118-string-to-string, 2026-10-20 — code-reviewer-a,
+code-reviewer-b; verified by probe `scratch/sf.kl`.
+
+---
+
+## [ ] Bug 124: `--interpret` leaks every struct literal's `StructValue`
+
+**Status:** Open
+**Deferred:** after v0.6.0 — memory is reclaimed at exit and the program's output is right;
+only the debug allocator's leak report shows it
+
+**System:** interpreter struct values — `evalStructLiteral` (`src/interpreter.zig`)
+
+**Description:** `evalStructLiteral` allocates each `StructValue` with `self.allocator`
+and nothing frees it, so the debug build prints a `DebugAllocator` leak trace after any
+interpreted program that builds a struct.
+
+**Steps to reproduce:**
+1. `struct P { x: i32 }  fn main() -> i32 { let p: P = P { x: 1 }  println(p.x.to_string())  return 0 }`
+   (`scratch/sl.kl`).
+2. `klar run --interpret` it with a debug build.
+
+**Expected:** Prints `1` and nothing else.
+
+**Actual:** Prints `1`, then `error(DebugAllocator): memory address … leaked` from
+`src/interpreter.zig:1734` `evalStructLiteral` (macOS arm64, 2026-10-20 at `6f5c2b2`).
+
+**Found by:** /qa-review fix-check on fix/bug-118-string-to-string, 2026-10-20 —
+code-reviewer-a; verified by probe `scratch/sl.kl`.
