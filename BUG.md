@@ -3813,3 +3813,34 @@ payload element alignment (8 here), e.g. an aligned payload field type.
 **Actual:** `store i64 99, ptr %enum.payload.elem…, align 8` at enum offset 1 + 8 = 9.
 
 **Found by:** fix/bug-34-enum-payload-layout, 2026-10-21, reading the IR of Bug 34's test.
+
+---
+
+## [ ] Bug 127: A generic enum over a non-generic enum gets an 8-byte payload slot, so its literal writes past the enum
+
+**Status:** Open
+**Deferred:** after v0.6.0 — not made worse by Bug 34's fix (the old `getTypeSize` also gave
+8 for an enum), and no wrong value has been observed yet, only the out-of-bounds store in
+the IR
+
+**System:** enum payload layout — `variantPayloadStruct` in `src/codegen/emit.zig` (the
+enum literal's stores, `registerMonomorphizedEnum`, `registerNonGenericEnum`)
+
+**Description:** `src/main.zig:3322` registers monomorphized enums before non-generic
+ones (`:3331`). When `registerMonomorphizedEnum` sizes `Box#[Inner]`'s payload,
+`typeToLLVM` for `Inner` is not registered yet and falls back to `ptr` (8 bytes), so the
+enum is `{ i8, [8 x i8] }`. The literal `Box#[Inner]::V(Inner::A(5))` then stores the
+whole 9-byte `Inner` at offset 1: one byte past the 9-byte alloca.
+
+**Steps to reproduce:**
+1. `enum Inner { A(i64), B }`, `enum Box#[T] { V(T), E }`, and in `main`
+   `let b: Box#[Inner] = Box#[Inner]::V(Inner::A(5.as#[i64]))`.
+2. `klar build <file> --emit-llvm` and read the store into `%enum.payload.elem…`.
+
+**Expected:** The payload slot is `Inner`'s size (9 bytes or more), so the store fits.
+
+**Actual:** `{ i8, [8 x i8] }` with `store { i8, [8 x i8] } %enum.result, ptr
+%enum.payload.elem4, align 1`: 9 bytes written at offset 1 of a 9-byte enum.
+
+**Found by:** /qa-review on fix/bug-34-enum-payload-layout, 2026-10-21 — code-reviewer
+PRE-EXISTING, probe `scratch/rv3.kl` / `rv3.ll:12-21`; reviewer's evidence, not re-read.
