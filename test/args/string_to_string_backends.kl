@@ -1,0 +1,28 @@
+// `.to_string()` on a `string` makes a `String` every backend can use (Bug 118)
+
+fn main() -> i32 {
+    // Receiver is a literal
+    let s: String = "abc".to_string()
+    if s.len() != 3 {
+        return 1
+    }
+
+    // Receiver is a `string` binding
+    let a: string = "hello"
+    let t: String = a.to_string()
+    if t.len() != 5 {
+        return 2
+    }
+
+    // The source string is still usable afterwards
+    if a.len() != 5 {
+        return 3
+    }
+
+    // Empty receiver
+    let e: String = "".to_string()
+    if e.len() != 0 {
+        return 4
+    }
+    return 0
+}
