@@ -192,6 +192,7 @@ get_expected() {
         string_escape_hex_unicode) echo 0 ;;
         process_spawn_windows) echo 0 ;;
         string_data_to_string) echo 0 ;;  # String.to_string() is an independent copy (Bug 118)
+        enum_payload_layout) echo 0 ;;  # char and struct payloads read back whole (Bug 34)
         *) echo -1 ;;  # -1 means accept any result
     esac
 }
@@ -408,6 +409,54 @@ else
     FAILURES="$FAILURES\"$cell_name: cell_shapes.kl did not compile to LLVM IR\""
 fi
 rm -rf "$cell_dir"
+
+# Enum payload offsets (Bug 34): each element of a tuple payload is stored at its
+# aligned offset in the payload bytes. A multi-element payload cannot be read back
+# in a match yet, so this reads the IR of test/native/enum_payload_layout.kl:
+# `Pair::V(7, 99)` must store its i64 at offset 8 and `Pair::C('x', 42)` its i32
+# at offset 4, not at the 1 a running sum of 1-byte sizes gives.
+layout_name="enum_payload_offsets"
+layout_dir="$BUILD_DIR/klar_layout_ir_$$"
+mkdir -p "$layout_dir"
+layout_ir="$layout_dir/enum_payload_layout.ll"
+( cd "$layout_dir" && "$KLAR" build "$TEST_DIR/enum_payload_layout.kl" -c -o "$layout_dir/enum_payload_layout.o" --emit-llvm >/dev/null 2>&1 )
+if [ -f "$layout_ir" ]; then
+    # Pair each payload store with the byte offset of the GEP that names its slot.
+    layout_stores=$(awk '
+        /%enum\.payload\.(elem|field)[0-9]* = getelementptr i8,/ { off[$1] = $NF; next }
+        /^ *store / && /%enum\.payload\.(elem|field)[0-9]*,/ {
+            p = $0; sub(/.*ptr /, "", p); sub(/,.*/, "", p)
+            print $2, $3, off[p]
+        }
+    ' "$layout_ir" | tr -d ',')
+    layout_missing=""
+    for want in "i64 99 8" "i32 42 4"; do
+        if ! printf '%s\n' "$layout_stores" | grep -qx "$want"; then
+            layout_missing="$layout_missing [$want]"
+        fi
+    done
+    if [ -z "$layout_missing" ]; then
+        echo "✓ $layout_name (tuple payload elements sit at aligned offsets)"
+        PASSED=$((PASSED + 1))
+    else
+        layout_why="no payload store at type/value/offset:$layout_missing"
+        echo "✗ $layout_name ($layout_why)"
+        printf '%s\n' "$layout_stores" | sed 's/^/  /'
+        FAILED=$((FAILED + 1))
+        if [ -n "$FAILURES" ]; then
+            FAILURES="$FAILURES,"
+        fi
+        FAILURES="$FAILURES\"$layout_name: $layout_why\""
+    fi
+else
+    echo "✗ $layout_name (enum_payload_layout.kl did not compile to LLVM IR)"
+    FAILED=$((FAILED + 1))
+    if [ -n "$FAILURES" ]; then
+        FAILURES="$FAILURES,"
+    fi
+    FAILURES="$FAILURES\"$layout_name: enum_payload_layout.kl did not compile to LLVM IR\""
+fi
+rm -rf "$layout_dir"
 
 # Timeout branch (Debt 7): a binary that never returns must be reported as timed
 # out, not hang the job or pass. test/native/timeout_hang.kl loops forever; run it

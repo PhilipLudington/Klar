@@ -1,0 +1,45 @@
+// Enum payload slots are sized and laid out as LLVM lays out their types (Bug 34)
+// A `char` payload is 4 bytes, a struct payload keeps its padding, and the
+// elements of a tuple payload sit at aligned offsets. The runner also reads this
+// file's IR for the tuple offsets, since a multi-element payload cannot be
+// destructured in a match yet.
+
+struct Mixed { a: i8, b: i64 }
+
+enum Glyph { Ch(char), Small(i8) }
+enum Holder { Hold(Mixed), Nothing }
+enum Pair { V(i8, i64), C(char, i32) }
+
+fn glyph_code(g: Glyph) -> i32 {
+    match g {
+        Glyph::Ch(c) => { return c.as#[i32] }
+        Glyph::Small(s) => { return s.as#[i32] }
+    }
+}
+
+fn held_b(h: Holder) -> i64 {
+    match h {
+        Holder::Hold(m) => { return m.b }
+        Holder::Nothing => { return 0.as#[i64] }
+    }
+}
+
+fn main() -> i32 {
+    // A char payload read back through a by-value copy of the enum
+    let g: Glyph = Glyph::Ch('x')
+    if glyph_code(g) != 120 {
+        return 1
+    }
+
+    // A struct payload whose i64 field follows padding
+    let h: Holder = Holder::Hold(Mixed { a: 1.as#[i8], b: 1234567890123.as#[i64] })
+    if held_b(h) != 1234567890123.as#[i64] {
+        return 2
+    }
+
+    // Tuple payloads: the IR check reads these stores' offsets
+    let p: Pair = Pair::V(7.as#[i8], 99.as#[i64])
+    let q: Pair = Pair::C('x', 42)
+
+    return 0
+}
