@@ -3674,3 +3674,32 @@ fixed with Bug 118; the interpreter's could not be confirmed, since its `as_str(
 **Actual:** Prints `1` (and `0`) (macOS arm64, 2026-10-20 at `ac5f439`).
 
 **Found by:** fix/bug-118-string-to-string probes, 2026-10-20.
+
+---
+
+## [ ] Bug 123: `String.from(...)` is an undefined name under `--vm` and `--interpret`
+
+**Status:** Open
+**Deferred:** after v0.6.0 — a clear runtime error rather than a wrong result, and only
+off the native backend
+
+**System:** `String` statics off-native — `VM` global lookup (`src/vm.zig`) and the
+interpreter's identifier resolution (`src/interpreter.zig`)
+
+**Description:** `String.from("abc")` type-checks and runs natively, but the VM and the
+interpreter do not know the name `String`, so any program that builds an owned `String`
+this way fails off-native. It also keeps the Bug 118 cross-backend test from covering a
+`String` receiver on those two backends.
+
+**Steps to reproduce:**
+1. `fn main() -> i32 { let s: String = String.from("abc")  println(s.len().to_string())  return 0 }`
+   (`scratch/sf.kl`).
+2. `klar run` it, then `klar run --vm`, then `klar run --interpret`.
+
+**Expected:** Prints `3` all three ways.
+
+**Actual:** Native prints `3`; `--vm` prints `Runtime error in main: UndefinedVariable`;
+`--interpret` prints `Undefined variable: 'String'` (macOS arm64, 2026-10-20 at `7de853a`).
+
+**Found by:** /qa-review on fix/bug-118-string-to-string, 2026-10-20 — code-reviewer-a,
+code-reviewer-b; verified by probe `scratch/sf.kl`.
