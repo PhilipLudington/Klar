@@ -220,6 +220,10 @@ in user programs first, then checker/contract correctness, then tooling, then de
       runs live in the unit tests (`src/vm_gc_test.zig`); the runner flag stays the Phase 0 task
       (departed: collect at safe points, not temp-root each caller). (qa-audit 2026-09-04)
       (completed 2026-09-26)
+- [ ] Bug 122 — native `true.to_string()` is `"1"` and `false.to_string()` is `"0"`: an `i1`
+      receiver takes the integer arm of `emitMethodCall` (`src/codegen/emit.zig`, the
+      `LLVMIntegerTypeKind` fallback) and is formatted as a number. (found:
+      fix/bug-118-string-to-string, 2026-10-20)
 - [ ] Bug 18 — VM carries no integer width: i128 arithmetic + no-op `.trunc#` (`src/vm.zig:1292`,
       `:1381`); carry the declared width in the value or opcode. (qa-audit 2026-09-04)
 - [ ] Bugs 19 + 20 — interpreter `%` is Euclidean (`src/interpreter.zig:749,769`) and `len`

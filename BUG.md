@@ -3647,3 +3647,30 @@ fix branch both fell to `i32`.
 
 **Found by:** /qa-review fix-check on fix/bug-113-fn-typed-params, 2026-10-20 — code-reviewer;
 reviewer's probe, not re-run.
+
+---
+
+## [ ] Bug 122: Native `bool.to_string()` returns `"1"` / `"0"` instead of `"true"` / `"false"`
+
+**Status:** Open
+
+**System:** `to_string()` lowering — `emitMethodCall` (`src/codegen/emit.zig`) and
+`VM.invokeMethod` (`src/vm.zig`)
+
+**Description:** A `bool` is an `i1` in LLVM, so `true.to_string()` passes the integer
+arm's `LLVMIntegerTypeKind` fallback in `emitMethodCall` and is formatted by
+`emitIntToString` as a number. The checker types the result `String`, so the program
+runs and gets the wrong text with no error. The VM's bool `to_string()` bus error was
+fixed with Bug 118; the interpreter's could not be confirmed, since its `as_str()` on a
+`String` fails with `InvalidOperation` first.
+
+**Steps to reproduce:**
+1. `fn main() -> i32 { let t: String = true.to_string()  println(t.as_str())  return 0 }`
+   (`scratch/b118/j.kl` also prints `false.to_string()`).
+2. `klar run` it.
+
+**Expected:** Prints `true` (and `false`).
+
+**Actual:** Prints `1` (and `0`) (macOS arm64, 2026-10-20 at `ac5f439`).
+
+**Found by:** fix/bug-118-string-to-string probes, 2026-10-20.
