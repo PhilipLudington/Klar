@@ -425,14 +425,18 @@ other (`build.zig.zon` says 0.4.0, `src/version.zig` says 0.5.0).
       a one-line reason when it is known; (c) the page opens with the test evidence
       (self-host fixed point, suite counts) before any speed figure; (d) it links the
       release's Known issues list.
-- [ ] C and Rust comparison (Philip, 2026-10-22; `docs/decisions/2026-10-22-compare-to-c-rust-and-ai-eval.md`):
-      write a C and a Rust version of each runtime benchmark under `benchmarks/` (`fib`,
-      `sort`/`quicksort`, `matrix`, `string`/`string_processing`, `rc_stress`), each doing
-      the same work on the same input and checked by the same expected exit code. Build C
-      with `clang -O2` and Rust with `cargo build --release`, record compiler versions, and
-      add both as columns beside Klar native `-O2` in `docs/benchmarks/v0.6.0.md` under
-      rules (a)–(d) above. Comparison programs are idiomatic, not tuned to lose: no
-      deliberate extra allocation, no debug builds.
+- [ ] Other-language comparison (Philip, 2026-10-22; `docs/decisions/2026-10-22-compare-to-c-rust-and-ai-eval.md`):
+      write a C, Rust, Go, C# and Python version of each runtime benchmark under
+      `benchmarks/` (`fib`, `sort`/`quicksort`, `matrix`, `string`/`string_processing`,
+      `rc_stress`), each doing the same work on the same input and checked by the same
+      expected exit code. C and Rust show the speed ceiling, Go and C# are Klar's
+      application-language peers, and Python is the floor that shows what its faster
+      development costs at run time. Build C with `clang -O2`, Rust with
+      `cargo build --release`, Go with `go build`, C# with `dotnet publish -c Release`, and
+      run Python with `python3`; record every toolchain version, and add each as a column
+      beside Klar native `-O2` in `docs/benchmarks/v0.6.0.md` under rules (a)–(d) above.
+      Comparison programs are idiomatic, not tuned to lose: no deliberate extra
+      allocation, no debug builds.
 - [ ] Release binaries: build `klar` for macOS arm64 and Linux x86_64 against LLVM 21 and
       check each runs `klar build` on a hello-world on a machine without the dev toolchain;
       write `docs/` install steps for the binary and for building from source.
@@ -443,20 +447,23 @@ other (`build.zig.zon` says 0.4.0, `src/version.zig` says 0.5.0).
 A fresh clone at `v0.6.0` builds with LLVM 21 and passes `./run-tests.sh`; the nightly CI
 run at the tagged commit is green; each release binary prints `Klar 0.6.0` and builds and
 runs `benchmarks/fib.kl` natively on a clean machine; re-running the benchmarks at the tag
-lands within 10% of the recorded baseline on the same machine; each C and Rust comparison
-program exits with its benchmark's expected code.
+lands within 10% of the recorded baseline on the same machine; each comparison program
+exits with its benchmark's expected code.
 
 ---
 
-## Phase 2: AI-use comparison — Klar against C and Rust
+## Phase 2: AI-use comparison — Klar against C, Rust, Go, C#, Python and TypeScript
 
 **Goal:** Measure, on the same programming tasks, how quickly an AI agent gets to working
-code in Klar, C and Rust, and how good that code is.
+code in Klar and in each comparison language, and how good that code is.
 **Estimated Effort:** 1–2 weeks, plus the model cost of the runs (capped in the method)
 
 Why: Klar's claim is that it is the language an AI writes best. Philip, 2026-10-22: *"I
 also want some way of seeing which language is faster for AI to use and results in a high
-quality code."* Decision record: `docs/decisions/2026-10-22-compare-to-c-rust-and-ai-eval.md`.
+quality code."* Python and TypeScript set the bar for development speed: *"that's the main
+reason not to use a more performant language in many situations."* Go and C# are the
+application-language peers; C and Rust the performant ones. Decision record:
+`docs/decisions/2026-10-22-compare-to-c-rust-and-ai-eval.md`.
 
 ### Deliverables
 - `docs/design/ai-eval.md`: the method, fixed before the first scored run — tasks,
@@ -464,7 +471,7 @@ quality code."* Decision record: `docs/decisions/2026-10-22-compare-to-c-rust-an
   Klar. Philip approves it.
 - `benchmarks/ai-eval/tasks/`: 10–20 tasks, each a plain-language spec plus a hidden test
   set that talks to the program through stdin/stdout, files and exit codes only, so one
-  test set serves all three languages. Tasks are the kind the v0.6.0 trial would write:
+  test set serves every language. Tasks are the kind the v0.6.0 trial would write:
   structs, collections, strings, file and process I/O; no networking.
 - `benchmarks/ai-eval/run.sh`: runs one agent per task × language × repeat in a clean
   directory, with the same model, prompt template and turn limit for every language, and
@@ -479,12 +486,16 @@ quality code."* Decision record: `docs/decisions/2026-10-22-compare-to-c-rust-an
       under AddressSanitizer and UndefinedBehaviorSanitizer, Rust `unsafe` blocks counted);
       runtime speed of the produced program on a larger input; and a review score from a
       separate model against a fixed rubric (correctness risks, error handling, clarity).
-      It names the main bias openly: models have seen far more C and Rust than Klar, so
+      The headline result is the trade-off: development speed against code quality and
+      run speed, with Python and TypeScript as the development-speed bar. Languages each
+      add a full set of runs, so the cost cap may drop one; the method says which first.
+      It names the main bias openly: models have seen far more of every comparison
+      language than of Klar, so
       Klar runs get `docs/AI-GUIDE.md` in context, and a second Klar arm without it shows
       how much the guide is doing.
 - [ ] Write the task set and its hidden tests; check each test set against a hand-written
       reference solution in at least one language before any agent sees the task.
-- [ ] Build `benchmarks/ai-eval/run.sh` and run one task × three languages × one repeat
+- [ ] Build `benchmarks/ai-eval/run.sh` and run one task × every language × one repeat
       as a dry run; read every transcript by hand.
 - [ ] Run the full set at the repeat count the method names, within the cost cap.
 - [ ] Write `docs/benchmarks/ai-eval-<date>.md`, including the tasks where Klar did worse
