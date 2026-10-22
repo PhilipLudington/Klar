@@ -387,7 +387,8 @@ other (`build.zig.zon` says 0.4.0, `src/version.zig` says 0.5.0).
   had to land before it.
 - One version string, 0.6.0, everywhere a version is printed or declared.
 - A `CHANGELOG.md` v0.6.0 entry and GitHub release notes, with a Known issues section.
-- A recorded performance baseline at the tagged commit (`docs/benchmarks/v0.6.0.md`).
+- A recorded performance baseline at the tagged commit (`docs/benchmarks/v0.6.0.md`),
+  with the same benchmarks in C and Rust beside Klar's.
 - Prebuilt binaries for macOS arm64 and Linux x86_64 on the GitHub release, plus an
   install page that works from a clean machine.
 - A `release/0.6` branch for fixes the trial needs, released as 0.6.x patches while
@@ -424,6 +425,14 @@ other (`build.zig.zon` says 0.4.0, `src/version.zig` says 0.5.0).
       a one-line reason when it is known; (c) the page opens with the test evidence
       (self-host fixed point, suite counts) before any speed figure; (d) it links the
       release's Known issues list.
+- [ ] C and Rust comparison (Philip, 2026-10-22; `docs/decisions/2026-10-22-compare-to-c-rust-and-ai-eval.md`):
+      write a C and a Rust version of each runtime benchmark under `benchmarks/` (`fib`,
+      `sort`/`quicksort`, `matrix`, `string`/`string_processing`, `rc_stress`), each doing
+      the same work on the same input and checked by the same expected exit code. Build C
+      with `clang -O2` and Rust with `cargo build --release`, record compiler versions, and
+      add both as columns beside Klar native `-O2` in `docs/benchmarks/v0.6.0.md` under
+      rules (a)–(d) above. Comparison programs are idiomatic, not tuned to lose: no
+      deliberate extra allocation, no debug builds.
 - [ ] Release binaries: build `klar` for macOS arm64 and Linux x86_64 against LLVM 21 and
       check each runs `klar build` on a hello-world on a machine without the dev toolchain;
       write `docs/` install steps for the binary and for building from source.
@@ -434,7 +443,59 @@ other (`build.zig.zon` says 0.4.0, `src/version.zig` says 0.5.0).
 A fresh clone at `v0.6.0` builds with LLVM 21 and passes `./run-tests.sh`; the nightly CI
 run at the tagged commit is green; each release binary prints `Klar 0.6.0` and builds and
 runs `benchmarks/fib.kl` natively on a clean machine; re-running the benchmarks at the tag
-lands within 10% of the recorded baseline on the same machine.
+lands within 10% of the recorded baseline on the same machine; each C and Rust comparison
+program exits with its benchmark's expected code.
+
+---
+
+## Phase 2: AI-use comparison — Klar against C and Rust
+
+**Goal:** Measure, on the same programming tasks, how quickly an AI agent gets to working
+code in Klar, C and Rust, and how good that code is.
+**Estimated Effort:** 1–2 weeks, plus the model cost of the runs (capped in the method)
+
+Why: Klar's claim is that it is the language an AI writes best. Philip, 2026-10-22: *"I
+also want some way of seeing which language is faster for AI to use and results in a high
+quality code."* Decision record: `docs/decisions/2026-10-22-compare-to-c-rust-and-ai-eval.md`.
+
+### Deliverables
+- `docs/design/ai-eval.md`: the method, fixed before the first scored run — tasks,
+  metrics, model and settings, repeat count, cost cap, and what result would count against
+  Klar. Philip approves it.
+- `benchmarks/ai-eval/tasks/`: 10–20 tasks, each a plain-language spec plus a hidden test
+  set that talks to the program through stdin/stdout, files and exit codes only, so one
+  test set serves all three languages. Tasks are the kind the v0.6.0 trial would write:
+  structs, collections, strings, file and process I/O; no networking.
+- `benchmarks/ai-eval/run.sh`: runs one agent per task × language × repeat in a clean
+  directory, with the same model, prompt template and turn limit for every language, and
+  records each run as JSON.
+- `docs/benchmarks/ai-eval-<date>.md`: the results, per language and per task, with the
+  spread across repeats.
+
+### Tasks
+- [ ] Write `docs/design/ai-eval.md`. Speed for the AI: wall time, tokens (cost), and
+      build-or-run attempts until the hidden tests pass, plus whether it finished within
+      the turn limit. Code quality: hidden-test pass rate; crashes and memory errors (C
+      under AddressSanitizer and UndefinedBehaviorSanitizer, Rust `unsafe` blocks counted);
+      runtime speed of the produced program on a larger input; and a review score from a
+      separate model against a fixed rubric (correctness risks, error handling, clarity).
+      It names the main bias openly: models have seen far more C and Rust than Klar, so
+      Klar runs get `docs/AI-GUIDE.md` in context, and a second Klar arm without it shows
+      how much the guide is doing.
+- [ ] Write the task set and its hidden tests; check each test set against a hand-written
+      reference solution in at least one language before any agent sees the task.
+- [ ] Build `benchmarks/ai-eval/run.sh` and run one task × three languages × one repeat
+      as a dry run; read every transcript by hand.
+- [ ] Run the full set at the repeat count the method names, within the cost cap.
+- [ ] Write `docs/benchmarks/ai-eval-<date>.md`, including the tasks where Klar did worse
+      and why, and file every Klar defect or confusing error message the runs hit to
+      `BUG.md`.
+
+### Testing Strategy
+Each task's hidden tests pass on its reference solution and fail on an empty program;
+re-running one recorded agent output through the scorer gives the same scores; the dry
+run's transcripts show each language got the same prompt and limits; the results page
+shows every number in the method, including the ones where Klar loses.
 
 ---
 
@@ -451,4 +512,5 @@ lands within 10% of the recorded baseline on the same machine.
 Next Up is worked top-down between PRs. Phase 0 runs alongside the first few bug branches
 because its two suites are what those branches' failing tests plug into. Phase 1 (v0.6.0)
 starts once its cut set is chosen; until the tag it takes priority over the rest of
-Next Up, which resumes on `main` after the tag.
+Next Up, which resumes on `main` after the tag. Phase 2 (AI-use comparison) starts after
+the tag; its method document comes first, since every later task depends on it.
