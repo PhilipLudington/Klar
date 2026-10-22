@@ -416,6 +416,14 @@ other (`build.zig.zon` says 0.4.0, `src/version.zig` says 0.5.0).
 - [ ] Performance baseline: run `scripts/run-benchmarks.sh` at the cut, VM and native
       `-O2`, and record each result with the machine, OS, Zig and LLVM versions in
       `docs/benchmarks/v0.6.0.md`, so the trial's numbers have something to compare to.
+      Proposed rules for that page (2026-10-22, not yet settled; why in
+      `docs/design/goose-inspiration.md` § Benchmark lessons):
+      (a) every result links the exact source and command that produced it, and any
+      comparison program in another language is written the way a competent user of that
+      language would write it; (b) results where Klar is slower are reported, each with
+      a one-line reason when it is known; (c) the page opens with the test evidence
+      (self-host fixed point, suite counts) before any speed figure; (d) it links the
+      release's Known issues list.
 - [ ] Release binaries: build `klar` for macOS arm64 and Linux x86_64 against LLVM 21 and
       check each runs `klar build` on a hello-world on a machine without the dev toolchain;
       write `docs/` install steps for the binary and for building from source.
