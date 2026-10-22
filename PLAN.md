@@ -388,7 +388,7 @@ other (`build.zig.zon` says 0.4.0, `src/version.zig` says 0.5.0).
 - One version string, 0.6.0, everywhere a version is printed or declared.
 - A `CHANGELOG.md` v0.6.0 entry and GitHub release notes, with a Known issues section.
 - A recorded performance baseline at the tagged commit (`docs/benchmarks/v0.6.0.md`),
-  with the same benchmarks in C and Rust beside Klar's.
+  with the same benchmarks in C, Rust, Go, C#, Swift and Python beside Klar's.
 - Prebuilt binaries for macOS arm64 and Linux x86_64 on the GitHub release, plus an
   install page that works from a clean machine.
 - A `release/0.6` branch for fixes the trial needs, released as 0.6.x patches while
@@ -426,14 +426,16 @@ other (`build.zig.zon` says 0.4.0, `src/version.zig` says 0.5.0).
       (self-host fixed point, suite counts) before any speed figure; (d) it links the
       release's Known issues list.
 - [ ] Other-language comparison (Philip, 2026-10-22; `docs/decisions/2026-10-22-compare-to-c-rust-and-ai-eval.md`):
-      write a C, Rust, Go, C# and Python version of each runtime benchmark under
+      write a C, Rust, Go, C#, Swift and Python version of each runtime benchmark under
       `benchmarks/` (`fib`, `sort`/`quicksort`, `matrix`, `string`/`string_processing`,
       `rc_stress`), each doing the same work on the same input and checked by the same
       expected exit code. C and Rust show the speed ceiling, Go and C# are Klar's
-      application-language peers, and Python is the floor that shows what its faster
-      development costs at run time. Build C with `clang -O2`, Rust with
-      `cargo build --release`, Go with `go build`, C# with `dotnet publish -c Release`, and
-      run Python with `python3`; record every toolchain version, and add each as a column
+      application-language peers, Swift is the reference-counted peer that shows whether
+      Klar's `Rc` costs are competitive (`rc_stress` above all), and Python is the floor
+      that shows what its faster development costs at run time. Build C with `clang -O2`,
+      Rust with `cargo build --release`, Go with `go build`, C# with
+      `dotnet publish -c Release`, Swift with `swiftc -O`, and run Python with `python3`;
+      record every toolchain version, and add each as a column
       beside Klar native `-O2` in `docs/benchmarks/v0.6.0.md` under rules (a)–(d) above.
       Comparison programs are idiomatic, not tuned to lose: no deliberate extra
       allocation, no debug builds.

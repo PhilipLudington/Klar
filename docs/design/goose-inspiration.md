@@ -95,6 +95,40 @@ across threads; `docs/design/async-runtime-internal.md` covers the async runtime
 
 **Worth taking up when:** Klar's concurrency model is next revisited.
 
+## Other languages in Klar's space
+
+Captured 2026-10-22 as reading for after the v0.6.0 tag; nothing here is planned. Swift
+is the exception: it joined the v0.6.0 speed comparison (`PLAN.md` Phase 1).
+
+**Languages that say they are built for AI to write**
+- **Nanolang** — see `docs/design/nanolang-inspiration.md`. Simon Willison's first
+  one-shot LLM attempt failed until Claude Code read the compiler errors and examples
+  (https://simonwillison.net/2026/Jan/19/nanolang/), which supports measuring AI use
+  rather than claiming it.
+- **MoonBit** — pitched for AI-assisted coding; see
+  `docs/design/moonbit-semantic-sampler.md`. A candidate for Phase 2 once its toolchain
+  settles.
+- **Goose** — this note.
+- **"AI Creates a Programming Language"** (https://fablepool.com/projects/141) — early
+  stage, plans to benchmark against Python, Rust and TypeScript. If it publishes an
+  evaluation method, compare it with Klar's `docs/design/ai-eval.md`.
+
+**Languages with Klar's memory-safety goal (safety without lifetime annotations)**
+- **Swift** — reference counting, value types, no lifetimes, application-level: the
+  closest mainstream match. In the v0.6.0 speed comparison.
+- **Lobster** — by Goose's author; the compiler removes most reference-count updates at
+  compile time. The optimisation to read if `Rc` costs show up in the benchmarks.
+- **Vale** (checks at run time that a reference's target is still alive) and **Hylo**
+  (copies values instead of sharing them) — research languages reaching the same goal by
+  other routes. Design reading only; too young to benchmark.
+- **Koka** and **Roc** — compile-time-optimised reference counting (Perceus). Koka is
+  also the standard reference for effect systems, relevant to
+  `docs/design/effect-system.md`.
+- **Gleam** — worth reading for its simple, explicit design; garbage-collected on
+  Erlang's virtual machine, so not a speed peer.
+- **Mojo** — Python-like syntax with ownership and high speed; a different pitch
+  ("Python made fast"), lower priority.
+
 ## Benchmark lessons
 
 Goose's headline speed figures (3.3x idiomatic C++, 1.12x the best safe Rust) were met
