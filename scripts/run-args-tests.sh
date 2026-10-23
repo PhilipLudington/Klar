@@ -546,6 +546,53 @@ fi
 rm -f "$expected_method_fixture"
 
 echo ""
+echo "--- Test: klar check / klar build exit status (Bug 49) ---"
+
+# Each case: description, expected status ("zero" or "nonzero"), then the klar arguments.
+# Output goes to build/ so -o never writes outside the repo.
+EXIT_TMP="$SCRIPT_DIR/build/exit_status"
+mkdir -p "$EXIT_TMP"
+expect_status() {
+    local desc="$1"
+    local expected="$2"
+    shift 2
+    $KLAR "$@" >"$EXIT_TMP/out.txt" 2>&1
+    local status=$?
+    if [ "$expected" = "zero" ] && [ $status -eq 0 ]; then
+        pass "$desc"
+    elif [ "$expected" = "nonzero" ] && [ $status -ne 0 ]; then
+        pass "$desc"
+    else
+        fail "$desc (exit $status)"
+        head -3 "$EXIT_TMP/out.txt" | sed 's/^/  /'
+    fi
+}
+
+expect_status "check exit status: type error exits non-zero" nonzero \
+    check "$TEST_DIR/exit_status_type_error.kl"
+expect_status "check exit status: parse error exits non-zero" nonzero \
+    check "$TEST_DIR/exit_status_parse_error.kl"
+expect_status "check exit status: ownership error exits non-zero" nonzero \
+    check "$SCRIPT_DIR/test/check/ownership_string_move.kl"
+expect_status "check exit status: missing file exits non-zero" nonzero \
+    check "$EXIT_TMP/does_not_exist.kl"
+expect_status "check exit status: invalid option combination exits non-zero" nonzero \
+    check "$TEST_DIR/no_args.kl" --scope-json
+expect_status "check exit status: clean file exits 0" zero \
+    check "$TEST_DIR/no_args.kl"
+expect_status "build exit status: type error exits non-zero" nonzero \
+    build "$TEST_DIR/exit_status_type_error.kl" -o "$EXIT_TMP/type_error"
+expect_status "build exit status: parse error exits non-zero" nonzero \
+    build "$TEST_DIR/exit_status_parse_error.kl" -o "$EXIT_TMP/parse_error"
+expect_status "build exit status: missing file exits non-zero" nonzero \
+    build "$EXIT_TMP/does_not_exist.kl" -o "$EXIT_TMP/missing"
+expect_status "build exit status: clean file exits 0" zero \
+    build "$TEST_DIR/no_args.kl" -o "$EXIT_TMP/clean"
+expect_status "run exit status: type error exits non-zero" nonzero \
+    run "$TEST_DIR/exit_status_type_error.kl"
+rm -rf "$EXIT_TMP"
+
+echo ""
 # Cross-platform temp directory for LSP test fixtures
 LSP_TMP="$SCRIPT_DIR/build/lsp_test"
 mkdir -p "$LSP_TMP"
