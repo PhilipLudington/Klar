@@ -1121,7 +1121,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
         try getStdErr().writeAll(msg);
-        return;
+        return error.CommandFailed;
     };
     defer allocator.free(source);
 
@@ -1147,7 +1147,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
             }) catch continue;
             try stderr.writeAll(err_msg);
         }
-        return;
+        return error.CommandFailed;
     };
 
     // Type check
@@ -1184,7 +1184,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
         // Register entry module
         const entry = resolver.resolveEntry(path) catch {
             try stderr.writeAll("Error: could not resolve entry module\n");
-            return;
+            return error.CommandFailed;
         };
         entry.module_ast = module;
         entry.state = .parsed;
@@ -1223,12 +1223,12 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
                 const err_msg = std.fmt.bufPrint(&buf, "Module error: {s}\n", .{err.message}) catch continue;
                 try stderr.writeAll(err_msg);
             }
-            return;
+            return error.CommandFailed;
         }
 
         // Get topological order
         const compilation_order = resolver.getCompilationOrder() catch {
-            return;
+            return error.CommandFailed;
         };
         defer allocator.free(compilation_order);
 
@@ -1261,7 +1261,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
             try stderr.writeAll("Type error(s):\n");
             try writeCheckErrors(&checker, stderr, null, false);
             try printMetaWarnings(&checker, stderr);
-            return;
+            return error.CommandFailed;
         }
         try printMetaWarnings(&checker, stderr);
 
@@ -1284,18 +1284,18 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
 
             const interp_ptr = allocator.create(Interpreter) catch {
                 try stderr.writeAll("Failed to initialize interpreter\n");
-                return;
+                return error.CommandFailed;
             };
             interp_ptr.* = Interpreter.init(allocator) catch {
                 allocator.destroy(interp_ptr);
                 try stderr.writeAll("Failed to initialize interpreter\n");
-                return;
+                return error.CommandFailed;
             };
             owned_interpreters.append(allocator, interp_ptr) catch {
                 interp_ptr.deinit();
                 allocator.destroy(interp_ptr);
                 try stderr.writeAll("Failed to allocate interpreter list\n");
-                return;
+                return error.CommandFailed;
             };
 
             // skip_unexecuted=true: skip deps whose interpreters aren't created yet (circular deps)
@@ -1320,7 +1320,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
 
             module_interpreters.put(allocator, mod, interp_ptr) catch {
                 try stderr.writeAll("Failed to register module interpreter\n");
-                return;
+                return error.CommandFailed;
             };
         }
 
@@ -1340,7 +1340,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
         // Get entry module interpreter and call main
         const entry_interp = module_interpreters.get(entry) orelse {
             try stderr.writeAll("Missing entry module interpreter\n");
-            return;
+            return error.CommandFailed;
         };
 
         try executeMainFunction(entry_interp, path, program_args, arena.allocator(), stderr);
@@ -1355,14 +1355,14 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
         try stderr.writeAll("Type error(s):\n");
         try writeCheckErrors(&checker, stderr, source, false);
         try printMetaWarnings(&checker, stderr);
-        return;
+        return error.CommandFailed;
     }
     try printMetaWarnings(&checker, stderr);
 
     // Single-module execution
     var interp = Interpreter.init(allocator) catch {
         try stderr.writeAll("Failed to initialize interpreter\n");
-        return;
+        return error.CommandFailed;
     };
     defer interp.deinit();
 
@@ -5936,7 +5936,7 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
         try getStdErr().writeAll(msg);
-        return;
+        return error.CommandFailed;
     };
     defer allocator.free(source);
 
@@ -5962,7 +5962,7 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
             }) catch continue;
             try stderr.writeAll(err_msg);
         }
-        return;
+        return error.CommandFailed;
     };
 
     // Type check
@@ -5999,7 +5999,7 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
         // Register entry module
         const entry = resolver.resolveEntry(path) catch {
             try stderr.writeAll("Error: could not resolve entry module\n");
-            return;
+            return error.CommandFailed;
         };
         entry.module_ast = module;
         entry.state = .parsed;
@@ -6038,12 +6038,12 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
                 const err_msg = std.fmt.bufPrint(&buf, "Module error: {s}\n", .{err.message}) catch continue;
                 try stderr.writeAll(err_msg);
             }
-            return;
+            return error.CommandFailed;
         }
 
         // Get topological order
         const compilation_order = resolver.getCompilationOrder() catch {
-            return;
+            return error.CommandFailed;
         };
         defer allocator.free(compilation_order);
 
@@ -6080,7 +6080,7 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
         const snippet_source: ?[]const u8 = if (module.imports.len == 0) source else null;
         try writeCheckErrors(&checker, stderr, snippet_source, false);
         try printMetaWarnings(&checker, stderr);
-        return;
+        return error.CommandFailed;
     }
     try printMetaWarnings(&checker, stderr);
 
@@ -6101,7 +6101,7 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
             }) catch continue;
             try stderr.writeAll(err_msg);
         }
-        return;
+        return error.CommandFailed;
     };
     defer {
         function.deinit();
@@ -6111,14 +6111,14 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
     // Run in VM
     var vm = VM.init(allocator) catch {
         try stderr.writeAll("Failed to initialize VM\n");
-        return;
+        return error.CommandFailed;
     };
     defer vm.deinit();
 
     // Set up GC roots and register builtins
     vm.setup() catch {
         try stderr.writeAll("Failed to set up VM\n");
-        return;
+        return error.CommandFailed;
     };
 
     // Set debug mode if requested
@@ -6147,12 +6147,12 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
             defer full_args.deinit(allocator);
             full_args.append(allocator, path) catch {
                 try stderr.writeAll("Failed to allocate args\n");
-                return;
+                return error.CommandFailed;
             };
             for (program_args) |arg| {
                 full_args.append(allocator, arg) catch {
                     try stderr.writeAll("Failed to allocate args\n");
-                    return;
+                    return error.CommandFailed;
                 };
             }
 

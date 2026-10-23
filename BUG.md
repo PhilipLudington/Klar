@@ -1290,7 +1290,9 @@ and a failed ownership check under `check` (`klar check move_probe.kl` prints
 (`src/main.zig`, now a wrapper around `runCli`) turns that error into exit status 1. Every
 failure path of `buildNative`, `checkFile` and the `build`/`check` argument handling in
 `runCli` returns it, including a failed ownership check and `check --partial` with
-diagnostics; `runNativeFileWithOptions` propagates a failed build instead of swallowing it.
+diagnostics; `runNativeFileWithOptions` propagates a failed build instead of swallowing it,
+and the compile and setup failures of `runVmFile` and `runInterpreterFile` (`run --vm`,
+`run --interpret`) return it too.
 The `--scope-at` / `--expected-type-at` queries still exit 0 on a program with type errors,
 since they answer a question about it. Fixed with Bug 77. Exiting 1 on ownership errors
 exposed ownership-checker false positives in four selfhost sources; they are expected
