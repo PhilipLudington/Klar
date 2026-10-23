@@ -4404,6 +4404,12 @@ pub const TypeChecker = struct {
                 if (through_reference and !(struct_method.has_self and
                     struct_method.func_type.function.params.len > 0 and
                     struct_method.func_type.function.params[0] == .reference)) break :found;
+                // A read-only reference cannot reach a method that changes `self`.
+                if (through_reference and !object_type.reference.mutable and
+                    struct_method.func_type.function.params[0].reference.mutable)
+                {
+                    self.addError(.mutability_error, method.span, "cannot call mutating method '{s}' through a read-only reference", .{method.method_name});
+                }
                 // Check if calling a deprecated method
                 meta_validation.checkDeprecatedMethodCall(self, struct_type.name, method.method_name, method.span);
 
