@@ -1,0 +1,10 @@
+// Expected: check-pass
+// Bug 115: a `var` initializer of a Copy type copies, so the source stays usable.
+
+fn main() -> i32 {
+    var a: i32 = 7
+    var b: i32 = a
+    b = b + 1
+    println(a.to_string())
+    return a + b
+}
