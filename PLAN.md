@@ -420,7 +420,10 @@ other (`build.zig.zon` says 0.4.0, `src/version.zig` says 0.5.0).
       2026-03-16). The public v0.5.0 GitHub release body opens with the same stray line;
       fix it when publishing v0.6.0.
 - [ ] Known issues: list every open `BUG.md` entry a native-backend program can hit, one
-      line each, in the release notes.
+      line each, in the release notes. Include Bug 132
+      (`klar check` reports false use-after-move after an early return or a loop
+      reassignment, and exits 1) even though native builds skip the ownership pass
+      (Philip, 2026-10-23; docs/decisions/2026-10-23-bug-132-known-issue-not-cut-set.md).
 - [ ] Performance baseline: run `scripts/run-benchmarks.sh` at the cut, VM and native
       `-O2`, and record each result with the machine, OS, Zig and LLVM versions in
       `docs/benchmarks/v0.6.0.md`, so the trial's numbers have something to compare to.
