@@ -873,9 +873,12 @@ bound variants against `enum_def.variants` unless a wildcard is present.
 
 ---
 
-## [ ] Bug 34: Codegen — `getTypeSize` sizes `char` as 1 byte and omits alignment padding, so enum payload stores overlap
+## [x] Bug 34: Codegen — `getTypeSize` sizes `char` as 1 byte and omits alignment padding, so enum payload stores overlap
 
-**Status:** Open
+**Status:** Fixed
+
+**System:** enum payload layout — `variantPayloadStruct` in `src/codegen/emit.zig` (the
+enum literal's stores, `registerMonomorphizedEnum`, `registerNonGenericEnum`)
 
 **Description:** `getTypeSize` (`src/codegen/emit.zig:38329` at HEAD, `:31565` at `e7b54e7`)
 lists `.char_` with the 1-byte types (`:38333`) while `typeToLLVM` lowers `char` to `i32`
@@ -897,6 +900,22 @@ both read back garbage.
 **Found by:** `/qa-audit --calibrate klar-e7b54e7`, 2026-09-04 — codegen territory,
 CRITICAL + HIGH `[correctness]`; verified by reading at both commits. Fix: return 4 for
 `char_`, align each offset and the total as `layout.zig:177` does.
+
+**Reproduced 2026-10-21:** a multi-element payload cannot be destructured in a match (the
+parser stops at `T::C(c, n)`), so step 1 cannot print both fields. The bug shows in two
+other ways: a `char` payload gets a 1-byte slot, so `Glyph::Ch('x')` reads back as
+16958837 after a by-value copy, and a `Hold(Mixed)` payload with `Mixed { a: i8, b: i64 }`
+gets 9 bytes for a 16-byte struct, so `b` reads back as garbage. Steps 1 and 2's stores
+sit at offset 1 in the IR.
+
+**Fix:** `getTypeSize` is gone. `variantPayloadStruct` builds an unnamed LLVM struct of a
+variant's payload element types (each through `typeToLLVM`, the types the stores use);
+`variantPayloadSize` takes its size from the module's data layout and
+`variantPayloadOffset` each element's offset (`LLVMOffsetOfElement`). The enum literal's
+tuple and struct stores, and both enum registrations' slot sizes, go through them.
+
+**Test:** `test/native/enum_payload_layout.kl` (exit 0 in `scripts/run-native-tests.sh`),
+and the runner's `enum_payload_offsets` IR check on the same file.
 
 ---
 
@@ -3733,3 +3752,95 @@ interpreted program that builds a struct.
 
 **Found by:** /qa-review fix-check on fix/bug-118-string-to-string, 2026-10-20 —
 code-reviewer-a; verified by probe `scratch/sl.kl`.
+
+---
+
+## [ ] Bug 125: A char literal keeps only its first byte — `'\u{4E2D}'` is `'u'` and `'é'` does not parse
+
+**Status:** Open
+**Deferred:** after v0.6.0 — ASCII char literals and the `\n \t \r \\ \' \0` escapes are
+right; not in the cut set Philip chose
+
+**System:** char literal decoding — `Lexer.char` (`src/lexer.zig`), `parseCharLiteral` and
+the `.char_literal` pattern arm (`src/parser.zig`)
+
+**Description:** `parseCharLiteral` reads `text[1]` as the value, or `text[2]` after a
+backslash, so `'\u{4E2D}'` becomes the byte `u` (117) on every backend. `Lexer.char`
+advances one byte for an unescaped character, so a multi-byte UTF-8 character such as `é`
+never reaches the closing quote and the token is `.invalid`. `docs/types/primitives.md`
+shows `let emoji: char = '🎉'`. The pattern-literal arm (`src/parser.zig`, `.char = text[1]`)
+has the same one-byte read.
+
+**Steps to reproduce:**
+1. `fn main() -> i32 { let c: char = '\u{4E2D}'  println(c.as#[i32].to_string())  return 0 }`
+   (`scratch/u3.kl`), run natively, `--vm` and `--interpret`.
+2. `fn main() -> i32 { let f: char = 'é'  return 0 }` (`scratch/ch.kl`), `klar run` it.
+
+**Expected:** Step 1 prints `20013`. Step 2 runs and exits 0.
+
+**Actual:** Step 1 prints `117` on all three backends. Step 2 stops with `Parse error:
+error.UnexpectedToken  3:19: expected expression` (macOS arm64, 2026-10-21 at `b1844df`).
+
+**Found by:** fix/bug-34-enum-payload-layout, 2026-10-21, while writing a wide-`char`
+payload test; verified by probes `scratch/u3.kl` and `scratch/ch.kl`.
+
+---
+
+## [ ] Bug 126: Enum payload bytes start at offset 1, so the payload's aligned stores and loads are misaligned
+
+**Status:** Open
+**Deferred:** after v0.6.0 — arm64 and x86_64 tolerate the misaligned accesses, and the
+values read back right since Bug 34's fix
+
+**System:** enum payload layout — `variantPayloadStruct` in `src/codegen/emit.zig` (the
+enum literal's stores, `registerMonomorphizedEnum`, `registerNonGenericEnum`)
+
+**Description:** Both enum registrations build `{ i8 tag, [N x i8] payload }`. The byte
+array has alignment 1, so the payload starts at offset 1 of the enum, while the enum
+literal's stores and `bindPatternVariables`' loads through `extractEnumPayload` carry the
+element type's ABI alignment (`align 4`, `align 8`). An `i64` payload element is stored
+`align 8` at an address that is 1 mod 8: undefined behavior in LLVM, which the optimizer
+may exploit, and a fault on a target without unaligned access. Bug 34's fix aligns each
+element's offset *within* the payload, not the payload itself.
+
+**Steps to reproduce:**
+1. `klar build test/native/enum_payload_layout.kl --emit-llvm`.
+2. Read the `Pair::V(7, 99)` store: `%enum.payload.ptr` is field 1 of `{ i8, [16 x i8] }`.
+
+**Expected:** The payload field starts at an offset that is a multiple of the largest
+payload element alignment (8 here), e.g. an aligned payload field type.
+
+**Actual:** `store i64 99, ptr %enum.payload.elem…, align 8` at enum offset 1 + 8 = 9.
+
+**Found by:** fix/bug-34-enum-payload-layout, 2026-10-21, reading the IR of Bug 34's test.
+
+---
+
+## [ ] Bug 127: A generic enum over a non-generic enum gets an 8-byte payload slot, so its literal writes past the enum
+
+**Status:** Open
+**Deferred:** after v0.6.0 — not made worse by Bug 34's fix (the old `getTypeSize` also gave
+8 for an enum), and no wrong value has been observed yet, only the out-of-bounds store in
+the IR
+
+**System:** enum payload layout — `variantPayloadStruct` in `src/codegen/emit.zig` (the
+enum literal's stores, `registerMonomorphizedEnum`, `registerNonGenericEnum`)
+
+**Description:** `src/main.zig:3322` registers monomorphized enums before non-generic
+ones (`:3331`). When `registerMonomorphizedEnum` sizes `Box#[Inner]`'s payload,
+`typeToLLVM` for `Inner` is not registered yet and falls back to `ptr` (8 bytes), so the
+enum is `{ i8, [8 x i8] }`. The literal `Box#[Inner]::V(Inner::A(5))` then stores the
+whole 9-byte `Inner` at offset 1: one byte past the 9-byte alloca.
+
+**Steps to reproduce:**
+1. `enum Inner { A(i64), B }`, `enum Box#[T] { V(T), E }`, and in `main`
+   `let b: Box#[Inner] = Box#[Inner]::V(Inner::A(5.as#[i64]))`.
+2. `klar build <file> --emit-llvm` and read the store into `%enum.payload.elem…`.
+
+**Expected:** The payload slot is `Inner`'s size (9 bytes or more), so the store fits.
+
+**Actual:** `{ i8, [8 x i8] }` with `store { i8, [8 x i8] } %enum.result, ptr
+%enum.payload.elem4, align 1`: 9 bytes written at offset 1 of a 9-byte enum.
+
+**Found by:** /qa-review on fix/bug-34-enum-payload-layout, 2026-10-21 — code-reviewer
+PRE-EXISTING, probe `scratch/rv3.kl` / `rv3.ll:12-21`; reviewer's evidence, not re-read.

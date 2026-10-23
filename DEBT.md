@@ -922,3 +922,74 @@ of calling `strlen`, and promote this entry to BUG.md.
 
 **Found by:** /qa-review on fix/bug-118-string-to-string, 2026-10-20 — code-reviewer-a
 WATCH, promoted on recurrence; reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 43: Generic enum payload slots and struct-shaped variant stores are unpinned
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/codegen/emit.zig` `registerMonomorphizedEnum` (~38050), the enum literal's
+`.struct_` store loop (~10962-10976)
+**Due when:** touching `src/codegen/emit.zig` `registerMonomorphizedEnum` · touching
+`test/native/enum_payload_layout.kl`
+
+**Description:** Bug 34's test pins the non-generic path and tuple payloads only. No
+native test builds a generic enum with a `char` or padded-struct payload, and none
+constructs a struct-shaped variant (`R { a: i8, b: i64 }`), so those two copies of the
+sizing path could regress silently.
+
+**Payment:** In `test/native/enum_payload_layout.kl`, add `enum Boxed#[T] { B(T), E }` as
+`Boxed#[char]` (`'x'`) and `Boxed#[Mixed]`, each read back through a by-value argument
+(exits 3, 4); add `enum Rec { R { a: i8, b: i64 } }` and extend the runner's
+`enum_payload_offsets` check to require `i64 <v> 8` on an `%enum.payload.field` store.
+
+**Found by:** /qa-review on fix/bug-34-enum-payload-layout, 2026-10-21 — test-checker
+GAPS; reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 44: The native runner's IR checks depend on exact value names and GEP spelling
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `scripts/run-native-tests.sh` (the `enum_payload_offsets` block, ~152-158, and
+the Bug 73 / Bug 106 IR checks beside it)
+**Due when:** touching `scripts/run-native-tests.sh` · when the emitter renames
+`%enum.payload.*` values
+
+**Description:** The IR checks grep `%enum.payload.(elem|field)N = getelementptr …` and
+split `store <ty> <val>,` by field position. A rename or a different GEP form turns them
+red without a real regression. They fail loudly, so this is brittleness, not a hidden
+pass; the WATCH note has recurred on this file across 6 branches.
+
+**Payment:** Move the IR checks into `scripts/native-ir-checks.sh` (also the File Growth
+seam for this file) with one helper that matches a store's type, value and offset by
+pattern rather than field position, and a self-test on a fixed IR snippet.
+
+**Found by:** /qa-review on fix/bug-34-enum-payload-layout, 2026-10-21 — code-reviewer and
+test-checker WATCH, promoted on recurrence; reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 45: `variantPayloadStruct`'s `void` element and the literal's equal-length loops are unchecked
+
+**Status:** Open
+**Kind:** latent-defect
+**Where:** `src/codegen/emit.zig` `variantPayloadStruct` (~38206-38216), `emitEnumLiteral`
+(~10942, ~10963)
+**Due when:** touching `src/codegen/emit.zig` `variantPayloadStruct`
+
+**Description:** A `void` payload element becomes an empty struct (size 0), but the
+literal still emits and stores that element. The literal's `for (lit.payload,
+tuple_types, 0..)` loops assume the checker already matched the arity. No constructible
+input reaches either case yet; the `[correctness]` WATCH note has recurred on this file
+across 13 branches.
+
+**Payment:** Try a variant whose payload element is a `void`-returning call, and a
+literal with the wrong payload count, through `klar build`. If either reaches codegen,
+skip the store for a zero-size element and assert the arity, and promote this entry to
+BUG.md.
+
+**Found by:** /qa-review on fix/bug-34-enum-payload-layout, 2026-10-21 — code-reviewer and
+test-checker WATCH, promoted on recurrence; reviewer's reading, not re-verified.
