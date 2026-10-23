@@ -1,0 +1,26 @@
+// Array and string methods called in a loop keep their temporaries in the
+// entry block (Bug 5). The runner reads this file's IR alongside
+// loop_stack_temporaries.kl: every `alloca` must sit in its function's first
+// block, including those of `first`, `last`, `contains` and the string helpers.
+
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3]
+    let s: string = "  Hello  "
+    var total: i32 = 0
+    for k: i32 in 0..1000 {
+        let f: ?i32 = arr.first()
+        let l: ?i32 = arr.last()
+        if arr.contains(2) {
+            total = total + (f ?? 0) + (l ?? 0)
+        }
+        let t: string = s.trim()
+        let u: string = t.to_uppercase()
+        let w: string = t.to_lowercase()
+        let cs: [char] = w.chars()
+        total = total + cs.len() + u.len()
+    }
+    if total != 14000 {
+        return 1
+    }
+    return 0
+}

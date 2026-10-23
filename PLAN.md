@@ -131,8 +131,10 @@ in user programs first, then checker/contract correctness, then tooling, then de
       stores overlap (`src/codegen/emit.zig:38333`, `:38342`). (qa-audit 2026-09-04)
       (completed 2026-10-21: payload slot sizes and offsets come from the data layout of
       the payload's LLVM types)
-- [ ] Bug 5 — builtin emitters alloca at the call site; `fs_stat`/`process_run` in a loop
+- [x] Bug 5 — builtin emitters alloca at the call site; `fs_stat`/`process_run` in a loop
       grow the stack every iteration (`emit.zig`); hoist to the entry block. (qa-review 2026-09-03)
+      (completed 2026-10-22: every alloca in `emit.zig`, not only the builtins', goes
+      through `buildEntryBlockAlloca`, which hoists into the insert block's function)
 - [ ] Bug 63 — `let x = 1; x = 2` passes `klar check` and compiles natively (`src/checker/expressions.zig:392`
       never reads `sym.mutable`; the statement-level check at `statements.zig:78` is unreachable).
       Check mutability in the binary-assign path; failing test first. (qa-audit 2026-09-05)

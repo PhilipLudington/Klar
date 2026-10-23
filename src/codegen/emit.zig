@@ -511,21 +511,24 @@ pub const Emitter = struct {
     /// Create an alloca in the function's entry block.
     /// This ensures allocas don't grow the stack when placed in loops.
     /// LLVM's mem2reg optimization only works on allocas in the entry block.
+    /// Every alloca the emitter makes goes through here (Bug 5). The function is
+    /// the one being built into, read from the insert block, since helper bodies
+    /// (string, list and runtime shims) are built without setting current_function.
     fn buildEntryBlockAlloca(self: *Emitter, ty: llvm.TypeRef, name: [:0]const u8) llvm.ValueRef {
-        const func = self.current_function orelse {
-            // Fallback: create alloca at current position if no function context
+        // Save the current insert point
+        const current_block = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        if (current_block == null) {
+            // Fallback: create alloca at current position if no block is open
             return self.builder.buildAlloca(ty, name);
-        };
+        }
 
-        // Get the entry block of the current function
-        const entry_block = llvm.c.LLVMGetFirstBasicBlock(func);
+        // Get the entry block of the function being built
+        const func = llvm.c.LLVMGetBasicBlockParent(current_block);
+        const entry_block = if (func != null) llvm.c.LLVMGetFirstBasicBlock(func) else null;
         if (entry_block == null) {
             // Fallback: create alloca at current position if no entry block
             return self.builder.buildAlloca(ty, name);
         }
-
-        // Save the current insert point
-        const current_block = llvm.c.LLVMGetInsertBlock(self.builder.ref);
 
         // Position at the start of the entry block (before any instructions)
         const first_instr = llvm.c.LLVMGetFirstInstruction(entry_block);
@@ -539,9 +542,7 @@ pub const Emitter = struct {
         const alloca = self.builder.buildAlloca(ty, name);
 
         // Restore the original insert point
-        if (current_block != null) {
-            self.builder.positionAtEnd(current_block);
-        }
+        self.builder.positionAtEnd(current_block);
 
         return alloca;
     }
@@ -973,7 +974,7 @@ pub const Emitter = struct {
             // WSADATA is 408 bytes on 64-bit Windows
             const wsadata_size: u64 = 408;
             const wsadata_type = llvm.c.LLVMArrayType2(llvm.Types.int8(self.ctx), wsadata_size);
-            const wsadata_alloca = self.builder.buildAlloca(wsadata_type, "wsadata");
+            const wsadata_alloca = self.buildEntryBlockAlloca(wsadata_type, "wsadata");
 
             // Declare WSAStartup(WORD wVersionRequired, LPWSADATA lpWSAData) -> int
             const wsa_fn = blk: {
@@ -1090,7 +1091,7 @@ pub const Emitter = struct {
         );
 
         // Initialize loop counter
-        const i_ptr = self.builder.buildAlloca(i64_type, "i");
+        const i_ptr = self.buildEntryBlockAlloca(i64_type, "i");
         _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), i_ptr);
         _ = self.builder.buildBr(loop_block);
 
@@ -1190,7 +1191,7 @@ pub const Emitter = struct {
         llvm.c.LLVMAddIncoming(result_len_phi, &loop_values[1], &loop_blocks, 1);
 
         // Build slice struct
-        const result_alloca = self.builder.buildAlloca(slice_type, "result");
+        const result_alloca = self.buildEntryBlockAlloca(slice_type, "result");
         const slice_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, result_alloca, 0, "slice_ptr");
         _ = self.builder.buildStore(result_ptr_phi, slice_ptr_field);
         const slice_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, result_alloca, 1, "slice_len");
@@ -1235,7 +1236,7 @@ pub const Emitter = struct {
 
         // Check block: initialize loop
         self.builder.positionAtEnd(check_block);
-        const i_ptr = self.builder.buildAlloca(i64_type, "i");
+        const i_ptr = self.buildEntryBlockAlloca(i64_type, "i");
         _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), i_ptr);
         _ = self.builder.buildBr(loop_block);
 
@@ -2058,7 +2059,7 @@ pub const Emitter = struct {
                 const param_name = self.allocator.dupeZ(u8, param.name) catch return EmitError.OutOfMemory;
                 defer self.allocator.free(param_name);
 
-                const alloca = self.builder.buildAlloca(param_ty, param_name);
+                const alloca = self.buildEntryBlockAlloca(param_ty, param_name);
                 _ = self.builder.buildStore(param_value, alloca);
 
                 // Determine if parameter is signed
@@ -2379,7 +2380,7 @@ pub const Emitter = struct {
             // Reconstruct the slice struct from the two separate parameters.
             const alloca = if (is_main_with_args and param_type == .slice) blk: {
                 const slice_type = self.getSliceStructType();
-                const a = self.builder.buildAlloca(slice_type, param_name);
+                const a = self.buildEntryBlockAlloca(slice_type, param_name);
                 const ptr_val = llvm.getParam(function, llvm_param_idx);
                 const len_val = llvm.getParam(function, llvm_param_idx + 1);
                 const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, a, 0, "args.ptr");
@@ -3146,7 +3147,7 @@ pub const Emitter = struct {
         // Allocate loop variable
         const var_name = self.allocator.dupeZ(u8, binding_name) catch return EmitError.OutOfMemory;
         defer self.allocator.free(var_name);
-        const iter_alloca = self.builder.buildAlloca(iter_ty, var_name);
+        const iter_alloca = self.buildEntryBlockAlloca(iter_ty, var_name);
         _ = self.builder.buildStore(start_val, iter_alloca);
 
         // Add loop variable to scope
@@ -3255,7 +3256,7 @@ pub const Emitter = struct {
         // Allocate loop variable (element from iterator)
         const var_name = self.allocator.dupeZ(u8, binding_name) catch return EmitError.OutOfMemory;
         defer self.allocator.free(var_name);
-        const elem_alloca = self.builder.buildAlloca(i32_type, var_name);
+        const elem_alloca = self.buildEntryBlockAlloca(i32_type, var_name);
 
         // Add loop variable to scope
         self.named_values.put(binding_name, .{
@@ -3285,7 +3286,7 @@ pub const Emitter = struct {
         const maybe_val = try self.emitRangeNext(range_ptr);
 
         // Extract tag (is_some)
-        const tag_alloca = self.builder.buildAlloca(opt_ty, "maybe.tmp");
+        const tag_alloca = self.buildEntryBlockAlloca(opt_ty, "maybe.tmp");
         _ = self.builder.buildStore(maybe_val, tag_alloca);
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_ty, tag_alloca, 0, "tag.ptr");
         const is_some = self.builder.buildLoad(i1_type, tag_ptr, "is_some");
@@ -3340,7 +3341,7 @@ pub const Emitter = struct {
             .range => {
                 // Emit the range and store it in an alloca
                 const range_val = try self.emitExpr(expr);
-                const alloca = self.builder.buildAlloca(range_ty, "range.iter");
+                const alloca = self.buildEntryBlockAlloca(range_ty, "range.iter");
                 _ = self.builder.buildStore(range_val, alloca);
                 return alloca;
             },
@@ -3385,13 +3386,13 @@ pub const Emitter = struct {
         const i32_type = llvm.Types.int32(self.ctx);
 
         // Allocate index counter
-        const idx_alloca = self.builder.buildAlloca(i32_type, "for.idx");
+        const idx_alloca = self.buildEntryBlockAlloca(i32_type, "for.idx");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
 
         // Allocate loop variable (element binding)
         const var_name = self.allocator.dupeZ(u8, binding_name) catch return EmitError.OutOfMemory;
         defer self.allocator.free(var_name);
-        const elem_alloca = self.builder.buildAlloca(elem_type, var_name);
+        const elem_alloca = self.buildEntryBlockAlloca(elem_type, var_name);
 
         // Determine if element type is signed (for integer types)
         const is_signed = self.isSignedType(elem_type);
@@ -3491,13 +3492,13 @@ pub const Emitter = struct {
         const slice_type = self.getSliceStructType();
 
         // Allocate index counter (use i64 to match slice length type)
-        const idx_alloca = self.builder.buildAlloca(i64_type, "forslice.idx");
+        const idx_alloca = self.buildEntryBlockAlloca(i64_type, "forslice.idx");
         _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), idx_alloca);
 
         // Allocate loop variable (element binding)
         const var_name = self.allocator.dupeZ(u8, binding_name) catch return EmitError.OutOfMemory;
         defer self.allocator.free(var_name);
-        const elem_alloca = self.builder.buildAlloca(element_llvm_type, var_name);
+        const elem_alloca = self.buildEntryBlockAlloca(element_llvm_type, var_name);
 
         // Determine if element type is signed (for integer types)
         const is_signed = self.isSignedType(element_llvm_type);
@@ -3601,13 +3602,13 @@ pub const Emitter = struct {
         const header_type = self.getListHeaderType();
 
         // Allocate index counter
-        const idx_alloca = self.builder.buildAlloca(i32_type, "forlist.idx");
+        const idx_alloca = self.buildEntryBlockAlloca(i32_type, "forlist.idx");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
 
         // Allocate loop variable (element binding)
         const var_name = self.allocator.dupeZ(u8, binding_name) catch return EmitError.OutOfMemory;
         defer self.allocator.free(var_name);
-        const elem_alloca = self.builder.buildAlloca(element_llvm_type, var_name);
+        const elem_alloca = self.buildEntryBlockAlloca(element_llvm_type, var_name);
 
         // Determine if element type is signed (for integer types)
         const is_signed = self.isSignedType(element_llvm_type);
@@ -3797,13 +3798,13 @@ pub const Emitter = struct {
         const entry_type = self.getSetEntryType(element_llvm_type);
 
         // Allocate index counter (iterates over capacity, not len)
-        const idx_alloca = self.builder.buildAlloca(i32_type, "forset.idx");
+        const idx_alloca = self.buildEntryBlockAlloca(i32_type, "forset.idx");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
 
         // Allocate loop variable (element binding)
         const var_name = self.allocator.dupeZ(u8, binding_name) catch return EmitError.OutOfMemory;
         defer self.allocator.free(var_name);
-        const elem_alloca = self.builder.buildAlloca(element_llvm_type, var_name);
+        const elem_alloca = self.buildEntryBlockAlloca(element_llvm_type, var_name);
 
         // Determine if element type is signed (for integer types)
         const is_signed = self.isSignedType(element_llvm_type);
@@ -4016,17 +4017,17 @@ pub const Emitter = struct {
         const entry_type = self.getMapEntryType(key_llvm_type, value_llvm_type);
 
         // Allocate index counter (iterates over capacity, not len)
-        const idx_alloca = self.builder.buildAlloca(i32_type, "formap.idx");
+        const idx_alloca = self.buildEntryBlockAlloca(i32_type, "formap.idx");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
 
         // Allocate loop variables (key and value bindings)
         const key_var_name = self.allocator.dupeZ(u8, key_binding) catch return EmitError.OutOfMemory;
         defer self.allocator.free(key_var_name);
-        const key_alloca = self.builder.buildAlloca(key_llvm_type, key_var_name);
+        const key_alloca = self.buildEntryBlockAlloca(key_llvm_type, key_var_name);
 
         const value_var_name = self.allocator.dupeZ(u8, value_binding) catch return EmitError.OutOfMemory;
         defer self.allocator.free(value_var_name);
-        const value_alloca = self.builder.buildAlloca(value_llvm_type, value_var_name);
+        const value_alloca = self.buildEntryBlockAlloca(value_llvm_type, value_var_name);
 
         // Determine if types are signed
         const key_is_signed = self.isSignedType(key_llvm_type);
@@ -4173,7 +4174,7 @@ pub const Emitter = struct {
                 const array_val = try self.emitExpr(expr);
                 const array_type = llvm.typeOf(array_val);
                 const array_len = arr.elements.len;
-                const alloca = self.builder.buildAlloca(array_type, "arr.iter");
+                const alloca = self.buildEntryBlockAlloca(array_type, "arr.iter");
                 _ = self.builder.buildStore(array_val, alloca);
                 return ArrayInfo{
                     .ptr = alloca,
@@ -4453,7 +4454,7 @@ pub const Emitter = struct {
         const range_ty = llvm.Types.struct_(self.ctx, &fields, false);
 
         // Allocate space for the range struct
-        const range_alloca = self.builder.buildAlloca(range_ty, "range.tmp");
+        const range_alloca = self.buildEntryBlockAlloca(range_ty, "range.tmp");
 
         // Store start
         const start_gep = llvm.c.LLVMBuildStructGEP2(self.builder.ref, range_ty, range_alloca, 0, "range.start.ptr");
@@ -6064,7 +6065,7 @@ pub const Emitter = struct {
                     // Check if this function uses sret
                     if (self.sret_functions.get(mangled_name)) |sret_return_type| {
                         // Sret call: allocate space, prepend pointer, call, load result
-                        const sret_alloca = self.builder.buildAlloca(sret_return_type, "sret.tmp");
+                        const sret_alloca = self.buildEntryBlockAlloca(sret_return_type, "sret.tmp");
 
                         var args = std.ArrayListUnmanaged(llvm.ValueRef).empty;
                         defer args.deinit(self.allocator);
@@ -6208,7 +6209,7 @@ pub const Emitter = struct {
                 // Check if this function uses sret (use effective name which may be prefixed)
                 if (self.sret_functions.get(effective_lookup)) |sret_return_type| {
                     // Sret call: allocate space, prepend pointer, call, load result
-                    const sret_alloca = self.builder.buildAlloca(sret_return_type, "sret.tmp");
+                    const sret_alloca = self.buildEntryBlockAlloca(sret_return_type, "sret.tmp");
 
                     var args = std.ArrayListUnmanaged(llvm.ValueRef).empty;
                     defer args.deinit(self.allocator);
@@ -6280,7 +6281,7 @@ pub const Emitter = struct {
                                     if (i < lowered_params.len) {
                                         if (lowered_params[i]) |lowered| {
                                             // Convert struct to integer by storing and loading as int
-                                            const tmp = self.builder.buildAlloca(lowered.struct_type, "abi.param.tmp");
+                                            const tmp = self.buildEntryBlockAlloca(lowered.struct_type, "abi.param.tmp");
                                             _ = self.builder.buildStore(arg_value, tmp);
                                             const int_val = self.builder.buildLoad(lowered.int_type, tmp, "abi.param.int");
                                             args.append(self.allocator, int_val) catch return EmitError.OutOfMemory;
@@ -6297,7 +6298,7 @@ pub const Emitter = struct {
 
                         // If return was ABI-lowered, convert integer back to struct
                         if (extern_info.abi_lowered_return_type) |struct_type| {
-                            const tmp_alloca = self.builder.buildAlloca(struct_type, "abi.struct.tmp");
+                            const tmp_alloca = self.buildEntryBlockAlloca(struct_type, "abi.struct.tmp");
                             _ = self.builder.buildStore(call_result, tmp_alloca);
                             return self.builder.buildLoad(struct_type, tmp_alloca, "abi.struct");
                         }
@@ -6430,7 +6431,7 @@ pub const Emitter = struct {
         const closure_struct_type = self.getClosureStructType();
 
         // Allocate space to store the closure value (since we have it by value)
-        const closure_alloca = self.builder.buildAlloca(closure_struct_type, "closure.tmp");
+        const closure_alloca = self.buildEntryBlockAlloca(closure_struct_type, "closure.tmp");
         _ = self.builder.buildStore(closure_value, closure_alloca);
 
         // Load function pointer
@@ -6935,7 +6936,7 @@ pub const Emitter = struct {
 
                 // Create alloca for the bound variable
                 const var_type = llvm.typeOf(subject);
-                const alloca = self.builder.buildAlloca(var_type, name_z);
+                const alloca = self.buildEntryBlockAlloca(var_type, name_z);
                 _ = self.builder.buildStore(subject, alloca);
 
                 // Build LocalValue with collection type flags based on expected_type
@@ -7192,7 +7193,7 @@ pub const Emitter = struct {
         if (type_kind == llvm.c.LLVMStructTypeKind) {
             // Value type: extract payload (field 1) - this gives us the byte array
             // For value types, we need to allocate first to get a pointer
-            const alloca = self.builder.buildAlloca(val_type, "enum.tmp");
+            const alloca = self.buildEntryBlockAlloca(val_type, "enum.tmp");
             _ = self.builder.buildStore(enum_val, alloca);
 
             // GEP to payload field (index 1, then index 0 for start of array)
@@ -9756,7 +9757,7 @@ pub const Emitter = struct {
             // Allocate stack space for the struct
             const type_name_z = self.allocator.dupeZ(u8, type_name) catch return EmitError.OutOfMemory;
             defer self.allocator.free(type_name_z);
-            const alloca = self.builder.buildAlloca(struct_type, type_name_z);
+            const alloca = self.buildEntryBlockAlloca(struct_type, type_name_z);
 
             // Store each field value by looking up field name -> index
             for (lit.fields) |field_init| {
@@ -9829,7 +9830,7 @@ pub const Emitter = struct {
         // Allocate stack space for the struct
         const type_name_z = self.allocator.dupeZ(u8, type_name) catch return EmitError.OutOfMemory;
         defer self.allocator.free(type_name_z);
-        const alloca = self.builder.buildAlloca(struct_type, type_name_z);
+        const alloca = self.buildEntryBlockAlloca(struct_type, type_name_z);
 
         // Store each field value using GEP
         for (field_values.items, 0..) |value, i| {
@@ -9867,7 +9868,7 @@ pub const Emitter = struct {
         const arr_type = llvm.Types.array(elem_type, @intCast(arr.elements.len));
 
         // Allocate stack space for the array
-        const alloca = self.builder.buildAlloca(arr_type, "arr.tmp");
+        const alloca = self.buildEntryBlockAlloca(arr_type, "arr.tmp");
 
         // Store each element using GEP
         for (element_values.items, 0..) |value, i| {
@@ -9916,7 +9917,7 @@ pub const Emitter = struct {
         const tuple_type = llvm.Types.struct_(self.ctx, element_types.items, false);
 
         // Allocate stack space for the tuple
-        const alloca = self.builder.buildAlloca(tuple_type, "tup.tmp");
+        const alloca = self.buildEntryBlockAlloca(tuple_type, "tup.tmp");
 
         // Store each element using GEP
         for (element_values.items, 0..) |value, i| {
@@ -9992,7 +9993,7 @@ pub const Emitter = struct {
 
         if (obj_type_kind == llvm.c.LLVMStructTypeKind) {
             // Object is a struct value - need to store to temp first for GEP
-            const alloca = self.builder.buildAlloca(obj_type, "obj.tmp");
+            const alloca = self.buildEntryBlockAlloca(obj_type, "obj.tmp");
             _ = self.builder.buildStore(obj, alloca);
 
             if (field_index) |idx| {
@@ -10159,7 +10160,7 @@ pub const Emitter = struct {
 
                                     // Load the list value, store to a properly-typed temp alloca
                                     const list_val = self.builder.buildLoad(field_llvm_type, field_ptr, "list.val");
-                                    const list_alloca = self.builder.buildAlloca(fb_list_type, "list.tmp");
+                                    const list_alloca = self.buildEntryBlockAlloca(fb_list_type, "list.tmp");
                                     _ = self.builder.buildStore(list_val, list_alloca);
 
                                     // Dereference header and load len
@@ -10200,7 +10201,7 @@ pub const Emitter = struct {
             const index_i64 = try self.emitCheckedIndex(index_val, self.isExprSigned(idx.index), len_val, array_bounds_labels);
 
             // Array access - store to temp for GEP (needed for computed array expressions)
-            const alloca = self.builder.buildAlloca(obj_type, "arr.tmp");
+            const alloca = self.buildEntryBlockAlloca(obj_type, "arr.tmp");
             _ = self.builder.buildStore(obj, alloca);
 
             // GEP with the index
@@ -10240,7 +10241,7 @@ pub const Emitter = struct {
                 }
 
                 // Verified slice struct { ptr, i64 } - store to temp and do slice indexing
-                const slice_alloca = self.builder.buildAlloca(obj_type, "slice.tmp");
+                const slice_alloca = self.buildEntryBlockAlloca(obj_type, "slice.tmp");
                 _ = self.builder.buildStore(obj, slice_alloca);
 
                 const i64_type = llvm.Types.int64(self.ctx);
@@ -10292,7 +10293,7 @@ pub const Emitter = struct {
                         const i8_type = llvm.Types.int8(self.ctx);
 
                         // Store to temp alloca for deref
-                        const list_alloca = self.builder.buildAlloca(fb_list_type, "list.tmp");
+                        const list_alloca = self.buildEntryBlockAlloca(fb_list_type, "list.tmp");
                         _ = self.builder.buildStore(obj, list_alloca);
 
                         // Dereference header and load len
@@ -10411,7 +10412,7 @@ pub const Emitter = struct {
         }
 
         // Store the optional to a temp for GEP access
-        const opt_alloca = self.builder.buildAlloca(operand_type, "opt.tmp");
+        const opt_alloca = self.buildEntryBlockAlloca(operand_type, "opt.tmp");
         _ = self.builder.buildStore(operand, opt_alloca);
 
         // Get the tag (index 0)
@@ -10547,7 +10548,7 @@ pub const Emitter = struct {
         }
 
         // Store optional to temp for GEP
-        const opt_alloca = self.builder.buildAlloca(lhs_type, "coalesce.opt");
+        const opt_alloca = self.buildEntryBlockAlloca(lhs_type, "coalesce.opt");
         _ = self.builder.buildStore(lhs, opt_alloca);
 
         // Extract tag
@@ -10607,7 +10608,7 @@ pub const Emitter = struct {
         const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
 
         // Allocate and populate
-        const opt_alloca = self.builder.buildAlloca(opt_type, "some.tmp");
+        const opt_alloca = self.buildEntryBlockAlloca(opt_type, "some.tmp");
 
         // Set tag to 1 (Some)
         var tag_indices = [_]llvm.ValueRef{
@@ -10632,7 +10633,7 @@ pub const Emitter = struct {
     /// Create an optional None value of the given optional type.
     fn emitNone(self: *Emitter, opt_type: llvm.TypeRef) llvm.ValueRef {
         // Allocate and zero-initialize (avoids UB from loading uninitialized value field)
-        const opt_alloca = self.builder.buildAlloca(opt_type, "none.tmp");
+        const opt_alloca = self.buildEntryBlockAlloca(opt_type, "none.tmp");
         _ = self.builder.buildStore(llvm.Const.null_(opt_type), opt_alloca);
 
         // Set tag to 0 (None) — redundant after zero-init but explicit
@@ -10657,7 +10658,7 @@ pub const Emitter = struct {
         const result_type = llvm.Types.struct_(self.ctx, &result_fields, false);
 
         // Allocate and zero-initialize (avoids UB from loading uninitialized err field)
-        const result_alloca = self.builder.buildAlloca(result_type, "ok.tmp");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "ok.tmp");
         _ = self.builder.buildStore(llvm.Const.null_(result_type), result_alloca);
 
         // Set tag to 1 (Ok)
@@ -10690,7 +10691,7 @@ pub const Emitter = struct {
         const result_type = llvm.Types.struct_(self.ctx, &result_fields, false);
 
         // Allocate and zero-initialize (avoids UB from loading uninitialized ok field)
-        const result_alloca = self.builder.buildAlloca(result_type, "err.tmp");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "err.tmp");
         _ = self.builder.buildStore(llvm.Const.null_(result_type), result_alloca);
 
         // Set tag to 0 (Err)
@@ -10912,7 +10913,7 @@ pub const Emitter = struct {
         const enum_type = enum_info.llvm_type;
 
         // Allocate the enum value
-        const enum_alloca = self.builder.buildAlloca(enum_type, "enum.tmp");
+        const enum_alloca = self.buildEntryBlockAlloca(enum_type, "enum.tmp");
 
         // Determine tag type (i8 for small enums, i16 for larger)
         const tag_type = llvm.Types.int8(self.ctx); // Assume small enums for now
@@ -11161,13 +11162,13 @@ pub const Emitter = struct {
                     break :blk local.value; // This is the alloca pointer
                 }
                 // Identifier not found in named_values - store to temp alloca
-                const tmp_alloca = self.builder.buildAlloca(object_type, "arr.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(object_type, "arr.tmp");
                 _ = self.builder.buildStore(object, tmp_alloca);
                 break :blk tmp_alloca;
             } else blk: {
                 // Non-identifier object (e.g., field access like `lexer.chars`)
                 // Store the slice/array value to a temporary alloca for GEP access
-                const tmp_alloca = self.builder.buildAlloca(object_type, "arr.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(object_type, "arr.tmp");
                 _ = self.builder.buildStore(object, tmp_alloca);
                 break :blk tmp_alloca;
             };
@@ -11207,13 +11208,13 @@ pub const Emitter = struct {
                 }
                 const obj_val = try self.emitExpr(method.object);
                 const list_type = self.getListStructType();
-                const tmp_alloca = self.builder.buildAlloca(list_type, "list.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(list_type, "list.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             } else blk: {
                 const obj_val = try self.emitExpr(method.object);
                 const list_type = self.getListStructType();
-                const tmp_alloca = self.builder.buildAlloca(list_type, "list.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(list_type, "list.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             };
@@ -11282,7 +11283,7 @@ pub const Emitter = struct {
                 // Identifier not found in named_values, fall through to emit
                 const obj_val = try self.emitExpr(method.object);
                 const string_type = self.getStringStructType();
-                const tmp_alloca = self.builder.buildAlloca(string_type, "str.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(string_type, "str.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             } else blk: {
@@ -11290,7 +11291,7 @@ pub const Emitter = struct {
                 // Emit the expression and store to a temporary alloca
                 const obj_val = try self.emitExpr(method.object);
                 const string_type = self.getStringStructType();
-                const tmp_alloca = self.builder.buildAlloca(string_type, "str.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(string_type, "str.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             };
@@ -11327,13 +11328,13 @@ pub const Emitter = struct {
                         // Identifier not found in named_values, fall through to emit
                         const other_val = try self.emitExpr(method.args[0]);
                         const string_type = self.getStringStructType();
-                        const other_tmp = self.builder.buildAlloca(string_type, "str.arg.tmp");
+                        const other_tmp = self.buildEntryBlockAlloca(string_type, "str.arg.tmp");
                         _ = self.builder.buildStore(other_val, other_tmp);
                         break :other_blk other_tmp;
                     } else other_blk: {
                         const other_val = try self.emitExpr(method.args[0]);
                         const string_type = self.getStringStructType();
-                        const other_tmp = self.builder.buildAlloca(string_type, "str.arg.tmp");
+                        const other_tmp = self.buildEntryBlockAlloca(string_type, "str.arg.tmp");
                         _ = self.builder.buildStore(other_val, other_tmp);
                         break :other_blk other_tmp;
                     };
@@ -11874,7 +11875,7 @@ pub const Emitter = struct {
                 }
                 const obj_val = try self.emitExpr(method.object);
                 const list_type = self.getListStructType();
-                const tmp_alloca = self.builder.buildAlloca(list_type, "list.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(list_type, "list.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             } else if (method.object == .field) blk: {
@@ -11907,13 +11908,13 @@ pub const Emitter = struct {
                 // Fallback: emit and store to temp (read-only methods only)
                 const obj_val = try self.emitExpr(method.object);
                 const list_type = self.getListStructType();
-                const tmp_alloca = self.builder.buildAlloca(list_type, "list.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(list_type, "list.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             } else blk: {
                 const obj_val = try self.emitExpr(method.object);
                 const list_type = self.getListStructType();
-                const tmp_alloca = self.builder.buildAlloca(list_type, "list.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(list_type, "list.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             };
@@ -11972,7 +11973,7 @@ pub const Emitter = struct {
                 }
                 const obj_val = try self.emitExpr(method.object);
                 const map_type = self.getMapStructType();
-                const tmp_alloca = self.builder.buildAlloca(map_type, "map.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(map_type, "map.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             } else if (method.object == .field) blk: {
@@ -12004,13 +12005,13 @@ pub const Emitter = struct {
                 // Fallback: emit and store to temp
                 const obj_val = try self.emitExpr(method.object);
                 const map_type = self.getMapStructType();
-                const tmp_alloca = self.builder.buildAlloca(map_type, "map.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(map_type, "map.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             } else blk: {
                 const obj_val = try self.emitExpr(method.object);
                 const map_type = self.getMapStructType();
-                const tmp_alloca = self.builder.buildAlloca(map_type, "map.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(map_type, "map.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             };
@@ -12097,13 +12098,13 @@ pub const Emitter = struct {
                 }
                 const obj_val = try self.emitExpr(method.object);
                 const set_type = self.getSetStructType();
-                const tmp_alloca = self.builder.buildAlloca(set_type, "set.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(set_type, "set.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             } else blk: {
                 const obj_val = try self.emitExpr(method.object);
                 const set_type = self.getSetStructType();
-                const tmp_alloca = self.builder.buildAlloca(set_type, "set.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(set_type, "set.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             };
@@ -12279,13 +12280,13 @@ pub const Emitter = struct {
                 }
                 const obj_val = try self.emitExpr(method.object);
                 const ep_type = self.getChannelEndpointType();
-                const tmp_alloca = self.builder.buildAlloca(ep_type, "sender.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(ep_type, "sender.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             } else blk: {
                 const obj_val = try self.emitExpr(method.object);
                 const ep_type = self.getChannelEndpointType();
-                const tmp_alloca = self.builder.buildAlloca(ep_type, "sender.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(ep_type, "sender.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             };
@@ -12305,13 +12306,13 @@ pub const Emitter = struct {
                 }
                 const obj_val = try self.emitExpr(method.object);
                 const ep_type = self.getChannelEndpointType();
-                const tmp_alloca = self.builder.buildAlloca(ep_type, "recv.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(ep_type, "recv.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             } else blk: {
                 const obj_val = try self.emitExpr(method.object);
                 const ep_type = self.getChannelEndpointType();
-                const tmp_alloca = self.builder.buildAlloca(ep_type, "recv.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(ep_type, "recv.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             };
@@ -12332,14 +12333,14 @@ pub const Emitter = struct {
                 const obj_val = try self.emitExpr(method.object);
                 var tp_fields = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
                 const tp_type = llvm.Types.struct_(self.ctx, &tp_fields, false);
-                const tmp_alloca = self.builder.buildAlloca(tp_type, "pool.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(tp_type, "pool.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             } else blk: {
                 const obj_val = try self.emitExpr(method.object);
                 var tp_fields = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
                 const tp_type = llvm.Types.struct_(self.ctx, &tp_fields, false);
-                const tmp_alloca = self.builder.buildAlloca(tp_type, "pool.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(tp_type, "pool.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             };
@@ -12554,14 +12555,14 @@ pub const Emitter = struct {
                         }
                         // Fallback: store object to a temp and return pointer
                         const obj_type = llvm.typeOf(object);
-                        const alloca = self.builder.buildAlloca(obj_type, "self.tmp");
+                        const alloca = self.buildEntryBlockAlloca(obj_type, "self.tmp");
                         _ = self.builder.buildStore(object, alloca);
                         break :blk alloca;
                     },
                     else => blk: {
                         // For non-identifier objects (field access, etc.), create temp
                         const obj_type = llvm.typeOf(object);
-                        const alloca = self.builder.buildAlloca(obj_type, "self.tmp");
+                        const alloca = self.buildEntryBlockAlloca(obj_type, "self.tmp");
                         _ = self.builder.buildStore(object, alloca);
                         break :blk alloca;
                     },
@@ -12585,7 +12586,7 @@ pub const Emitter = struct {
         // Check if this method uses sret (struct return) calling convention
         if (self.sret_functions.get(fn_name)) |sret_return_type| {
             // Sret call: allocate space, prepend pointer, call, load result
-            const sret_alloca = self.builder.buildAlloca(sret_return_type, "sret.tmp");
+            const sret_alloca = self.buildEntryBlockAlloca(sret_return_type, "sret.tmp");
 
             // Build new args list with sret pointer prepended
             var sret_args = std.ArrayListUnmanaged(llvm.ValueRef).empty;
@@ -12722,7 +12723,7 @@ pub const Emitter = struct {
         var struct_types = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), ptr_type };
         const opt_type = llvm.c.LLVMStructTypeInContext(self.ctx.ref, &struct_types, 2, 0);
 
-        const opt_alloca = self.builder.buildAlloca(opt_type, "upgrade.opt");
+        const opt_alloca = self.buildEntryBlockAlloca(opt_type, "upgrade.opt");
 
         // Set tag: 1 if not null (Some), 0 if null (None)
         const tag = self.builder.buildNot(is_null, "tag");
@@ -12849,7 +12850,7 @@ pub const Emitter = struct {
         var struct_types = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), ptr_type };
         const opt_type = llvm.c.LLVMStructTypeInContext(self.ctx.ref, &struct_types, 2, 0);
 
-        const opt_alloca = self.builder.buildAlloca(opt_type, "upgrade.opt");
+        const opt_alloca = self.buildEntryBlockAlloca(opt_type, "upgrade.opt");
 
         // Set tag: 1 if not null (Some), 0 if null (None)
         const tag = self.builder.buildNot(is_null, "tag");
@@ -12883,7 +12884,9 @@ pub const Emitter = struct {
         const value = try self.emitExpr(method.args[0]);
         const value_type = llvm.typeOf(value);
 
-        // Allocate stack space for the cell's value
+        // Deliberately at the call site, not hoisted (the one alloca outside
+        // buildEntryBlockAlloca): the Cell is this slot's address, so each
+        // evaluation in a loop needs its own slot or every Cell made there aliases.
         const cell_alloca = self.builder.buildAlloca(value_type, "cell.storage");
 
         // Store the initial value
@@ -13124,7 +13127,7 @@ pub const Emitter = struct {
 
                 // Load the value from the env struct into a local alloca
                 const cap_ty = capture_local_values[i].ty;
-                const local_alloca = self.builder.buildAlloca(cap_ty, "cap.local");
+                const local_alloca = self.buildEntryBlockAlloca(cap_ty, "cap.local");
                 const cap_value = self.builder.buildLoad(cap_ty, field_ptr, "cap.value");
                 _ = self.builder.buildStore(cap_value, local_alloca);
 
@@ -13146,7 +13149,7 @@ pub const Emitter = struct {
             const param_name = self.allocator.dupeZ(u8, param.name) catch return EmitError.OutOfMemory;
             defer self.allocator.free(param_name);
 
-            const alloca = self.builder.buildAlloca(param_ty, param_name);
+            const alloca = self.buildEntryBlockAlloca(param_ty, param_name);
             _ = self.builder.buildStore(param_value, alloca);
 
             const local = try self.paramLocalValue(alloca, param_ty, self.resolveAliasTypeExpr(param.type_));
@@ -13178,7 +13181,7 @@ pub const Emitter = struct {
         const closure_struct_type = self.getClosureStructType();
 
         // Allocate closure struct
-        const closure_alloca = self.builder.buildAlloca(closure_struct_type, "closure");
+        const closure_alloca = self.buildEntryBlockAlloca(closure_struct_type, "closure");
 
         // Store function pointer
         var fn_ptr_indices = [_]llvm.ValueRef{
@@ -14282,7 +14285,7 @@ pub const Emitter = struct {
         const array_type = llvm.Types.array(element_llvm_type, repeat_info.count);
 
         // Allocate the array
-        const array_alloca = self.builder.buildAlloca(array_type, "repeat_arr");
+        const array_alloca = self.buildEntryBlockAlloca(array_type, "repeat_arr");
 
         // Emit the value once
         const value = try self.emitExpr(repeat_info.value_expr);
@@ -14543,7 +14546,7 @@ pub const Emitter = struct {
                 const param_name = self.allocator.dupeZ(u8, param.name) catch return EmitError.OutOfMemory;
                 defer self.allocator.free(param_name);
 
-                const alloca = self.builder.buildAlloca(param_ty, param_name);
+                const alloca = self.buildEntryBlockAlloca(param_ty, param_name);
                 _ = self.builder.buildStore(param_value, alloca);
 
                 self.named_values.put(param.name, .{
@@ -14755,14 +14758,14 @@ pub const Emitter = struct {
                 // Identifier not found, emit expression and store to temp
                 const obj_val = try self.emitExpr(args[0]);
                 const string_type = self.getStringStructType();
-                const tmp_alloca = self.builder.buildAlloca(string_type, "print.str.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(string_type, "print.str.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             } else blk: {
                 // Non-identifier (e.g., method call result like x.to_string())
                 const obj_val = try self.emitExpr(args[0]);
                 const string_type = self.getStringStructType();
-                const tmp_alloca = self.builder.buildAlloca(string_type, "print.str.tmp");
+                const tmp_alloca = self.buildEntryBlockAlloca(string_type, "print.str.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             };
@@ -14802,7 +14805,7 @@ pub const Emitter = struct {
         const buffer_size: u32 = 4096;
         const i8_type = llvm.Types.int8(self.ctx);
         const buffer_type = llvm.c.LLVMArrayType(i8_type, buffer_size);
-        const buffer = self.builder.buildAlloca(buffer_type, "readline_buf");
+        const buffer = self.buildEntryBlockAlloca(buffer_type, "readline_buf");
 
         // Get pointer to first element
         const zero = llvm.Const.int32(self.ctx, 0);
@@ -15363,7 +15366,7 @@ pub const Emitter = struct {
         const i64_type = llvm.Types.int64(self.ctx);
         const buffer_size: u32 = 64;
         const buf_type = llvm.c.LLVMArrayType(i8_type, buffer_size);
-        const buf = self.builder.buildAlloca(buf_type, "debug.buf");
+        const buf = self.buildEntryBlockAlloca(buf_type, "debug.buf");
         const indices = [2]llvm.ValueRef{
             llvm.Const.int32(self.ctx, 0),
             llvm.Const.int32(self.ctx, 0),
@@ -15496,7 +15499,7 @@ pub const Emitter = struct {
         const i64_type = llvm.Types.int64(self.ctx);
         const buffer_size: u32 = 32;
         const buf_type = llvm.c.LLVMArrayType(i8_type, buffer_size);
-        const buf = self.builder.buildAlloca(buf_type, "debug.ptr_buf");
+        const buf = self.buildEntryBlockAlloca(buf_type, "debug.ptr_buf");
         const indices = [2]llvm.ValueRef{
             llvm.Const.int32(self.ctx, 0),
             llvm.Const.int32(self.ctx, 0),
@@ -16403,7 +16406,7 @@ pub const Emitter = struct {
         // Otherwise, emit the value and store in a temporary alloca
         const set_type = self.getSetStructType();
         const value = try self.emitExpr(arg);
-        const temp_alloca = self.builder.buildAlloca(set_type, "set_arg_tmp");
+        const temp_alloca = self.buildEntryBlockAlloca(set_type, "set_arg_tmp");
         _ = self.builder.buildStore(value, temp_alloca);
         return temp_alloca;
     }
@@ -17081,7 +17084,7 @@ pub const Emitter = struct {
         const slice_type = llvm.Types.struct_(self.ctx, &slice_fields, false);
 
         // Build the slice struct value using alloca + store + load pattern
-        const slice_ptr = self.builder.buildAlloca(slice_type, "bytes_slice_ptr");
+        const slice_ptr = self.buildEntryBlockAlloca(slice_type, "bytes_slice_ptr");
 
         // Store pointer field (index 0)
         const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, slice_ptr, 0, "ptr_field");
@@ -17146,7 +17149,7 @@ pub const Emitter = struct {
         const merge_bb = llvm.appendBasicBlock(self.ctx, current_fn, "to.merge");
 
         // Allocate storage for endptr (used by strtol/strtod)
-        const endptr_alloca = self.builder.buildAlloca(ptr_type, "endptr");
+        const endptr_alloca = self.buildEntryBlockAlloca(ptr_type, "endptr");
 
         if (type_kind == llvm.c.LLVMIntegerTypeKind) {
             // Integer conversion using strtol
@@ -17388,7 +17391,7 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), errno_ptr);
 
         // Allocate endptr
-        const endptr_alloca = self.builder.buildAlloca(ptr_type, "endptr");
+        const endptr_alloca = self.buildEntryBlockAlloca(ptr_type, "endptr");
 
         // Call strtoll(str, &endptr, 10)
         const strtol_fn = self.getOrDeclareStrtol();
@@ -17471,7 +17474,7 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), errno_ptr);
 
         // Allocate endptr
-        const endptr_alloca = self.builder.buildAlloca(ptr_type, "endptr");
+        const endptr_alloca = self.buildEntryBlockAlloca(ptr_type, "endptr");
 
         // Call strtod(str, &endptr)
         const strtod_fn = self.getOrDeclareStrtod();
@@ -17592,7 +17595,7 @@ pub const Emitter = struct {
         // Allocate a stack buffer for snprintf (32 bytes is enough for any integer)
         const buf_size: u32 = 32;
         const buf_type = llvm.c.LLVMArrayType(i8_type, buf_size);
-        const buf = self.builder.buildAlloca(buf_type, "tostr.buf");
+        const buf = self.buildEntryBlockAlloca(buf_type, "tostr.buf");
 
         // Get pointer to first element
         const zero = llvm.Const.int32(self.ctx, 0);
@@ -17716,7 +17719,7 @@ pub const Emitter = struct {
 
         const buf_size: u32 = 64;
         const buf_type = llvm.c.LLVMArrayType(i8_type, buf_size);
-        const buf = self.builder.buildAlloca(buf_type, "f64tostr.buf");
+        const buf = self.buildEntryBlockAlloca(buf_type, "f64tostr.buf");
 
         const zero = llvm.Const.int32(self.ctx, 0);
         var indices = [_]llvm.ValueRef{ zero, zero };
@@ -17906,7 +17909,7 @@ pub const Emitter = struct {
         const next_current = self.builder.buildAdd(current, one, "range.next_current");
         _ = self.builder.buildStore(next_current, current_ptr);
         // Build Some(current) - allocate, store, load
-        const some_alloca = self.builder.buildAlloca(opt_ty, "opt.some");
+        const some_alloca = self.buildEntryBlockAlloca(opt_ty, "opt.some");
         const some_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_ty, some_alloca, 0, "opt.tag.ptr");
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), some_tag_ptr);
         const some_val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_ty, some_alloca, 1, "opt.val.ptr");
@@ -17916,7 +17919,7 @@ pub const Emitter = struct {
 
         // None case: return None
         self.builder.positionAtEnd(none_bb);
-        const none_alloca = self.builder.buildAlloca(opt_ty, "opt.none");
+        const none_alloca = self.buildEntryBlockAlloca(opt_ty, "opt.none");
         const none_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_ty, none_alloca, 0, "opt.tag.ptr");
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), none_tag_ptr);
         const none_val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_ty, none_alloca, 1, "opt.val.ptr");
@@ -18268,7 +18271,7 @@ pub const Emitter = struct {
         // Build optional type: { i1, T }
         var opt_fields = [_]llvm.TypeRef{ i1_type, element_llvm_type };
         const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
-        const opt_alloca = self.builder.buildAlloca(opt_type, "pop.optional");
+        const opt_alloca = self.buildEntryBlockAlloca(opt_type, "pop.optional");
 
         // Create basic blocks
         const valid_bb = llvm.appendBasicBlock(self.ctx, func, "pop.valid");
@@ -18359,7 +18362,7 @@ pub const Emitter = struct {
         const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
 
         // Allocate the optional result on the stack
-        const opt_alloca = self.builder.buildAlloca(opt_type, "get.optional");
+        const opt_alloca = self.buildEntryBlockAlloca(opt_type, "get.optional");
 
         // Create basic blocks for valid/invalid cases
         const valid_bb = llvm.appendBasicBlock(self.ctx, func, "get.valid");
@@ -18430,7 +18433,7 @@ pub const Emitter = struct {
         const src_len = self.builder.buildLoad(i32_type, src_len_ptr, "clone.src_len");
 
         // Allocate result list struct on the stack
-        const result_alloca = self.builder.buildAlloca(list_type, "clone.result");
+        const result_alloca = self.buildEntryBlockAlloca(list_type, "clone.result");
 
         // Check if source list is empty
         const zero = llvm.Const.int32(self.ctx, 0);
@@ -18554,7 +18557,7 @@ pub const Emitter = struct {
             const list_len = self.builder.buildLoad(i32_type, len_ptr_loop, "drop.list_len");
 
             // Loop: i = 0; while i < len
-            const i_alloca = self.builder.buildAlloca(i32_type, "drop.i");
+            const i_alloca = self.buildEntryBlockAlloca(i32_type, "drop.i");
             _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), i_alloca);
 
             const loop_cond_bb = llvm.appendBasicBlock(self.ctx, func, "drop.loop_cond");
@@ -18660,7 +18663,7 @@ pub const Emitter = struct {
         const src_len = self.builder.buildLoad(i32_type, src_len_ptr, "take.src_len");
 
         // Allocate result list struct on the stack
-        const result_alloca = self.builder.buildAlloca(list_type, "take.result");
+        const result_alloca = self.buildEntryBlockAlloca(list_type, "take.result");
 
         // Compute actual count = min(count, len)
         // Also clamp count to >= 0
@@ -18765,7 +18768,7 @@ pub const Emitter = struct {
         const src_len = self.builder.buildLoad(i32_type, src_len_ptr, "skip.src_len");
 
         // Allocate result list struct on the stack
-        const result_alloca = self.builder.buildAlloca(list_type, "skip.result");
+        const result_alloca = self.buildEntryBlockAlloca(list_type, "skip.result");
 
         // Compute start = min(count, len), clamped to >= 0
         const zero = llvm.Const.int32(self.ctx, 0);
@@ -18882,7 +18885,7 @@ pub const Emitter = struct {
 
             const orig_func = self.module.getNamedFunction(name_z) orelse {
                 // Function not found, return a null closure
-                const closure_alloca = self.builder.buildAlloca(closure_struct_type, "fn_closure.tmp");
+                const closure_alloca = self.buildEntryBlockAlloca(closure_struct_type, "fn_closure.tmp");
                 var fn_ptr_indices = [_]llvm.ValueRef{
                     llvm.Const.int32(self.ctx, 0),
                     llvm.Const.int32(self.ctx, 0),
@@ -18962,7 +18965,7 @@ pub const Emitter = struct {
             };
 
             // Create a closure struct with the wrapper function pointer and null environment
-            const closure_alloca = self.builder.buildAlloca(closure_struct_type, "fn_closure.tmp");
+            const closure_alloca = self.buildEntryBlockAlloca(closure_struct_type, "fn_closure.tmp");
             var fn_ptr_indices = [_]llvm.ValueRef{
                 llvm.Const.int32(self.ctx, 0),
                 llvm.Const.int32(self.ctx, 0),
@@ -19009,7 +19012,7 @@ pub const Emitter = struct {
         const src_len = self.builder.buildLoad(i32_type, src_len_ptr, "filter.src_len");
 
         // Allocate result list on the stack and initialize with new empty header
-        const result_alloca = self.builder.buildAlloca(list_type, "filter.result");
+        const result_alloca = self.buildEntryBlockAlloca(list_type, "filter.result");
         const zero = llvm.Const.int32(self.ctx, 0);
 
         // Allocate a new header for the result (starts empty)
@@ -19019,7 +19022,7 @@ pub const Emitter = struct {
 
         // Extract closure function pointer and environment pointer
         const closure_struct_type = self.getClosureStructType();
-        const closure_alloca = self.builder.buildAlloca(closure_struct_type, "filter.closure_tmp");
+        const closure_alloca = self.buildEntryBlockAlloca(closure_struct_type, "filter.closure_tmp");
         _ = self.builder.buildStore(closure_value, closure_alloca);
 
         var fn_ptr_indices = [_]llvm.ValueRef{
@@ -19041,7 +19044,7 @@ pub const Emitter = struct {
         const closure_fn_type = llvm.Types.function(i1_type, &param_types, false);
 
         // Create loop counter alloca
-        const i_alloca = self.builder.buildAlloca(i32_type, "filter.i");
+        const i_alloca = self.buildEntryBlockAlloca(i32_type, "filter.i");
         _ = self.builder.buildStore(zero, i_alloca);
 
         // Create basic blocks for loop
@@ -19191,7 +19194,7 @@ pub const Emitter = struct {
         const src_len = self.builder.buildLoad(i32_type, src_len_ptr, "map.src_len");
 
         // Allocate result list struct on the stack
-        const result_alloca = self.builder.buildAlloca(list_type, "map.result");
+        const result_alloca = self.buildEntryBlockAlloca(list_type, "map.result");
         const zero = llvm.Const.int32(self.ctx, 0);
 
         // Check if source list is empty
@@ -19220,7 +19223,7 @@ pub const Emitter = struct {
 
         // Extract closure function pointer and environment pointer
         const closure_struct_type = self.getClosureStructType();
-        const closure_alloca = self.builder.buildAlloca(closure_struct_type, "map.closure_tmp");
+        const closure_alloca = self.buildEntryBlockAlloca(closure_struct_type, "map.closure_tmp");
         _ = self.builder.buildStore(closure_value, closure_alloca);
 
         var fn_ptr_indices = [_]llvm.ValueRef{
@@ -19267,7 +19270,7 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(map_new_header, map_hdr_field);
 
         // Create loop counter alloca
-        const i_alloca = self.builder.buildAlloca(i32_type, "map.i");
+        const i_alloca = self.buildEntryBlockAlloca(i32_type, "map.i");
         _ = self.builder.buildStore(zero, i_alloca);
 
         _ = self.builder.buildBr(loop_cond_bb);
@@ -19341,7 +19344,7 @@ pub const Emitter = struct {
         const src_len = self.builder.buildLoad(i32_type, src_len_ptr, "enum.src_len");
 
         // Allocate result list struct on the stack
-        const result_alloca = self.builder.buildAlloca(list_type, "enum.result");
+        const result_alloca = self.buildEntryBlockAlloca(list_type, "enum.result");
         const zero = llvm.Const.int32(self.ctx, 0);
 
         // Check if source list is empty
@@ -19393,7 +19396,7 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(enum_new_header, enum_hdr_field);
 
         // Create loop counter alloca
-        const i_alloca = self.builder.buildAlloca(i32_type, "enum.i");
+        const i_alloca = self.buildEntryBlockAlloca(i32_type, "enum.i");
         _ = self.builder.buildStore(zero, i_alloca);
 
         _ = self.builder.buildBr(loop_cond_bb);
@@ -19493,12 +19496,12 @@ pub const Emitter = struct {
                 break :blk local.value;
             }
             const tmp_val = try self.emitExpr(method.args[0]);
-            const tmp_alloca = self.builder.buildAlloca(list_type, "zip.list2.tmp");
+            const tmp_alloca = self.buildEntryBlockAlloca(list_type, "zip.list2.tmp");
             _ = self.builder.buildStore(tmp_val, tmp_alloca);
             break :blk tmp_alloca;
         } else blk: {
             const tmp_val = try self.emitExpr(method.args[0]);
-            const tmp_alloca = self.builder.buildAlloca(list_type, "zip.list2.tmp");
+            const tmp_alloca = self.buildEntryBlockAlloca(list_type, "zip.list2.tmp");
             _ = self.builder.buildStore(tmp_val, tmp_alloca);
             break :blk tmp_alloca;
         };
@@ -19520,7 +19523,7 @@ pub const Emitter = struct {
         );
 
         // Allocate result list on the stack
-        const result_alloca = self.builder.buildAlloca(list_type, "zip.result");
+        const result_alloca = self.buildEntryBlockAlloca(list_type, "zip.result");
         const zero = llvm.Const.int32(self.ctx, 0);
 
         // Check if result will be empty
@@ -19572,7 +19575,7 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(zip_new_header, zip_hdr_field);
 
         // Create loop counter alloca
-        const i_alloca = self.builder.buildAlloca(i32_type, "zip.i");
+        const i_alloca = self.buildEntryBlockAlloca(i32_type, "zip.i");
         _ = self.builder.buildStore(zero, i_alloca);
 
         _ = self.builder.buildBr(loop_cond_bb);
@@ -19683,7 +19686,7 @@ pub const Emitter = struct {
         const element_size = self.getLLVMTypeSize(element_llvm_type);
 
         // Allocate stack space for the output value
-        const value_out = self.builder.buildAlloca(element_llvm_type, "first.value");
+        const value_out = self.buildEntryBlockAlloca(element_llvm_type, "first.value");
 
         // Pass the dereferenced header pointer to the runtime function
         const header_ptr = self.derefListHeader(list_ptr);
@@ -19700,7 +19703,7 @@ pub const Emitter = struct {
         const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
 
         // Allocate the optional result
-        const opt_alloca = self.builder.buildAlloca(opt_type, "first.optional");
+        const opt_alloca = self.buildEntryBlockAlloca(opt_type, "first.optional");
 
         // Store the tag (success bool)
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, opt_alloca, 0, "first.tag_ptr");
@@ -19744,7 +19747,7 @@ pub const Emitter = struct {
         // Build optional type: { i1, T }
         var opt_fields = [_]llvm.TypeRef{ i1_type, element_llvm_type };
         const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
-        const opt_alloca = self.builder.buildAlloca(opt_type, "last.optional");
+        const opt_alloca = self.buildEntryBlockAlloca(opt_type, "last.optional");
 
         // Create basic blocks
         const valid_bb = llvm.appendBasicBlock(self.ctx, func, "last.valid");
@@ -19861,7 +19864,7 @@ pub const Emitter = struct {
     /// Returns a loaded map struct value.
     fn buildMapFromHeader(self: *Emitter, header_ptr: llvm.ValueRef, name: [:0]const u8) llvm.ValueRef {
         const map_type = self.getMapStructType();
-        const map_alloca = self.builder.buildAlloca(map_type, name);
+        const map_alloca = self.buildEntryBlockAlloca(map_type, name);
         const header_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_alloca, 0, "map.wrap.hdr");
         _ = self.builder.buildStore(header_ptr, header_field);
         return self.builder.buildLoad(map_type, map_alloca, "map.wrap.val");
@@ -20075,7 +20078,7 @@ pub const Emitter = struct {
         const rehash_next = llvm.c.LLVMAppendBasicBlock(current_fn, "map.rehash_next");
         const rehash_end = llvm.c.LLVMAppendBasicBlock(current_fn, "map.rehash_end");
 
-        const rehash_idx_alloca = self.builder.buildAlloca(i32_type, "rehash_idx");
+        const rehash_idx_alloca = self.buildEntryBlockAlloca(i32_type, "rehash_idx");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), rehash_idx_alloca);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, rehash_loop);
 
@@ -20106,7 +20109,7 @@ pub const Emitter = struct {
 
         // Find new slot using probe loop
         const new_idx = llvm.c.LLVMBuildAnd(self.builder.ref, old_hash, new_cap_minus_1, "new_idx");
-        const new_idx_alloca = self.builder.buildAlloca(i32_type, "new_idx_alloca");
+        const new_idx_alloca = self.buildEntryBlockAlloca(i32_type, "new_idx_alloca");
         _ = self.builder.buildStore(new_idx, new_idx_alloca);
 
         const rehash_probe = llvm.c.LLVMAppendBasicBlock(current_fn, "rehash_probe");
@@ -20185,7 +20188,7 @@ pub const Emitter = struct {
         const init_index = llvm.c.LLVMBuildAnd(self.builder.ref, hash, cap_minus_one, "init_idx");
 
         // Allocate storage for loop variables
-        const index_alloca = self.builder.buildAlloca(i32_type, "idx_alloca");
+        const index_alloca = self.buildEntryBlockAlloca(i32_type, "idx_alloca");
         _ = self.builder.buildStore(init_index, index_alloca);
 
         // Probe loop
@@ -20327,7 +20330,7 @@ pub const Emitter = struct {
         // Build optional type: { tag: i1, value: V }
         var opt_fields = [_]llvm.TypeRef{ i1_type, value_llvm_type };
         const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
-        const opt_alloca = self.builder.buildAlloca(opt_type, "map.get.opt");
+        const opt_alloca = self.buildEntryBlockAlloca(opt_type, "map.get.opt");
 
         // Initialize to None
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, opt_alloca, 0, "opt.tag_ptr");
@@ -20361,7 +20364,7 @@ pub const Emitter = struct {
         const init_index = llvm.c.LLVMBuildAnd(self.builder.ref, hash, cap_minus_one, "init_idx");
 
         // Allocate loop variable
-        const index_alloca = self.builder.buildAlloca(i32_type, "idx_alloca");
+        const index_alloca = self.buildEntryBlockAlloca(i32_type, "idx_alloca");
         _ = self.builder.buildStore(init_index, index_alloca);
 
         // Probe loop
@@ -20461,7 +20464,7 @@ pub const Emitter = struct {
         // Build optional type
         var opt_fields = [_]llvm.TypeRef{ i1_type, value_llvm_type };
         const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
-        const opt_alloca = self.builder.buildAlloca(opt_type, "map.remove.opt");
+        const opt_alloca = self.buildEntryBlockAlloca(opt_type, "map.remove.opt");
 
         // Initialize to None
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, opt_alloca, 0, "opt.tag_ptr");
@@ -20490,7 +20493,7 @@ pub const Emitter = struct {
         const cap_minus_one = llvm.c.LLVMBuildSub(self.builder.ref, capacity, llvm.Const.int32(self.ctx, 1), "cap_m1");
         const init_index = llvm.c.LLVMBuildAnd(self.builder.ref, hash, cap_minus_one, "init_idx");
 
-        const index_alloca = self.builder.buildAlloca(i32_type, "idx_alloca");
+        const index_alloca = self.buildEntryBlockAlloca(i32_type, "idx_alloca");
         _ = self.builder.buildStore(init_index, index_alloca);
 
         const probe_block = llvm.c.LLVMAppendBasicBlock(current_fn, "map.remove.probe");
@@ -20600,7 +20603,7 @@ pub const Emitter = struct {
         const i64_type = llvm.Types.int64(self.ctx);
         const ptr_type = llvm.Types.pointer(self.ctx);
 
-        const result_alloca = self.builder.buildAlloca(i1_type, "map.contains.result");
+        const result_alloca = self.buildEntryBlockAlloca(i1_type, "map.contains.result");
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), result_alloca);
 
         // Deref header and check capacity
@@ -20626,7 +20629,7 @@ pub const Emitter = struct {
         const cap_minus_one = llvm.c.LLVMBuildSub(self.builder.ref, capacity, llvm.Const.int32(self.ctx, 1), "cap_m1");
         const init_index = llvm.c.LLVMBuildAnd(self.builder.ref, hash, cap_minus_one, "init_idx");
 
-        const index_alloca = self.builder.buildAlloca(i32_type, "idx_alloca");
+        const index_alloca = self.buildEntryBlockAlloca(i32_type, "idx_alloca");
         _ = self.builder.buildStore(init_index, index_alloca);
 
         const probe_block = llvm.c.LLVMAppendBasicBlock(current_fn, "map.contains.probe");
@@ -20718,7 +20721,7 @@ pub const Emitter = struct {
         const header_type = self.getListHeaderType();
 
         // Create empty list: allocate header on heap, store in list struct
-        const list_alloca = self.builder.buildAlloca(list_type, "keys_list");
+        const list_alloca = self.buildEntryBlockAlloca(list_type, "keys_list");
         const keys_header = self.allocateListHeader();
         _ = self.builder.buildStore(keys_header, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, ""));
 
@@ -20759,8 +20762,8 @@ pub const Emitter = struct {
         const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_header_type, collect_map_header, map_constants.MapHeaderField.entries, "map.entries_ptr_field");
         const entries_ptr_val = self.builder.buildLoad(ptr_type, entries_ptr_field, "map.entries");
 
-        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
-        const list_idx_alloca = self.builder.buildAlloca(i32_type, "list_idx");
+        const idx_alloca = self.buildEntryBlockAlloca(i32_type, "idx");
+        const list_idx_alloca = self.buildEntryBlockAlloca(i32_type, "list_idx");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), list_idx_alloca);
 
@@ -20843,7 +20846,7 @@ pub const Emitter = struct {
         const ptr_type = llvm.Types.pointer(self.ctx);
 
         // Create empty list: allocate header on heap
-        const list_alloca = self.builder.buildAlloca(list_type, "values_list");
+        const list_alloca = self.buildEntryBlockAlloca(list_type, "values_list");
         const vals_header = self.allocateListHeader();
         _ = self.builder.buildStore(vals_header, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, ""));
 
@@ -20879,8 +20882,8 @@ pub const Emitter = struct {
         const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_header_type, collect_vals_map_header, map_constants.MapHeaderField.entries, "map.entries_ptr_field");
         const entries_ptr_val = self.builder.buildLoad(ptr_type, entries_ptr_field, "map.entries");
 
-        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
-        const list_idx_alloca = self.builder.buildAlloca(i32_type, "list_idx");
+        const idx_alloca = self.buildEntryBlockAlloca(i32_type, "idx");
+        const list_idx_alloca = self.buildEntryBlockAlloca(i32_type, "list_idx");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), list_idx_alloca);
 
@@ -21081,7 +21084,7 @@ pub const Emitter = struct {
 
         // Create empty result map with heap-allocated header
         const take_result_header = self.allocateMapHeader();
-        const result_alloca = self.builder.buildAlloca(map_type, "take_result");
+        const result_alloca = self.buildEntryBlockAlloca(map_type, "take_result");
         const take_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, result_alloca, 0, "take.hdr");
         _ = self.builder.buildStore(take_result_header, take_hdr_field);
 
@@ -21110,8 +21113,8 @@ pub const Emitter = struct {
         const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "take_next");
         const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "take_done");
 
-        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
-        const taken_alloca = self.builder.buildAlloca(i32_type, "taken");
+        const idx_alloca = self.buildEntryBlockAlloca(i32_type, "idx");
+        const taken_alloca = self.buildEntryBlockAlloca(i32_type, "taken");
         _ = self.builder.buildStore(zero_i32, idx_alloca);
         _ = self.builder.buildStore(zero_i32, taken_alloca);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
@@ -21170,7 +21173,7 @@ pub const Emitter = struct {
 
         // Create empty result map with heap-allocated header
         const skip_result_header = self.allocateMapHeader();
-        const result_alloca = self.builder.buildAlloca(map_type, "skip_result");
+        const result_alloca = self.buildEntryBlockAlloca(map_type, "skip_result");
         const skip_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, result_alloca, 0, "skip.hdr");
         _ = self.builder.buildStore(skip_result_header, skip_hdr_field);
 
@@ -21200,8 +21203,8 @@ pub const Emitter = struct {
         const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "skip_next");
         const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "skip_done");
 
-        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
-        const skipped_alloca = self.builder.buildAlloca(i32_type, "skipped");
+        const idx_alloca = self.buildEntryBlockAlloca(i32_type, "idx");
+        const skipped_alloca = self.buildEntryBlockAlloca(i32_type, "skipped");
         _ = self.builder.buildStore(zero_i32, idx_alloca);
         _ = self.builder.buildStore(zero_i32, skipped_alloca);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
@@ -21263,13 +21266,13 @@ pub const Emitter = struct {
 
         // Create empty result map with heap-allocated header
         const filter_result_header = self.allocateMapHeader();
-        const result_alloca = self.builder.buildAlloca(map_type, "filter_result");
+        const result_alloca = self.buildEntryBlockAlloca(map_type, "filter_result");
         const filter_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, result_alloca, 0, "filter.hdr");
         _ = self.builder.buildStore(filter_result_header, filter_hdr_field);
 
         // Extract closure
         const closure_struct_type = self.getClosureStructType();
-        const closure_alloca = self.builder.buildAlloca(closure_struct_type, "filter.closure_tmp");
+        const closure_alloca = self.buildEntryBlockAlloca(closure_struct_type, "filter.closure_tmp");
         _ = self.builder.buildStore(closure_value, closure_alloca);
 
         var fn_ptr_indices = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 0) };
@@ -21299,7 +21302,7 @@ pub const Emitter = struct {
         const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "filter_next");
         const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "filter_done");
 
-        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
+        const idx_alloca = self.buildEntryBlockAlloca(i32_type, "idx");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
 
@@ -21370,13 +21373,13 @@ pub const Emitter = struct {
 
         // Create empty result map with heap-allocated header
         const mapval_result_header = self.allocateMapHeader();
-        const result_alloca = self.builder.buildAlloca(map_type, "mapval_result");
+        const result_alloca = self.buildEntryBlockAlloca(map_type, "mapval_result");
         const mapval_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, result_alloca, 0, "mapval.hdr");
         _ = self.builder.buildStore(mapval_result_header, mapval_hdr_field);
 
         // Extract closure
         const closure_struct_type = self.getClosureStructType();
-        const closure_alloca = self.builder.buildAlloca(closure_struct_type, "mapval.closure_tmp");
+        const closure_alloca = self.buildEntryBlockAlloca(closure_struct_type, "mapval.closure_tmp");
         _ = self.builder.buildStore(closure_value, closure_alloca);
 
         var fn_ptr_indices = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 0) };
@@ -21405,7 +21408,7 @@ pub const Emitter = struct {
         const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "mapval_next");
         const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "mapval_done");
 
-        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
+        const idx_alloca = self.buildEntryBlockAlloca(i32_type, "idx");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
 
@@ -21504,10 +21507,10 @@ pub const Emitter = struct {
         const ptr_type = llvm.Types.pointer(self.ctx);
 
         // Simple djb2 hash inline
-        const hash_alloca = self.builder.buildAlloca(i32_type, "hash");
+        const hash_alloca = self.buildEntryBlockAlloca(i32_type, "hash");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 5381), hash_alloca);
 
-        const ptr_alloca = self.builder.buildAlloca(ptr_type, "str_ptr");
+        const ptr_alloca = self.buildEntryBlockAlloca(ptr_type, "str_ptr");
         _ = self.builder.buildStore(str_ptr, ptr_alloca);
 
         const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
@@ -21652,7 +21655,7 @@ pub const Emitter = struct {
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &memset_args, "");
 
         // Build the set struct
-        const set_alloca = self.builder.buildAlloca(set_type, "set");
+        const set_alloca = self.buildEntryBlockAlloca(set_type, "set");
         const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_alloca, 0, "set.entries_ptr");
         _ = self.builder.buildStore(entries_ptr, entries_field);
         const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_alloca, 1, "set.len_ptr");
@@ -21729,7 +21732,7 @@ pub const Emitter = struct {
         const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "set.done");
 
         // Result alloca for return value
-        const result_alloca = self.builder.buildAlloca(i1_type, "set.result");
+        const result_alloca = self.buildEntryBlockAlloca(i1_type, "set.result");
         _ = self.builder.buildStore(llvm.c.LLVMConstInt(i1_type, 0, 0), result_alloca);
 
         _ = llvm.c.LLVMBuildBr(self.builder.ref, check_resize_block);
@@ -21777,7 +21780,7 @@ pub const Emitter = struct {
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, rehash_start_block);
         const old_cap_phi = capacity;
         const old_entries_phi = entries_ptr;
-        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
+        const idx_alloca = self.buildEntryBlockAlloca(i32_type, "idx");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, rehash_loop_block);
 
@@ -21808,7 +21811,7 @@ pub const Emitter = struct {
         const new_start_idx = llvm.c.LLVMBuildAnd(self.builder.ref, old_hash, new_cap_minus_1, "new_start_idx");
 
         // Simple linear probe to find empty slot (new array has no collisions initially since it's larger)
-        const probe_idx_alloca = self.builder.buildAlloca(i32_type, "probe_idx");
+        const probe_idx_alloca = self.buildEntryBlockAlloca(i32_type, "probe_idx");
         _ = self.builder.buildStore(new_start_idx, probe_idx_alloca);
         const find_slot_block = llvm.c.LLVMAppendBasicBlock(current_fn, "find_slot");
         const slot_found_block = llvm.c.LLVMAppendBasicBlock(current_fn, "slot_found");
@@ -21875,9 +21878,9 @@ pub const Emitter = struct {
         const start_slot = llvm.c.LLVMBuildAnd(self.builder.ref, hash, cap_mask, "start_slot");
 
         // Probe loop variables
-        const probe_slot_alloca = self.builder.buildAlloca(i32_type, "probe_slot");
+        const probe_slot_alloca = self.buildEntryBlockAlloca(i32_type, "probe_slot");
         _ = self.builder.buildStore(start_slot, probe_slot_alloca);
-        const first_tombstone_alloca = self.builder.buildAlloca(i32_type, "first_tombstone");
+        const first_tombstone_alloca = self.buildEntryBlockAlloca(i32_type, "first_tombstone");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, -1), first_tombstone_alloca); // -1 means no tombstone found
 
         const probe_loop_block = llvm.c.LLVMAppendBasicBlock(current_fn, "probe_loop");
@@ -21994,7 +21997,7 @@ pub const Emitter = struct {
         const hash = try self.emitHashValue(element, element_type_klar);
 
         // Result alloca
-        const result_alloca = self.builder.buildAlloca(i1_type, "result");
+        const result_alloca = self.buildEntryBlockAlloca(i1_type, "result");
         _ = self.builder.buildStore(llvm.c.LLVMConstInt(i1_type, 0, 0), result_alloca);
 
         // Check if capacity is 0 (empty set)
@@ -22008,7 +22011,7 @@ pub const Emitter = struct {
         const cap_mask = llvm.c.LLVMBuildSub(self.builder.ref, capacity, llvm.Const.int32(self.ctx, 1), "cap_mask");
         const start_slot = llvm.c.LLVMBuildAnd(self.builder.ref, hash, cap_mask, "start_slot");
 
-        const probe_slot_alloca = self.builder.buildAlloca(i32_type, "probe_slot");
+        const probe_slot_alloca = self.buildEntryBlockAlloca(i32_type, "probe_slot");
         _ = self.builder.buildStore(start_slot, probe_slot_alloca);
 
         const probe_loop = llvm.c.LLVMAppendBasicBlock(current_fn, "probe_loop");
@@ -22081,7 +22084,7 @@ pub const Emitter = struct {
 
         const hash = try self.emitHashValue(element, element_type_klar);
 
-        const result_alloca = self.builder.buildAlloca(i1_type, "result");
+        const result_alloca = self.buildEntryBlockAlloca(i1_type, "result");
         _ = self.builder.buildStore(llvm.c.LLVMConstInt(i1_type, 0, 0), result_alloca);
 
         const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
@@ -22094,7 +22097,7 @@ pub const Emitter = struct {
         const cap_mask = llvm.c.LLVMBuildSub(self.builder.ref, capacity, llvm.Const.int32(self.ctx, 1), "cap_mask");
         const start_slot = llvm.c.LLVMBuildAnd(self.builder.ref, hash, cap_mask, "start_slot");
 
-        const probe_slot_alloca = self.builder.buildAlloca(i32_type, "probe_slot");
+        const probe_slot_alloca = self.buildEntryBlockAlloca(i32_type, "probe_slot");
         _ = self.builder.buildStore(start_slot, probe_slot_alloca);
 
         const probe_loop = llvm.c.LLVMAppendBasicBlock(current_fn, "probe_loop");
@@ -22208,7 +22211,7 @@ pub const Emitter = struct {
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
 
         // Build new set struct
-        const clone_alloca = self.builder.buildAlloca(set_type, "clone");
+        const clone_alloca = self.buildEntryBlockAlloca(set_type, "clone");
         const clone_entries_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, clone_alloca, 0, "clone_entries_ptr");
         _ = self.builder.buildStore(new_entries, clone_entries_ptr);
         const clone_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, clone_alloca, 1, "clone_len_ptr");
@@ -22266,7 +22269,7 @@ pub const Emitter = struct {
         const result = try self.emitSetClone(set_ptr, method);
 
         // Store result in temp alloca to insert elements from other
-        const result_alloca = self.builder.buildAlloca(set_type, "union_result");
+        const result_alloca = self.buildEntryBlockAlloca(set_type, "union_result");
         _ = self.builder.buildStore(result, result_alloca);
 
         // Load other set fields
@@ -22283,7 +22286,7 @@ pub const Emitter = struct {
         const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "union_next");
         const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "union_done");
 
-        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
+        const idx_alloca = self.buildEntryBlockAlloca(i32_type, "idx");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
 
@@ -22336,7 +22339,7 @@ pub const Emitter = struct {
         const zero_i32 = llvm.Const.int32(self.ctx, 0);
         var result_values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32, zero_i32 };
         const empty_set = llvm.c.LLVMConstNamedStruct(set_type, &result_values, 4);
-        const result_alloca = self.builder.buildAlloca(set_type, "intersect_result");
+        const result_alloca = self.buildEntryBlockAlloca(set_type, "intersect_result");
         _ = self.builder.buildStore(empty_set, result_alloca);
 
         // Load self set fields
@@ -22354,7 +22357,7 @@ pub const Emitter = struct {
         const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "intersect_next");
         const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "intersect_done");
 
-        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
+        const idx_alloca = self.buildEntryBlockAlloca(i32_type, "idx");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
 
@@ -22412,7 +22415,7 @@ pub const Emitter = struct {
         const zero_i32 = llvm.Const.int32(self.ctx, 0);
         var result_values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32, zero_i32 };
         const empty_set = llvm.c.LLVMConstNamedStruct(set_type, &result_values, 4);
-        const result_alloca = self.builder.buildAlloca(set_type, "diff_result");
+        const result_alloca = self.buildEntryBlockAlloca(set_type, "diff_result");
         _ = self.builder.buildStore(empty_set, result_alloca);
 
         // Load self set fields
@@ -22430,7 +22433,7 @@ pub const Emitter = struct {
         const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "diff_next");
         const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "diff_done");
 
-        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
+        const idx_alloca = self.buildEntryBlockAlloca(i32_type, "idx");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
 
@@ -22491,7 +22494,7 @@ pub const Emitter = struct {
         const zero_i32 = llvm.Const.int32(self.ctx, 0);
         var result_values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32, zero_i32 };
         const empty_set = llvm.c.LLVMConstNamedStruct(set_type, &result_values, 4);
-        const result_alloca = self.builder.buildAlloca(set_type, "take_result");
+        const result_alloca = self.buildEntryBlockAlloca(set_type, "take_result");
         _ = self.builder.buildStore(empty_set, result_alloca);
 
         // Clamp count to >= 0
@@ -22517,8 +22520,8 @@ pub const Emitter = struct {
         const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "take_next");
         const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "take_done");
 
-        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
-        const taken_alloca = self.builder.buildAlloca(i32_type, "taken");
+        const idx_alloca = self.buildEntryBlockAlloca(i32_type, "idx");
+        const taken_alloca = self.buildEntryBlockAlloca(i32_type, "taken");
         _ = self.builder.buildStore(zero_i32, idx_alloca);
         _ = self.builder.buildStore(zero_i32, taken_alloca);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
@@ -22575,7 +22578,7 @@ pub const Emitter = struct {
         const zero_i32 = llvm.Const.int32(self.ctx, 0);
         var result_values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32, zero_i32 };
         const empty_set = llvm.c.LLVMConstNamedStruct(set_type, &result_values, 4);
-        const result_alloca = self.builder.buildAlloca(set_type, "skip_result");
+        const result_alloca = self.buildEntryBlockAlloca(set_type, "skip_result");
         _ = self.builder.buildStore(empty_set, result_alloca);
 
         // Clamp count to >= 0
@@ -22602,8 +22605,8 @@ pub const Emitter = struct {
         const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "skip_next");
         const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "skip_done");
 
-        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
-        const skipped_alloca = self.builder.buildAlloca(i32_type, "skipped");
+        const idx_alloca = self.buildEntryBlockAlloca(i32_type, "idx");
+        const skipped_alloca = self.buildEntryBlockAlloca(i32_type, "skipped");
         _ = self.builder.buildStore(zero_i32, idx_alloca);
         _ = self.builder.buildStore(zero_i32, skipped_alloca);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
@@ -22663,12 +22666,12 @@ pub const Emitter = struct {
         const zero_i32 = llvm.Const.int32(self.ctx, 0);
         var result_values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32, zero_i32 };
         const empty_set = llvm.c.LLVMConstNamedStruct(set_type, &result_values, 4);
-        const result_alloca = self.builder.buildAlloca(set_type, "filter_result");
+        const result_alloca = self.buildEntryBlockAlloca(set_type, "filter_result");
         _ = self.builder.buildStore(empty_set, result_alloca);
 
         // Extract closure function pointer and environment pointer
         const closure_struct_type = self.getClosureStructType();
-        const closure_alloca = self.builder.buildAlloca(closure_struct_type, "filter.closure_tmp");
+        const closure_alloca = self.buildEntryBlockAlloca(closure_struct_type, "filter.closure_tmp");
         _ = self.builder.buildStore(closure_value, closure_alloca);
 
         var fn_ptr_indices = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 0) };
@@ -22698,7 +22701,7 @@ pub const Emitter = struct {
         const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "filter_next");
         const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "filter_done");
 
-        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
+        const idx_alloca = self.buildEntryBlockAlloca(i32_type, "idx");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
 
@@ -22776,7 +22779,7 @@ pub const Emitter = struct {
         const capacity = self.builder.buildLoad(i32_type, cap_field, "capacity");
 
         // Allocate result list on the stack
-        const result_alloca = self.builder.buildAlloca(list_type, "map.result");
+        const result_alloca = self.buildEntryBlockAlloca(list_type, "map.result");
         const zero = llvm.Const.int32(self.ctx, 0);
 
         // Check if set is empty
@@ -22804,7 +22807,7 @@ pub const Emitter = struct {
 
         // Extract closure function pointer and environment pointer
         const closure_struct_type = self.getClosureStructType();
-        const closure_alloca = self.builder.buildAlloca(closure_struct_type, "map.closure_tmp");
+        const closure_alloca = self.buildEntryBlockAlloca(closure_struct_type, "map.closure_tmp");
         _ = self.builder.buildStore(closure_value, closure_alloca);
 
         var fn_ptr_indices = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 0) };
@@ -22836,8 +22839,8 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(alloc_header, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "map.alloc_hdr_field"));
 
         // Loop counters: source index (over capacity) and result index (over elements found)
-        const src_idx_alloca = self.builder.buildAlloca(i32_type, "map.src_idx");
-        const res_idx_alloca = self.builder.buildAlloca(i32_type, "map.res_idx");
+        const src_idx_alloca = self.buildEntryBlockAlloca(i32_type, "map.src_idx");
+        const res_idx_alloca = self.buildEntryBlockAlloca(i32_type, "map.res_idx");
         _ = self.builder.buildStore(zero, src_idx_alloca);
         _ = self.builder.buildStore(zero, res_idx_alloca);
 
@@ -22916,7 +22919,7 @@ pub const Emitter = struct {
 
         // Create empty result list with heap-allocated header
         const zero_i32 = llvm.Const.int32(self.ctx, 0);
-        const result_alloca = self.builder.buildAlloca(list_type, "enum_result");
+        const result_alloca = self.buildEntryBlockAlloca(list_type, "enum_result");
         const enum_header = self.allocateListHeader();
         _ = self.builder.buildStore(enum_header, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, ""));
 
@@ -22933,8 +22936,8 @@ pub const Emitter = struct {
         const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "enum_next");
         const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "enum_done");
 
-        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
-        const enum_idx_alloca = self.builder.buildAlloca(i32_type, "enum_idx");
+        const idx_alloca = self.buildEntryBlockAlloca(i32_type, "idx");
+        const enum_idx_alloca = self.buildEntryBlockAlloca(i32_type, "enum_idx");
         _ = self.builder.buildStore(zero_i32, idx_alloca);
         _ = self.builder.buildStore(zero_i32, enum_idx_alloca);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
@@ -23060,7 +23063,7 @@ pub const Emitter = struct {
 
         // Create empty result list with heap-allocated header
         const zero_i32 = llvm.Const.int32(self.ctx, 0);
-        const result_alloca = self.builder.buildAlloca(list_type, "zip_result");
+        const result_alloca = self.buildEntryBlockAlloca(list_type, "zip_result");
         const zip_result_header = self.allocateListHeader();
         _ = self.builder.buildStore(zip_result_header, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, ""));
 
@@ -23088,15 +23091,15 @@ pub const Emitter = struct {
         const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_done");
 
         // Collect elements from first set into a temp buffer (heap-indirected)
-        const list1_alloca = self.builder.buildAlloca(list_type, "list1");
+        const list1_alloca = self.buildEntryBlockAlloca(list_type, "list1");
         const list1_header = self.allocateListHeader();
         _ = self.builder.buildStore(list1_header, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list1_alloca, 0, ""));
 
-        const list2_alloca = self.builder.buildAlloca(list_type, "list2");
+        const list2_alloca = self.buildEntryBlockAlloca(list_type, "list2");
         const list2_header = self.allocateListHeader();
         _ = self.builder.buildStore(list2_header, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list2_alloca, 0, ""));
 
-        const idx1_alloca = self.builder.buildAlloca(i32_type, "idx1");
+        const idx1_alloca = self.buildEntryBlockAlloca(i32_type, "idx1");
         _ = self.builder.buildStore(zero_i32, idx1_alloca);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop1_block);
 
@@ -23129,7 +23132,7 @@ pub const Emitter = struct {
 
         // Loop 2: Collect from second set
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop2_block);
-        const idx2_alloca = self.builder.buildAlloca(i32_type, "idx2");
+        const idx2_alloca = self.buildEntryBlockAlloca(i32_type, "idx2");
         _ = self.builder.buildStore(zero_i32, idx2_alloca);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, check2_block);
 
@@ -23197,7 +23200,7 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(min_len, llvm.c.LLVMBuildStructGEP2(self.builder.ref, sz_header_type, zip_alloc_header, 2, ""));
 
         // Build tuples
-        const build_idx = self.builder.buildAlloca(i32_type, "build_idx");
+        const build_idx = self.buildEntryBlockAlloca(i32_type, "build_idx");
         _ = self.builder.buildStore(zero_i32, build_idx);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, build_block);
 
@@ -24042,11 +24045,11 @@ pub const Emitter = struct {
         const len = self.builder.buildLoad(i32_type, len_ptr, "hash.len");
 
         // Initialize hash = FNV_OFFSET
-        const hash_alloca = self.builder.buildAlloca(i64_type, "hash.val");
+        const hash_alloca = self.buildEntryBlockAlloca(i64_type, "hash.val");
         _ = self.builder.buildStore(llvm.Const.int(i64_type, @bitCast(FNV_OFFSET), false), hash_alloca);
 
         // Loop index
-        const idx_alloca = self.builder.buildAlloca(i32_type, "hash.idx");
+        const idx_alloca = self.buildEntryBlockAlloca(i32_type, "hash.idx");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
 
         // Loop blocks
@@ -24288,7 +24291,7 @@ pub const Emitter = struct {
     /// Returns a loaded string struct value.
     fn buildStringFromHeader(self: *Emitter, header_ptr: llvm.ValueRef) llvm.ValueRef {
         const string_type = self.getStringStructType();
-        const string_alloca = self.builder.buildAlloca(string_type, "str.wrap");
+        const string_alloca = self.buildEntryBlockAlloca(string_type, "str.wrap");
         const header_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 0, "str.wrap.hdr");
         _ = self.builder.buildStore(header_ptr, header_field);
         return self.builder.buildLoad(string_type, string_alloca, "str.wrap.val");
@@ -24382,7 +24385,7 @@ pub const Emitter = struct {
 
         // Build the Result struct
         const result_type = self.getFileResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "file.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "file.result");
 
         // Get struct field pointers
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "file.tag_ptr");
@@ -24443,7 +24446,7 @@ pub const Emitter = struct {
 
         // Build Result#[String, IoError] struct
         const result_type = self.getStringResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "readstr.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "readstr.result");
 
         // Get struct field pointers
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "readstr.tag_ptr");
@@ -24560,7 +24563,7 @@ pub const Emitter = struct {
         // Build Result#[List#[u8], IoError] struct
         const list_type = self.getListStructType();
         const result_type = self.getListResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "readall.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "readall.result");
 
         // Get struct field pointers
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "readall.tag_ptr");
@@ -24666,7 +24669,7 @@ pub const Emitter = struct {
 
         // Build Result#[i32, IoError]
         const result_type = self.getI32ResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "write.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "write.result");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "write.tag_ptr");
         const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "write.val_ptr");
@@ -24764,7 +24767,7 @@ pub const Emitter = struct {
 
         // Build Result#[i32, IoError]
         const result_type = self.getI32ResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "write.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "write.result");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "write.tag_ptr");
         const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "write.val_ptr");
@@ -24799,7 +24802,7 @@ pub const Emitter = struct {
 
         // Build Result#[i32, IoError]
         const result_type = self.getI32ResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "read.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "read.result");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "read.tag_ptr");
         const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "read.val_ptr");
@@ -24825,7 +24828,7 @@ pub const Emitter = struct {
 
         // Build Result#[void, IoError] - always Ok
         const result_type = self.getVoidResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "close.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "close.result");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "close.tag_ptr");
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
@@ -24847,7 +24850,7 @@ pub const Emitter = struct {
 
         // Build Result#[void, IoError] - always Ok
         const result_type = self.getVoidResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "flush.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "flush.result");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "flush.tag_ptr");
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
@@ -24877,7 +24880,7 @@ pub const Emitter = struct {
 
         // Build Result#[i32, IoError]
         const result_type = self.getI32ResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "stdout.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "stdout.result");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "stdout.tag_ptr");
         const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "stdout.val_ptr");
@@ -24902,7 +24905,7 @@ pub const Emitter = struct {
 
         // Build Result#[void, IoError]
         const result_type = self.getVoidResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "stdout.flush.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "stdout.flush.result");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "stdout.flush.tag_ptr");
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
@@ -24932,7 +24935,7 @@ pub const Emitter = struct {
 
         // Build Result#[i32, IoError]
         const result_type = self.getI32ResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "stdout.write.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "stdout.write.result");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "stdout.write.tag_ptr");
         const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "stdout.write.val_ptr");
@@ -24966,7 +24969,7 @@ pub const Emitter = struct {
 
         // Build Result#[i32, IoError]
         const result_type = self.getI32ResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "stderr.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "stderr.result");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "stderr.tag_ptr");
         const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "stderr.val_ptr");
@@ -24991,7 +24994,7 @@ pub const Emitter = struct {
 
         // Build Result#[void, IoError]
         const result_type = self.getVoidResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "stderr.flush.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "stderr.flush.result");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "stderr.flush.tag_ptr");
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
@@ -25021,7 +25024,7 @@ pub const Emitter = struct {
 
         // Build Result#[i32, IoError]
         const result_type = self.getI32ResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "stderr.write.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "stderr.write.result");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "stderr.write.tag_ptr");
         const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "stderr.write.val_ptr");
@@ -25055,7 +25058,7 @@ pub const Emitter = struct {
 
         // Build Result#[i32, IoError]
         const result_type = self.getI32ResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "stdin.read.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "stdin.read.result");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "stdin.read.tag_ptr");
         const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "stdin.read.val_ptr");
@@ -25163,7 +25166,7 @@ pub const Emitter = struct {
 
         // Build Path struct { ptr, len, capacity }
         const path_type = self.getPathStructType();
-        const path_alloca = self.builder.buildAlloca(path_type, "path.alloca");
+        const path_alloca = self.buildEntryBlockAlloca(path_type, "path.alloca");
         const i32_type = llvm.Types.int32(self.ctx);
 
         // Store ptr (field 0)
@@ -25277,7 +25280,7 @@ pub const Emitter = struct {
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args2, "");
 
         // Build new Path struct
-        const new_path_alloca = self.builder.buildAlloca(path_type, "join.result");
+        const new_path_alloca = self.buildEntryBlockAlloca(path_type, "join.result");
         const new_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, new_path_alloca, 0, "join.new_ptr");
         _ = self.builder.buildStore(new_buffer, new_ptr_field);
         const new_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, new_path_alloca, 1, "join.new_len_field");
@@ -25304,7 +25307,7 @@ pub const Emitter = struct {
         const len = self.builder.buildLoad(i32_type, len_ptr, "parent.len");
 
         // Allocate result
-        const result_alloca = self.builder.buildAlloca(opt_path_type, "parent.result");
+        const result_alloca = self.buildEntryBlockAlloca(opt_path_type, "parent.result");
 
         // Search backwards for '/'
         // We'll use a loop to find the last '/' character
@@ -25315,7 +25318,7 @@ pub const Emitter = struct {
         const cont_bb = llvm.appendBasicBlock(self.ctx, func, "parent.cont");
 
         // Create counter (start at len - 1)
-        const counter_alloca = self.builder.buildAlloca(i32_type, "parent.counter");
+        const counter_alloca = self.buildEntryBlockAlloca(i32_type, "parent.counter");
         const len_minus_1 = llvm.c.LLVMBuildSub(self.builder.ref, len, llvm.Const.int32(self.ctx, 1), "parent.start");
         _ = self.builder.buildStore(len_minus_1, counter_alloca);
         _ = self.builder.buildBr(loop_bb);
@@ -25412,7 +25415,7 @@ pub const Emitter = struct {
         const len = self.builder.buildLoad(i32_type, len_ptr, "fname.len");
 
         // Allocate result
-        const result_alloca = self.builder.buildAlloca(opt_string_type, "fname.result");
+        const result_alloca = self.buildEntryBlockAlloca(opt_string_type, "fname.result");
 
         // Search backwards for '/'
         const func = self.current_function orelse return EmitError.InvalidAST;
@@ -25426,7 +25429,7 @@ pub const Emitter = struct {
         const cont_bb = llvm.appendBasicBlock(self.ctx, func, "fname.cont");
 
         // Create counter (start at len - 1)
-        const counter_alloca = self.builder.buildAlloca(i32_type, "fname.counter");
+        const counter_alloca = self.buildEntryBlockAlloca(i32_type, "fname.counter");
         const len_minus_1 = llvm.c.LLVMBuildSub(self.builder.ref, len, llvm.Const.int32(self.ctx, 1), "fname.start");
         _ = self.builder.buildStore(len_minus_1, counter_alloca);
         _ = self.builder.buildBr(loop_bb);
@@ -25497,7 +25500,7 @@ pub const Emitter = struct {
         const len = self.builder.buildLoad(i32_type, len_ptr, "ext.len");
 
         // Allocate result
-        const result_alloca = self.builder.buildAlloca(opt_string_type, "ext.result");
+        const result_alloca = self.buildEntryBlockAlloca(opt_string_type, "ext.result");
 
         // Search backwards for '.' (stopping at '/')
         const func = self.current_function orelse return EmitError.InvalidAST;
@@ -25513,7 +25516,7 @@ pub const Emitter = struct {
         const cont_bb = llvm.appendBasicBlock(self.ctx, func, "ext.cont");
 
         // Create counter (start at len - 1)
-        const counter_alloca = self.builder.buildAlloca(i32_type, "ext.counter");
+        const counter_alloca = self.buildEntryBlockAlloca(i32_type, "ext.counter");
         const len_minus_1 = llvm.c.LLVMBuildSub(self.builder.ref, len, llvm.Const.int32(self.ctx, 1), "ext.start");
         _ = self.builder.buildStore(len_minus_1, counter_alloca);
         _ = self.builder.buildBr(loop_bb);
@@ -25638,7 +25641,7 @@ pub const Emitter = struct {
         const i32_type = llvm.Types.int32(self.ctx);
 
         // stat struct size varies by platform, use 256 bytes to be safe
-        const stat_buf = self.builder.buildAlloca(llvm.Types.array(llvm.Types.int8(self.ctx), 256), "stat.buf");
+        const stat_buf = self.buildEntryBlockAlloca(llvm.Types.array(llvm.Types.int8(self.ctx), 256), "stat.buf");
 
         // Call stat(path, &stat_buf)
         const stat_fn = self.getOrDeclareStat();
@@ -25832,7 +25835,7 @@ pub const Emitter = struct {
 
         // Build Result#[void, IoError]
         const result_type = self.getVoidResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "mkdir.res");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "mkdir.res");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "mkdir.tag_ptr");
         const err_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "mkdir.err_ptr");
@@ -25889,7 +25892,7 @@ pub const Emitter = struct {
 
         // Build Result#[void, IoError]
         const result_type = self.getVoidResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "dirall.res");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "dirall.res");
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "dirall.tag_ptr");
         const err_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "dirall.err_ptr");
 
@@ -25911,7 +25914,7 @@ pub const Emitter = struct {
         const final_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.final");
 
         // Counter starts at 1 (skip leading /)
-        const counter_alloca = self.builder.buildAlloca(i64_type, "dirall.i");
+        const counter_alloca = self.buildEntryBlockAlloca(i64_type, "dirall.i");
         _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 1), counter_alloca);
         _ = self.builder.buildBr(loop_bb);
 
@@ -26016,7 +26019,7 @@ pub const Emitter = struct {
 
         // Build Result#[void, IoError]
         const result_type = self.getVoidResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "unlink.res");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "unlink.res");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "unlink.tag_ptr");
         const err_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "unlink.err_ptr");
@@ -26060,7 +26063,7 @@ pub const Emitter = struct {
 
         // Build Result#[void, IoError]
         const result_type = self.getVoidResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "rmdir.res");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "rmdir.res");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "rmdir.tag_ptr");
         const err_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "rmdir.err_ptr");
@@ -26117,7 +26120,7 @@ pub const Emitter = struct {
 
         // Build Result#[String, IoError] struct
         const result_type = self.getStringResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "fs_readstr.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "fs_readstr.result");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "fs_readstr.tag_ptr");
         const str_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "fs_readstr.str_ptr");
@@ -26224,7 +26227,7 @@ pub const Emitter = struct {
 
         // Build Result#[void, IoError]
         const result_type = self.getVoidResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "fs_write.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "fs_write.result");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "fs_write.tag_ptr");
         const err_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "fs_write.err_ptr");
@@ -26319,7 +26322,7 @@ pub const Emitter = struct {
 
         // Build Result#[void, IoError]
         const result_type = self.getVoidResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "fs_append.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "fs_append.result");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "fs_append.tag_ptr");
         const err_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "fs_append.err_ptr");
@@ -26415,7 +26418,7 @@ pub const Emitter = struct {
 
         // Build Result#[List#[String], IoError]
         const result_type = self.getListStringResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "readdir.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "readdir.result");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "readdir.tag_ptr");
         const list_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "readdir.list_ptr");
@@ -26467,7 +26470,7 @@ pub const Emitter = struct {
             // Step 2: Allocate _finddata64_t on stack (320 bytes is sufficient)
             const finddata_size: u32 = 320;
             const finddata_type = llvm.c.LLVMArrayType2(i8_type, finddata_size);
-            const finddata = self.builder.buildAlloca(finddata_type, "readdir.finddata");
+            const finddata = self.buildEntryBlockAlloca(finddata_type, "readdir.finddata");
 
             // Step 3: Call _findfirst64(pattern, &finddata) - returns intptr_t, -1 on error
             const findfirst_fn = self.getOrDeclareOpendir();
@@ -26885,7 +26888,7 @@ pub const Emitter = struct {
         const value_val = try self.emitExpr(call.args[1]);
 
         const result_type = self.getVoidResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "envset.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "envset.result");
 
         // Call setenv/putenv_s — platform-specific argument count
         const setenv_fn = self.getOrDeclareSetenv();
@@ -26974,10 +26977,10 @@ pub const Emitter = struct {
         const i64_type = llvm.Types.int64(self.ctx);
         const result_type = self.getFileStatResultType();
         const file_stat_type = self.getFileStatStructType();
-        const result_alloca = self.builder.buildAlloca(result_type, "fsstat.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "fsstat.result");
 
         // Allocate stat buffer (256 bytes, safe for all platforms)
-        const stat_buf = self.builder.buildAlloca(llvm.Types.array(llvm.Types.int8(self.ctx), 256), "fsstat.buf");
+        const stat_buf = self.buildEntryBlockAlloca(llvm.Types.array(llvm.Types.int8(self.ctx), 256), "fsstat.buf");
 
         // Call stat(path, &stat_buf)
         const stat_fn = self.getOrDeclareStat();
@@ -27107,7 +27110,7 @@ pub const Emitter = struct {
         const i64_type = llvm.Types.int64(self.ctx);
         const result_type = self.getProcessOutputResultType();
         const proc_type = self.getProcessOutputStructType();
-        const result_alloca = self.builder.buildAlloca(result_type, "procrun.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "procrun.result");
         const func = self.current_function orelse return EmitError.InvalidAST;
         const cont_bb = llvm.appendBasicBlock(self.ctx, func, "procrun.cont");
 
@@ -27123,7 +27126,7 @@ pub const Emitter = struct {
         // Extract list ptr and len via header indirection
         const proc_list_type = self.getListStructType();
         const proc_header_type = self.getListHeaderType();
-        const proc_list_alloca = self.builder.buildAlloca(proc_list_type, "procrun.list");
+        const proc_list_alloca = self.buildEntryBlockAlloca(proc_list_type, "procrun.list");
         _ = self.builder.buildStore(args_val, proc_list_alloca);
         const proc_header = self.derefListHeader(proc_list_alloca);
         const proc_hdr_ptr_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, proc_header_type, proc_header, 0, "procrun.list_ptr");
@@ -27133,9 +27136,9 @@ pub const Emitter = struct {
 
         // Two-pass approach: first sum actual argument lengths, then allocate exact buffer.
         // Pass 1: total_args_len = sum of (1 + strlen(args[i])) for each arg (1 for space separator)
-        const total_args_alloca = self.builder.buildAlloca(i64_type, "procrun.total_args");
+        const total_args_alloca = self.buildEntryBlockAlloca(i64_type, "procrun.total_args");
         _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), total_args_alloca);
-        const len_idx_alloca = self.builder.buildAlloca(i32_type, "procrun.len_idx");
+        const len_idx_alloca = self.buildEntryBlockAlloca(i32_type, "procrun.len_idx");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_idx_alloca);
 
         const len_loop_bb = llvm.appendBasicBlock(self.ctx, func, "procrun.len_loop");
@@ -27192,9 +27195,9 @@ pub const Emitter = struct {
 
         // Pass 2: copy args into buffer
         // offset tracks current write position in buffer (starts at cmd_len)
-        const offset_alloca = self.builder.buildAlloca(i64_type, "procrun.offset");
+        const offset_alloca = self.buildEntryBlockAlloca(i64_type, "procrun.offset");
         _ = self.builder.buildStore(cmd_len, offset_alloca);
-        const idx_alloca = self.builder.buildAlloca(i32_type, "procrun.idx");
+        const idx_alloca = self.buildEntryBlockAlloca(i32_type, "procrun.idx");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
 
         const loop_bb = llvm.appendBasicBlock(self.ctx, func, "procrun.loop");
@@ -27263,9 +27266,9 @@ pub const Emitter = struct {
 
         // Allocate output buffer (start with 4096 bytes, grow as needed)
         const init_cap: u64 = 4096;
-        const out_buf_alloca = self.builder.buildAlloca(ptr_type, "procrun.outbuf");
-        const out_len_alloca = self.builder.buildAlloca(i64_type, "procrun.outlen");
-        const out_cap_alloca = self.builder.buildAlloca(i64_type, "procrun.outcap");
+        const out_buf_alloca = self.buildEntryBlockAlloca(ptr_type, "procrun.outbuf");
+        const out_len_alloca = self.buildEntryBlockAlloca(i64_type, "procrun.outlen");
+        const out_cap_alloca = self.buildEntryBlockAlloca(i64_type, "procrun.outcap");
         const init_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{llvm.Const.int64(self.ctx, init_cap)}, "procrun.initbuf");
 
         // Null-check initial malloc: on OOM, pclose pipe, free cmd_buf, return Err.
@@ -27707,7 +27710,7 @@ pub const Emitter = struct {
         const i64_type = llvm.Types.int64(self.ctx);
         const result_type = self.getProcessHandleResultType();
         const handle_type = self.getProcessHandleStructType();
-        const result_alloca = self.builder.buildAlloca(result_type, "wspawn.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "wspawn.result");
         const func = self.current_function orelse return EmitError.InvalidAST;
         const cont_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.cont");
 
@@ -27723,7 +27726,7 @@ pub const Emitter = struct {
         // Extract list ptr and len
         const list_type = self.getListStructType();
         const header_type = self.getListHeaderType();
-        const list_alloca = self.builder.buildAlloca(list_type, "wspawn.list");
+        const list_alloca = self.buildEntryBlockAlloca(list_type, "wspawn.list");
         _ = self.builder.buildStore(args_val, list_alloca);
         const header = self.derefListHeader(list_alloca);
         const hdr_ptr_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header, 0, "wspawn.lptr");
@@ -27733,7 +27736,7 @@ pub const Emitter = struct {
 
         // Compute total command line length
         const cmd_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &[_]llvm.ValueRef{cmd_val}, "wspawn.cmdlen");
-        const total_alloca = self.builder.buildAlloca(i64_type, "wspawn.total");
+        const total_alloca = self.buildEntryBlockAlloca(i64_type, "wspawn.total");
         _ = self.builder.buildStore(cmd_len, total_alloca);
 
         // Loop: total += 1 + strlen(args[i]) for quoting: total += 3 + strlen(args[i])
@@ -27780,7 +27783,7 @@ pub const Emitter = struct {
 
         // Copy cmd to buffer
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &[_]llvm.ValueRef{ cmdline_buf, cmd_val, cmd_len }, "wspawn.cpy1");
-        const pos_alloca = self.builder.buildAlloca(i64_type, "wspawn.pos");
+        const pos_alloca = self.buildEntryBlockAlloca(i64_type, "wspawn.pos");
         _ = self.builder.buildStore(cmd_len, pos_alloca);
 
         // Second loop: copy " \"arg\"" for each arg
@@ -27864,14 +27867,14 @@ pub const Emitter = struct {
 
         // Set up SECURITY_ATTRIBUTES (24 bytes on x64): bInheritHandle = TRUE
         const sa_size: u32 = 24;
-        const sa_alloca = self.builder.buildAlloca(llvm.c.LLVMArrayType2(i8_type, sa_size), "wspawn.sa");
+        const sa_alloca = self.buildEntryBlockAlloca(llvm.c.LLVMArrayType2(i8_type, sa_size), "wspawn.sa");
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ sa_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, sa_size) }, "wspawn.sa_clr");
         self.storeI32AtByteOffset(sa_alloca, 0, llvm.Const.int32(self.ctx, @intCast(sa_size)), "wspawn.sa.len"); // nLength
         self.storeI32AtByteOffset(sa_alloca, 16, llvm.Const.int32(self.ctx, 1), "wspawn.sa.inherit"); // bInheritHandle = TRUE
 
         // CreatePipe for stdout
-        const out_read_alloca = self.builder.buildAlloca(ptr_type, "wspawn.out_read");
-        const out_write_alloca = self.builder.buildAlloca(ptr_type, "wspawn.out_write");
+        const out_read_alloca = self.buildEntryBlockAlloca(ptr_type, "wspawn.out_read");
+        const out_write_alloca = self.buildEntryBlockAlloca(ptr_type, "wspawn.out_write");
         const pipe_out_r = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(create_pipe_fn), create_pipe_fn, &[_]llvm.ValueRef{ out_read_alloca, out_write_alloca, sa_alloca, llvm.Const.int32(self.ctx, 0) }, "wspawn.pipe_out");
         const pipe_out_fail = self.builder.buildICmp(llvm.c.LLVMIntEQ, pipe_out_r, llvm.Const.int32(self.ctx, 0), "wspawn.pofail");
         const pipe_out_ok_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.po_ok");
@@ -27890,8 +27893,8 @@ pub const Emitter = struct {
 
         self.builder.positionAtEnd(pipe_out_ok_bb);
         // CreatePipe for stderr
-        const err_read_alloca = self.builder.buildAlloca(ptr_type, "wspawn.err_read");
-        const err_write_alloca = self.builder.buildAlloca(ptr_type, "wspawn.err_write");
+        const err_read_alloca = self.buildEntryBlockAlloca(ptr_type, "wspawn.err_read");
+        const err_write_alloca = self.buildEntryBlockAlloca(ptr_type, "wspawn.err_write");
         const pipe_err_r = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(create_pipe_fn), create_pipe_fn, &[_]llvm.ValueRef{ err_read_alloca, err_write_alloca, sa_alloca, llvm.Const.int32(self.ctx, 0) }, "wspawn.pipe_err");
         const pipe_err_fail = self.builder.buildICmp(llvm.c.LLVMIntEQ, pipe_err_r, llvm.Const.int32(self.ctx, 0), "wspawn.pefail");
         const pipe_err_ok_bb = llvm.appendBasicBlock(self.ctx, func, "wspawn.pe_ok");
@@ -27900,7 +27903,7 @@ pub const Emitter = struct {
         self.builder.positionAtEnd(pipe_err_ok_bb);
         // Set up STARTUPINFOA (104 bytes on x64)
         const si_size: u32 = 104;
-        const si_alloca = self.builder.buildAlloca(llvm.c.LLVMArrayType2(i8_type, si_size), "wspawn.si");
+        const si_alloca = self.buildEntryBlockAlloca(llvm.c.LLVMArrayType2(i8_type, si_size), "wspawn.si");
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ si_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, si_size) }, "wspawn.si_clr");
         self.storeI32AtByteOffset(si_alloca, 0, llvm.Const.int32(self.ctx, @intCast(si_size)), "wspawn.si.cb"); // cb
         self.storeI32AtByteOffset(si_alloca, 60, llvm.Const.int32(self.ctx, 0x100), "wspawn.si.flags"); // dwFlags = STARTF_USESTDHANDLES
@@ -27915,7 +27918,7 @@ pub const Emitter = struct {
 
         // PROCESS_INFORMATION (24 bytes on x64)
         const pi_size: u32 = 24;
-        const pi_alloca = self.builder.buildAlloca(llvm.c.LLVMArrayType2(i8_type, pi_size), "wspawn.pi");
+        const pi_alloca = self.buildEntryBlockAlloca(llvm.c.LLVMArrayType2(i8_type, pi_size), "wspawn.pi");
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ pi_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, pi_size) }, "wspawn.pi_clr");
 
         // CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)
@@ -27995,8 +27998,8 @@ pub const Emitter = struct {
         const i32_type = llvm.Types.int32(self.ctx);
         const status_type = self.getProcessStatusStructType();
         const handle_type = self.getProcessHandleStructType();
-        const status_alloca = self.builder.buildAlloca(status_type, "wpoll.result");
-        const handle_alloca = self.builder.buildAlloca(handle_type, "wpoll.handle");
+        const status_alloca = self.buildEntryBlockAlloca(status_type, "wpoll.result");
+        const handle_alloca = self.buildEntryBlockAlloca(handle_type, "wpoll.handle");
         _ = self.builder.buildStore(handle_val, handle_alloca);
 
         const wait_fn = self.getOrDeclareWaitForSingleObject();
@@ -28020,7 +28023,7 @@ pub const Emitter = struct {
 
         // Exited: get exit code
         self.builder.positionAtEnd(exited_bb);
-        const exit_code_alloca = self.builder.buildAlloca(i32_type, "wpoll.exitcode");
+        const exit_code_alloca = self.buildEntryBlockAlloca(i32_type, "wpoll.exitcode");
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(get_exit_fn), get_exit_fn, &[_]llvm.ValueRef{ h_process, exit_code_alloca }, "wpoll.getexit");
         const exit_code = self.builder.buildLoad(i32_type, exit_code_alloca, "wpoll.ec");
         const tag_exited = llvm.c.LLVMBuildStructGEP2(self.builder.ref, status_type, status_alloca, 0, "wpoll.tag_e");
@@ -28052,8 +28055,8 @@ pub const Emitter = struct {
         const handle_type = self.getProcessHandleStructType();
         const proc_type = self.getProcessOutputStructType();
         const result_type = self.getProcessOutputResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "wwait.result");
-        const handle_alloca = self.builder.buildAlloca(handle_type, "wwait.handle");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "wwait.result");
+        const handle_alloca = self.buildEntryBlockAlloca(handle_type, "wwait.handle");
         _ = self.builder.buildStore(handle_val, handle_alloca);
         const func = self.current_function orelse return EmitError.InvalidAST;
 
@@ -28072,11 +28075,11 @@ pub const Emitter = struct {
         // Read all stdout into buffer using ReadFile loop
         const buf_cap: u32 = 4096;
         const stdout_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{llvm.Const.int64(self.ctx, buf_cap)}, "wwait.buf");
-        const len_alloca = self.builder.buildAlloca(i64_type, "wwait.len");
+        const len_alloca = self.buildEntryBlockAlloca(i64_type, "wwait.len");
         _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), len_alloca);
-        const cap_alloca = self.builder.buildAlloca(i64_type, "wwait.cap");
+        const cap_alloca = self.buildEntryBlockAlloca(i64_type, "wwait.cap");
         _ = self.builder.buildStore(llvm.Const.int64(self.ctx, buf_cap), cap_alloca);
-        const buf_alloca = self.builder.buildAlloca(ptr_type, "wwait.bufptr");
+        const buf_alloca = self.buildEntryBlockAlloca(ptr_type, "wwait.bufptr");
         _ = self.builder.buildStore(stdout_buf, buf_alloca);
 
         // Read loop
@@ -28109,7 +28112,7 @@ pub const Emitter = struct {
         const i8_type = llvm.Types.int8(self.ctx);
         var read_indices = [_]llvm.ValueRef{rl};
         const read_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, rb, &read_indices, 1, "wwait.rdst");
-        const bytes_read_alloca = self.builder.buildAlloca(i32_type, "wwait.nread");
+        const bytes_read_alloca = self.buildEntryBlockAlloca(i32_type, "wwait.nread");
         const rc = self.builder.buildLoad(i64_type, cap_alloca, "wwait.rc");
         const remaining = self.builder.buildSub(rc, rl, "wwait.rem");
         const to_read = llvm.c.LLVMBuildTrunc(self.builder.ref, remaining, i32_type, "wwait.toread");
@@ -28143,7 +28146,7 @@ pub const Emitter = struct {
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(wait_fn), wait_fn, &[_]llvm.ValueRef{ h_process, llvm.Const.int32(self.ctx, @bitCast(@as(i32, -1))) }, "wwait.wait"); // INFINITE = 0xFFFFFFFF
 
         // Get exit code
-        const exit_alloca = self.builder.buildAlloca(i32_type, "wwait.exit");
+        const exit_alloca = self.buildEntryBlockAlloca(i32_type, "wwait.exit");
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(get_exit_fn), get_exit_fn, &[_]llvm.ValueRef{ h_process, exit_alloca }, "wwait.getexit");
         const exit_code = self.builder.buildLoad(i32_type, exit_alloca, "wwait.ec");
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_handle_fn), close_handle_fn, &[_]llvm.ValueRef{h_process}, "wwait.cl_proc");
@@ -28183,8 +28186,8 @@ pub const Emitter = struct {
         const i32_type = llvm.Types.int32(self.ctx);
         const handle_type = self.getProcessHandleStructType();
         const result_type = self.getStringResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "wread.result");
-        const handle_alloca = self.builder.buildAlloca(handle_type, "wread.handle");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "wread.result");
+        const handle_alloca = self.buildEntryBlockAlloca(handle_type, "wread.handle");
         _ = self.builder.buildStore(handle_val, handle_alloca);
 
         const malloc_fn = self.getOrDeclareMalloc();
@@ -28201,7 +28204,7 @@ pub const Emitter = struct {
         const buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{buf_plus1}, "wread.buf");
 
         // ReadFile
-        const bytes_read_alloca = self.builder.buildAlloca(i32_type, "wread.nread");
+        const bytes_read_alloca = self.buildEntryBlockAlloca(i32_type, "wread.nread");
         const null_ptr = llvm.c.LLVMConstNull(ptr_type);
         const rf_ok = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(read_file_fn), read_file_fn, &[_]llvm.ValueRef{ h_stdout, buf, max_bytes_val, bytes_read_alloca, null_ptr }, "wread.rf");
 
@@ -28242,14 +28245,14 @@ pub const Emitter = struct {
         const i32_type = llvm.Types.int32(self.ctx);
         const result_type = self.getProcessHandleResultType();
         const handle_type = self.getProcessHandleStructType();
-        const result_alloca = self.builder.buildAlloca(result_type, "spawn.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "spawn.result");
         const func = self.current_function orelse return EmitError.InvalidAST;
         const cont_bb = llvm.appendBasicBlock(self.ctx, func, "spawn.cont");
 
         // Create pipes for stdout and stderr
         // int pipe_out[2], pipe_err[2];
-        const pipe_out_alloca = self.builder.buildAlloca(llvm.c.LLVMArrayType2(i32_type, 2), "spawn.pipe_out");
-        const pipe_err_alloca = self.builder.buildAlloca(llvm.c.LLVMArrayType2(i32_type, 2), "spawn.pipe_err");
+        const pipe_out_alloca = self.buildEntryBlockAlloca(llvm.c.LLVMArrayType2(i32_type, 2), "spawn.pipe_out");
+        const pipe_err_alloca = self.buildEntryBlockAlloca(llvm.c.LLVMArrayType2(i32_type, 2), "spawn.pipe_err");
 
         const pipe_fn = self.getOrDeclarePipe();
 
@@ -28302,7 +28305,7 @@ pub const Emitter = struct {
         // Extract list data
         const list_type = self.getListStructType();
         const header_type = self.getListHeaderType();
-        const list_alloca = self.builder.buildAlloca(list_type, "spawn.list");
+        const list_alloca = self.buildEntryBlockAlloca(list_type, "spawn.list");
         _ = self.builder.buildStore(args_val, list_alloca);
         const header = self.derefListHeader(list_alloca);
         const hdr_ptr_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header, 0, "spawn.lptr");
@@ -28356,7 +28359,7 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(cmd_val, argv0_ptr);
 
         // Copy args into argv[1..argc-1]
-        const copy_idx_alloca = self.builder.buildAlloca(i32_type, "spawn.ci");
+        const copy_idx_alloca = self.buildEntryBlockAlloca(i32_type, "spawn.ci");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), copy_idx_alloca);
         const copy_loop_bb = llvm.appendBasicBlock(self.ctx, func, "spawn.copy_loop");
         const copy_body_bb = llvm.appendBasicBlock(self.ctx, func, "spawn.copy_body");
@@ -28512,8 +28515,8 @@ pub const Emitter = struct {
         const status_type = self.getProcessStatusStructType();
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const result_alloca = self.builder.buildAlloca(status_type, "poll.result");
-        const handle_alloca = self.builder.buildAlloca(handle_type, "poll.handle");
+        const result_alloca = self.buildEntryBlockAlloca(status_type, "poll.result");
+        const handle_alloca = self.buildEntryBlockAlloca(handle_type, "poll.handle");
         _ = self.builder.buildStore(handle_val, handle_alloca);
 
         // Extract pid
@@ -28521,7 +28524,7 @@ pub const Emitter = struct {
         const pid = self.builder.buildLoad(i32_type, pid_ptr, "poll.pid");
 
         // int wstatus;
-        const wstatus_alloca = self.builder.buildAlloca(i32_type, "poll.wstatus");
+        const wstatus_alloca = self.buildEntryBlockAlloca(i32_type, "poll.wstatus");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), wstatus_alloca);
 
         // WNOHANG = 1 on both macOS and Linux
@@ -28600,8 +28603,8 @@ pub const Emitter = struct {
         const result_type = self.getProcessOutputResultType();
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const result_alloca = self.builder.buildAlloca(result_type, "wait.result");
-        const handle_alloca = self.builder.buildAlloca(handle_type, "wait.handle");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "wait.result");
+        const handle_alloca = self.buildEntryBlockAlloca(handle_type, "wait.handle");
         _ = self.builder.buildStore(handle_val, handle_alloca);
 
         // Extract pid and stdout_fd
@@ -28633,21 +28636,21 @@ pub const Emitter = struct {
         const pollfd_arr_type = llvm.c.LLVMArrayType2(pollfd_type, 2);
 
         // Allocate pollfd array on stack
-        const pollfds = self.builder.buildAlloca(pollfd_arr_type, "wait.pollfds");
+        const pollfds = self.buildEntryBlockAlloca(pollfd_arr_type, "wait.pollfds");
 
         // Allocate stdout buffer
-        const out_buf_alloca = self.builder.buildAlloca(ptr_type, "wait.outbuf");
-        const out_len_alloca = self.builder.buildAlloca(i64_type, "wait.outlen");
-        const out_cap_alloca = self.builder.buildAlloca(i64_type, "wait.outcap");
+        const out_buf_alloca = self.buildEntryBlockAlloca(ptr_type, "wait.outbuf");
+        const out_len_alloca = self.buildEntryBlockAlloca(i64_type, "wait.outlen");
+        const out_cap_alloca = self.buildEntryBlockAlloca(i64_type, "wait.outcap");
 
         // Allocate stderr buffer
-        const err_buf_alloca = self.builder.buildAlloca(ptr_type, "wait.errbuf");
-        const err_len_alloca = self.builder.buildAlloca(i64_type, "wait.errlen");
-        const err_cap_alloca = self.builder.buildAlloca(i64_type, "wait.errcap");
+        const err_buf_alloca = self.buildEntryBlockAlloca(ptr_type, "wait.errbuf");
+        const err_len_alloca = self.buildEntryBlockAlloca(i64_type, "wait.errlen");
+        const err_cap_alloca = self.buildEntryBlockAlloca(i64_type, "wait.errcap");
 
         // Done flags for each fd
-        const out_done_alloca = self.builder.buildAlloca(i1_type, "wait.out_done");
-        const err_done_alloca = self.builder.buildAlloca(i1_type, "wait.err_done");
+        const out_done_alloca = self.buildEntryBlockAlloca(i1_type, "wait.out_done");
+        const err_done_alloca = self.buildEntryBlockAlloca(i1_type, "wait.err_done");
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), out_done_alloca);
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), err_done_alloca);
 
@@ -28671,7 +28674,7 @@ pub const Emitter = struct {
             _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_fn), close_fn, &[_]llvm.ValueRef{stdout_fd}, "");
             _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_fn), close_fn, &[_]llvm.ValueRef{stderr_fd}, "");
             const waitpid_fn_oom = self.getOrDeclareWaitpid();
-            const ws_oom = self.builder.buildAlloca(i32_type, "wait.ws_oom");
+            const ws_oom = self.buildEntryBlockAlloca(i32_type, "wait.ws_oom");
             _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), ws_oom);
             _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(waitpid_fn_oom), waitpid_fn_oom, &[_]llvm.ValueRef{ pid, ws_oom, llvm.Const.int32(self.ctx, 0) }, "");
             const oom_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "wait.oom_tag");
@@ -28898,7 +28901,7 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 0), eterm_ptr);
 
         // waitpid(pid, &status, 0) — blocking, with EINTR retry loop
-        const wstatus_alloca = self.builder.buildAlloca(i32_type, "wait.ws");
+        const wstatus_alloca = self.buildEntryBlockAlloca(i32_type, "wait.ws");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), wstatus_alloca);
         const waitpid_fn = self.getOrDeclareWaitpid();
 
@@ -28963,8 +28966,8 @@ pub const Emitter = struct {
         const result_type = self.getStringResultType();
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const result_alloca = self.builder.buildAlloca(result_type, "prs.result");
-        const handle_alloca = self.builder.buildAlloca(handle_type, "prs.handle");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "prs.result");
+        const handle_alloca = self.buildEntryBlockAlloca(handle_type, "prs.handle");
         _ = self.builder.buildStore(handle_val, handle_alloca);
 
         // Extract stdout_fd
@@ -29194,7 +29197,7 @@ pub const Emitter = struct {
         const result_type = self.getTcpFdResultType();
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const result_alloca = self.builder.buildAlloca(result_type, "tcpl.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "tcpl.result");
         const cont_bb = llvm.appendBasicBlock(self.ctx, func, "tcpl.cont");
 
         // socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
@@ -29220,7 +29223,7 @@ pub const Emitter = struct {
 
         // Socket ok: set SO_REUSEADDR
         self.builder.positionAtEnd(sock_ok_bb);
-        const opt_alloca = self.builder.buildAlloca(i32_type, "tcpl.opt");
+        const opt_alloca = self.buildEntryBlockAlloca(i32_type, "tcpl.opt");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 1), opt_alloca);
 
         // Platform-specific constants
@@ -29238,7 +29241,7 @@ pub const Emitter = struct {
 
         // Build sockaddr_in
         const addr_type = self.getSockaddrInType();
-        const addr_alloca = self.builder.buildAlloca(addr_type, "tcpl.addr");
+        const addr_alloca = self.buildEntryBlockAlloca(addr_type, "tcpl.addr");
         // memset to zero
         const memset_fn = self.getOrDeclareMemset();
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ addr_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, 16) }, "");
@@ -29352,8 +29355,8 @@ pub const Emitter = struct {
         const result_type = self.getTcpFdResultType();
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const result_alloca = self.builder.buildAlloca(result_type, "tcpa.result");
-        const listener_alloca = self.builder.buildAlloca(fd_type, "tcpa.listener");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "tcpa.result");
+        const listener_alloca = self.buildEntryBlockAlloca(fd_type, "tcpa.listener");
         _ = self.builder.buildStore(listener_val, listener_alloca);
 
         // Extract fd
@@ -29407,7 +29410,7 @@ pub const Emitter = struct {
         const result_type = self.getTcpFdResultType();
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const result_alloca = self.builder.buildAlloca(result_type, "tcpc.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "tcpc.result");
         const cont_bb = llvm.appendBasicBlock(self.ctx, func, "tcpc.cont");
 
         // socket(AF_INET, SOCK_STREAM, 0)
@@ -29433,7 +29436,7 @@ pub const Emitter = struct {
         // Build sockaddr_in
         self.builder.positionAtEnd(sock_ok_bb);
         const addr_type = self.getSockaddrInType();
-        const addr_alloca = self.builder.buildAlloca(addr_type, "tcpc.addr");
+        const addr_alloca = self.buildEntryBlockAlloca(addr_type, "tcpc.addr");
         const memset_fn = self.getOrDeclareMemset();
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ addr_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, 16) }, "");
 
@@ -29525,8 +29528,8 @@ pub const Emitter = struct {
         const result_type = self.getStringResultType();
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const result_alloca = self.builder.buildAlloca(result_type, "tcpr.result");
-        const stream_alloca = self.builder.buildAlloca(fd_type, "tcpr.stream");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "tcpr.result");
+        const stream_alloca = self.buildEntryBlockAlloca(fd_type, "tcpr.stream");
         _ = self.builder.buildStore(stream_val, stream_alloca);
 
         const fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fd_type, stream_alloca, 0, "tcpr.fd_p");
@@ -29611,8 +29614,8 @@ pub const Emitter = struct {
         const result_type = self.getI32ResultType();
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const result_alloca = self.builder.buildAlloca(result_type, "tcpw.result");
-        const stream_alloca = self.builder.buildAlloca(fd_type, "tcpw.stream");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "tcpw.result");
+        const stream_alloca = self.buildEntryBlockAlloca(fd_type, "tcpw.stream");
         _ = self.builder.buildStore(stream_val, stream_alloca);
 
         const fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fd_type, stream_alloca, 0, "tcpw.fd_p");
@@ -29625,7 +29628,7 @@ pub const Emitter = struct {
         const data_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &[_]llvm.ValueRef{data_val}, "tcpw.len");
 
         // Loop to handle partial writes: send() may not send all bytes at once
-        const offset_alloca = self.builder.buildAlloca(i64_type, "tcpw.offset");
+        const offset_alloca = self.buildEntryBlockAlloca(i64_type, "tcpw.offset");
         _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), offset_alloca);
 
         const send_loop_bb = llvm.appendBasicBlock(self.ctx, func, "tcpw.send_loop");
@@ -29690,7 +29693,7 @@ pub const Emitter = struct {
         const i32_type = llvm.Types.int32(self.ctx);
         const fd_type = self.getTcpFdStructType();
 
-        const stream_alloca = self.builder.buildAlloca(fd_type, "tcpcl.stream");
+        const stream_alloca = self.buildEntryBlockAlloca(fd_type, "tcpcl.stream");
         _ = self.builder.buildStore(stream_val, stream_alloca);
 
         const fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fd_type, stream_alloca, 0, "tcpcl.fd_p");
@@ -29722,8 +29725,8 @@ pub const Emitter = struct {
         const result_type = self.getVoidResultType();
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const result_alloca = self.builder.buildAlloca(result_type, "tcpnb.result");
-        const stream_alloca = self.builder.buildAlloca(fd_type, "tcpnb.stream");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "tcpnb.result");
+        const stream_alloca = self.buildEntryBlockAlloca(fd_type, "tcpnb.stream");
         _ = self.builder.buildStore(stream_val, stream_alloca);
 
         const fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fd_type, stream_alloca, 0, "tcpnb.fd_p");
@@ -29921,7 +29924,7 @@ pub const Emitter = struct {
         const result_type = self.getTcpFdResultType(); // Result#[{i32}, IoError]
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const result_alloca = self.builder.buildAlloca(result_type, "udpb.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "udpb.result");
         const cont_bb = llvm.appendBasicBlock(self.ctx, func, "udpb.cont");
 
         // socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
@@ -29947,7 +29950,7 @@ pub const Emitter = struct {
 
         // Socket ok: set SO_REUSEADDR
         self.builder.positionAtEnd(sock_ok_bb);
-        const opt_alloca = self.builder.buildAlloca(i32_type, "udpb.opt");
+        const opt_alloca = self.buildEntryBlockAlloca(i32_type, "udpb.opt");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 1), opt_alloca);
 
         const SOL_SOCKET: i32 = if (self.platform.os == .macos) @as(i32, @bitCast(@as(u32, 0xFFFF))) else 1;
@@ -29964,7 +29967,7 @@ pub const Emitter = struct {
 
         // Build sockaddr_in
         const addr_type = self.getSockaddrInType();
-        const addr_alloca = self.builder.buildAlloca(addr_type, "udpb.addr");
+        const addr_alloca = self.buildEntryBlockAlloca(addr_type, "udpb.addr");
         const memset_fn = self.getOrDeclareMemset();
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ addr_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, 16) }, "");
 
@@ -30057,8 +30060,8 @@ pub const Emitter = struct {
         const result_type = self.getI32ResultType();
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const result_alloca = self.builder.buildAlloca(result_type, "udps.result");
-        const socket_alloca = self.builder.buildAlloca(fd_type, "udps.socket");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "udps.result");
+        const socket_alloca = self.buildEntryBlockAlloca(fd_type, "udps.socket");
         _ = self.builder.buildStore(socket_val, socket_alloca);
 
         const fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fd_type, socket_alloca, 0, "udps.fd_p");
@@ -30068,7 +30071,7 @@ pub const Emitter = struct {
 
         // Build destination sockaddr_in
         const addr_type = self.getSockaddrInType();
-        const dest_alloca = self.builder.buildAlloca(addr_type, "udps.dest");
+        const dest_alloca = self.buildEntryBlockAlloca(addr_type, "udps.dest");
         const memset_fn = self.getOrDeclareMemset();
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ dest_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, 16) }, "");
 
@@ -30159,8 +30162,8 @@ pub const Emitter = struct {
         const result_type = self.getUdpMessageResultType();
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const result_alloca = self.builder.buildAlloca(result_type, "udpr.result");
-        const socket_alloca = self.builder.buildAlloca(fd_type, "udpr.socket");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "udpr.result");
+        const socket_alloca = self.buildEntryBlockAlloca(fd_type, "udpr.socket");
         _ = self.builder.buildStore(socket_val, socket_alloca);
 
         const fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fd_type, socket_alloca, 0, "udpr.fd_p");
@@ -30201,11 +30204,11 @@ pub const Emitter = struct {
 
         // Prepare sender address storage
         const addr_type = self.getSockaddrInType();
-        const sender_alloca = self.builder.buildAlloca(addr_type, "udpr.sender");
+        const sender_alloca = self.buildEntryBlockAlloca(addr_type, "udpr.sender");
         const memset_fn = self.getOrDeclareMemset();
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ sender_alloca, llvm.Const.int32(self.ctx, 0), llvm.Const.int64(self.ctx, 16) }, "");
 
-        const addrlen_alloca = self.builder.buildAlloca(i32_type, "udpr.addrlen");
+        const addrlen_alloca = self.buildEntryBlockAlloca(i32_type, "udpr.addrlen");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 16), addrlen_alloca);
 
         // recvfrom(sock_fd, buf, max_bytes, 0, &sender, &addrlen)
@@ -30287,7 +30290,7 @@ pub const Emitter = struct {
         const i32_type = llvm.Types.int32(self.ctx);
         const fd_type = self.getTcpFdStructType();
 
-        const socket_alloca = self.builder.buildAlloca(fd_type, "udpcl.socket");
+        const socket_alloca = self.buildEntryBlockAlloca(fd_type, "udpcl.socket");
         _ = self.builder.buildStore(socket_val, socket_alloca);
 
         const fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fd_type, socket_alloca, 0, "udpcl.fd_p");
@@ -30311,11 +30314,11 @@ pub const Emitter = struct {
         const addrinfo_type = self.getAddrinfoType();
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const result_alloca = self.builder.buildAlloca(result_type, "dns.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "dns.result");
         const cont_bb = llvm.appendBasicBlock(self.ctx, func, "dns.cont");
 
         // Prepare hints: ai_family = AF_INET, ai_socktype = SOCK_STREAM
-        const hints_alloca = self.builder.buildAlloca(addrinfo_type, "dns.hints");
+        const hints_alloca = self.buildEntryBlockAlloca(addrinfo_type, "dns.hints");
         const memset_fn = self.getOrDeclareMemset();
         // Size of addrinfo struct: 4*i32 + i32 + 3*ptr = 20 + 24 = 44 bytes on 64-bit (with padding)
         // Use a safe overestimate: 48 bytes
@@ -30333,7 +30336,7 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, SOCK_STREAM), socktype_ptr);
 
         // struct addrinfo *res
-        const res_alloca = self.builder.buildAlloca(llvm.Types.pointer(self.ctx), "dns.res");
+        const res_alloca = self.buildEntryBlockAlloca(llvm.Types.pointer(self.ctx), "dns.res");
         _ = self.builder.buildStore(llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx)), res_alloca);
 
         // getaddrinfo(hostname, NULL, &hints, &res)
@@ -30598,7 +30601,7 @@ pub const Emitter = struct {
         // Build result tuple: (Sender{ptr}, Receiver{ptr})
         var tuple_fields = [_]llvm.TypeRef{ endpoint_type, endpoint_type };
         const tuple_type = llvm.Types.struct_(self.ctx, &tuple_fields, false);
-        const tuple_alloca = self.builder.buildAlloca(tuple_type, "ch.tuple");
+        const tuple_alloca = self.buildEntryBlockAlloca(tuple_type, "ch.tuple");
 
         // Sender = { inner_ptr }
         const sender_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, tuple_type, tuple_alloca, 0, "ch.sender");
@@ -30650,7 +30653,7 @@ pub const Emitter = struct {
 
         // Store value to temp alloca for memcpy
         const val_type = llvm.c.LLVMTypeOf(value);
-        const val_alloca = self.builder.buildAlloca(val_type, "chs.val");
+        const val_alloca = self.buildEntryBlockAlloca(val_type, "chs.val");
         _ = self.builder.buildStore(value, val_alloca);
 
         // Get mutex and cond var pointers
@@ -30747,7 +30750,7 @@ pub const Emitter = struct {
         // Build Optional type: { i1, T }
         var opt_fields = [_]llvm.TypeRef{ i1_type, elem_llvm_type };
         const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
-        const result_alloca = self.builder.buildAlloca(opt_type, "chr.result");
+        const result_alloca = self.buildEntryBlockAlloca(opt_type, "chr.result");
 
         // Get mutex and cond var pointers
         const mutex_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, inner_type, inner_ptr, 8, "chr.mutex");
@@ -30803,7 +30806,7 @@ pub const Emitter = struct {
 
         // Load value from buffer (cast src to proper type and load)
         const typed_src = src; // already a byte pointer, we'll memcpy to result
-        const val_alloca = self.builder.buildAlloca(elem_llvm_type, "chr.val");
+        const val_alloca = self.buildEntryBlockAlloca(elem_llvm_type, "chr.val");
         const memcpy_fn = self.getOrDeclareMemcpy();
         const esz_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, elem_size, llvm.Types.int64(self.ctx), "chr.esz64");
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &[_]llvm.ValueRef{ val_alloca, typed_src, esz_i64 }, "");
@@ -31307,7 +31310,7 @@ pub const Emitter = struct {
         const closure_struct_type = self.getClosureStructType();
 
         // Store closure to alloca so we can GEP into it
-        const closure_alloca = self.builder.buildAlloca(closure_struct_type, "tps.cls");
+        const closure_alloca = self.buildEntryBlockAlloca(closure_struct_type, "tps.cls");
         _ = self.builder.buildStore(closure_val, closure_alloca);
 
         // Extract fn_ptr and env_ptr from closure { fn_ptr, env_ptr }
@@ -31715,7 +31718,7 @@ pub const Emitter = struct {
         const file_handle = try self.emitExpr(method.args[0]);
 
         // Allocate BufReader struct
-        const br_alloca = self.builder.buildAlloca(br_type, "bufreader");
+        const br_alloca = self.buildEntryBlockAlloca(br_type, "bufreader");
 
         // Initialize fields: inner = file_handle, pos = 0, cap = 0
         const inner_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, br_type, br_alloca, 0, "br.inner_ptr");
@@ -31828,7 +31831,7 @@ pub const Emitter = struct {
         // --- Done: return Result#[i32, IoError] ---
         self.builder.positionAtEnd(done_bb);
         const result_type = self.getI32ResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "br.read.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "br.read.result");
 
         const tag_ptr_res = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "br.read.tag_ptr");
         const val_ptr_res = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "br.read.val_ptr");
@@ -31863,7 +31866,7 @@ pub const Emitter = struct {
         const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, br_type, br_ptr, 3, "rl.cap_ptr");
 
         // Allocate result String on stack: { header_ptr }
-        const str_alloca = self.builder.buildAlloca(string_type, "rl.str");
+        const str_alloca = self.buildEntryBlockAlloca(string_type, "rl.str");
         const header_type = self.getStringHeaderType();
 
         // Allocate header on heap
@@ -31987,7 +31990,7 @@ pub const Emitter = struct {
 
         // --- Done: build Result#[String, IoError] ---
         self.builder.positionAtEnd(done_bb);
-        const result_alloca = self.builder.buildAlloca(result_type, "rl.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "rl.result");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "rl.tag_ptr");
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
@@ -32113,7 +32116,7 @@ pub const Emitter = struct {
         // Return empty slice for now
         const slice_type = self.getSliceStructType();
         const result_type = self.getSliceResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "br.fillbuf.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "br.fillbuf.result");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "br.fillbuf.tag_ptr");
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
@@ -32166,7 +32169,7 @@ pub const Emitter = struct {
         const file_handle = try self.emitExpr(method.args[0]);
 
         // Allocate BufWriter struct
-        const bw_alloca = self.builder.buildAlloca(bw_type, "bufwriter");
+        const bw_alloca = self.buildEntryBlockAlloca(bw_type, "bufwriter");
 
         // Initialize fields: inner = file_handle, len = 0
         const inner_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, bw_type, bw_alloca, 0, "bw.inner_ptr");
@@ -32252,7 +32255,7 @@ pub const Emitter = struct {
         // --- Done: return Result#[i32, IoError] ---
         self.builder.positionAtEnd(done_bb);
         const result_type = self.getI32ResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "bw.write.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "bw.write.result");
 
         const tag_ptr_res = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "bw.write.tag_ptr");
         const val_ptr_res = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "bw.write.val_ptr");
@@ -32329,7 +32332,7 @@ pub const Emitter = struct {
         // --- Done ---
         self.builder.positionAtEnd(done_bb);
         const result_type = self.getI32ResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "bw.str.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "bw.str.result");
 
         const tag_ptr_res = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "bw.str.tag_ptr");
         const val_ptr_res = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "bw.str.val_ptr");
@@ -32373,7 +32376,7 @@ pub const Emitter = struct {
 
         // Build Result#[void, IoError]
         const result_type = self.getVoidResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "bw.flush.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "bw.flush.result");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "bw.flush.tag_ptr");
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
@@ -32395,7 +32398,7 @@ pub const Emitter = struct {
 
         // Build Result#[FILE*, IoError] - always Ok after successful flush
         const result_type = self.getFileResultType();
-        const result_alloca = self.builder.buildAlloca(result_type, "bw.into.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "bw.into.result");
 
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "bw.into.tag_ptr");
         const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "bw.into.val_ptr");
@@ -32473,7 +32476,7 @@ pub const Emitter = struct {
     /// Returns a loaded list struct value.
     fn buildListFromHeader(self: *Emitter, header_ptr: llvm.ValueRef) llvm.ValueRef {
         const list_type = self.getListStructType();
-        const list_alloca = self.builder.buildAlloca(list_type, "list.wrap");
+        const list_alloca = self.buildEntryBlockAlloca(list_type, "list.wrap");
         const header_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, "list.wrap.hdr");
         _ = self.builder.buildStore(header_ptr, header_field);
         return self.builder.buildLoad(list_type, list_alloca, "list.wrap.val");
@@ -32487,7 +32490,7 @@ pub const Emitter = struct {
         const slice_type = self.getSliceStructType();
 
         // Create a slice struct
-        const slice_alloca = self.builder.buildAlloca(slice_type, "arr_to_slice");
+        const slice_alloca = self.buildEntryBlockAlloca(slice_type, "arr_to_slice");
 
         // Store pointer to array data (ptr field at index 0)
         const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, slice_alloca, 0, "slice.ptr_field");
@@ -32566,7 +32569,7 @@ pub const Emitter = struct {
                     const array_len = llvm.Types.getArrayLength(arg_type);
 
                     // Store the array value in an alloca so we can get a pointer to it
-                    const array_alloca = self.builder.buildAlloca(arg_type, "arg.arr.storage");
+                    const array_alloca = self.buildEntryBlockAlloca(arg_type, "arg.arr.storage");
                     _ = self.builder.buildStore(arg_value, array_alloca);
 
                     // Convert to slice
@@ -32579,7 +32582,7 @@ pub const Emitter = struct {
         // This happens when a large struct parameter is passed by pointer with byval attribute.
         if (arg_kind == llvm.c.LLVMStructTypeKind and expected_kind == llvm.c.LLVMPointerTypeKind) {
             // Allocate the struct on stack and pass a pointer to it
-            const byval_alloca = self.builder.buildAlloca(arg_type, "byval.arg");
+            const byval_alloca = self.buildEntryBlockAlloca(arg_type, "byval.arg");
             _ = self.builder.buildStore(arg_value, byval_alloca);
             return byval_alloca;
         }
@@ -33069,7 +33072,7 @@ pub const Emitter = struct {
         const slice_type = llvm.Types.struct_(self.ctx, &slice_fields, false);
 
         // Allocate space for the result
-        const result_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, opt_type, "first_result");
+        const result_ptr = self.buildEntryBlockAlloca(opt_type, "first_result");
 
         // Get array length
         const array_size = self.getArraySize(expr);
@@ -33163,7 +33166,7 @@ pub const Emitter = struct {
         };
         const slice_type = llvm.Types.struct_(self.ctx, &slice_fields, false);
 
-        const result_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, opt_type, "last_result");
+        const result_ptr = self.buildEntryBlockAlloca(opt_type, "last_result");
 
         const array_size = self.getArraySize(expr);
         const is_fixed_array = array_size != null;
@@ -33341,7 +33344,7 @@ pub const Emitter = struct {
 
         // Allocate result variable
         const i1_type = llvm.Types.int1(self.ctx);
-        const result_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, i1_type, "contains_result");
+        const result_ptr = self.buildEntryBlockAlloca(i1_type, "contains_result");
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), result_ptr); // Initialize to false
 
         // Get array length
@@ -33365,7 +33368,7 @@ pub const Emitter = struct {
 
         // Loop init - allocate index
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_init_bb);
-        const idx_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, i64_type, "idx_ptr");
+        const idx_ptr = self.buildEntryBlockAlloca(i64_type, "idx_ptr");
         _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), idx_ptr);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_cond_bb);
 
@@ -33656,7 +33659,7 @@ pub const Emitter = struct {
 
         // Return block: build slice struct { result_ptr, char_count }
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, ret_bb);
-        const slice_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, slice_type, "slice_ptr");
+        const slice_ptr = self.buildEntryBlockAlloca(slice_type, "slice_ptr");
         const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, slice_ptr, 0, "ptr_field");
         _ = llvm.c.LLVMBuildStore(self.builder.ref, result_ptr, ptr_field);
         const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, slice_ptr, 1, "len_field");
@@ -33719,8 +33722,8 @@ pub const Emitter = struct {
         );
 
         // Allocate variables for start and end indices
-        const start_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, i64_type, "start_ptr");
-        const end_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, i64_type, "end_ptr");
+        const start_ptr = self.buildEntryBlockAlloca(i64_type, "start_ptr");
+        const end_ptr = self.buildEntryBlockAlloca(i64_type, "end_ptr");
         _ = llvm.c.LLVMBuildStore(self.builder.ref, zero_i64, start_ptr);
         _ = llvm.c.LLVMBuildStore(self.builder.ref, len, end_ptr);
 
@@ -33897,7 +33900,7 @@ pub const Emitter = struct {
         );
 
         // Initialize loop counter
-        const i_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, i64_type, "i_ptr");
+        const i_ptr = self.buildEntryBlockAlloca(i64_type, "i_ptr");
         _ = llvm.c.LLVMBuildStore(self.builder.ref, zero_i64, i_ptr);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_bb);
 
@@ -34008,7 +34011,7 @@ pub const Emitter = struct {
         );
 
         // Initialize loop counter
-        const i_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, i64_type, "i_ptr");
+        const i_ptr = self.buildEntryBlockAlloca(i64_type, "i_ptr");
         _ = llvm.c.LLVMBuildStore(self.builder.ref, zero_i64, i_ptr);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_bb);
 
@@ -34332,9 +34335,9 @@ pub const Emitter = struct {
         const char_end = llvm.c.LLVMGetParam(func, 2);
 
         // Allocate locals for byte_start, byte_end, and found_start flag
-        const byte_start_alloca = self.builder.buildAlloca(i64_type, "byte_start_alloca");
-        const byte_end_alloca = self.builder.buildAlloca(i64_type, "byte_end_alloca");
-        const found_start_alloca = self.builder.buildAlloca(llvm.Types.int1(self.ctx), "found_start_alloca");
+        const byte_start_alloca = self.buildEntryBlockAlloca(i64_type, "byte_start_alloca");
+        const byte_end_alloca = self.buildEntryBlockAlloca(i64_type, "byte_end_alloca");
+        const found_start_alloca = self.buildEntryBlockAlloca(llvm.Types.int1(self.ctx), "found_start_alloca");
         _ = self.builder.buildStore(zero_i64, byte_start_alloca);
         _ = self.builder.buildStore(zero_i64, byte_end_alloca);
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), found_start_alloca);
@@ -34624,7 +34627,7 @@ pub const Emitter = struct {
     /// Emit Result.is_ok() - returns true if tag == 1 (Ok).
     fn emitResultIsOk(self: *Emitter, result_val: llvm.ValueRef, result_type: llvm.TypeRef) EmitError!llvm.ValueRef {
         // Store result to temp for GEP access
-        const result_alloca = self.builder.buildAlloca(result_type, "result.is_ok.tmp");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "result.is_ok.tmp");
         _ = self.builder.buildStore(result_val, result_alloca);
 
         // Get the tag (index 0)
@@ -34642,7 +34645,7 @@ pub const Emitter = struct {
     /// Emit Result.is_err() - returns true if tag == 0 (Err).
     fn emitResultIsErr(self: *Emitter, result_val: llvm.ValueRef, result_type: llvm.TypeRef) EmitError!llvm.ValueRef {
         // Store result to temp for GEP access
-        const result_alloca = self.builder.buildAlloca(result_type, "result.is_err.tmp");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "result.is_err.tmp");
         _ = self.builder.buildStore(result_val, result_alloca);
 
         // Get the tag (index 0)
@@ -34660,7 +34663,7 @@ pub const Emitter = struct {
     /// Emit Optional.is_some() - returns true if tag == 1 (Some).
     fn emitOptionalIsSome(self: *Emitter, opt_val: llvm.ValueRef, opt_type: llvm.TypeRef) EmitError!llvm.ValueRef {
         // Store optional to temp for GEP access
-        const opt_alloca = self.builder.buildAlloca(opt_type, "opt.is_some.tmp");
+        const opt_alloca = self.buildEntryBlockAlloca(opt_type, "opt.is_some.tmp");
         _ = self.builder.buildStore(opt_val, opt_alloca);
 
         // Get the tag (index 0)
@@ -34678,7 +34681,7 @@ pub const Emitter = struct {
     /// Emit Optional.is_none() - returns true if tag == 0 (None).
     fn emitOptionalIsNone(self: *Emitter, opt_val: llvm.ValueRef, opt_type: llvm.TypeRef) EmitError!llvm.ValueRef {
         // Store optional to temp for GEP access
-        const opt_alloca = self.builder.buildAlloca(opt_type, "opt.is_none.tmp");
+        const opt_alloca = self.buildEntryBlockAlloca(opt_type, "opt.is_none.tmp");
         _ = self.builder.buildStore(opt_val, opt_alloca);
 
         // Get the tag (index 0)
@@ -34699,9 +34702,9 @@ pub const Emitter = struct {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
         // Store both optionals for GEP access
-        const left_alloca = self.builder.buildAlloca(opt_type, "opt.eq.left");
+        const left_alloca = self.buildEntryBlockAlloca(opt_type, "opt.eq.left");
         _ = self.builder.buildStore(left, left_alloca);
-        const right_alloca = self.builder.buildAlloca(opt_type, "opt.eq.right");
+        const right_alloca = self.buildEntryBlockAlloca(opt_type, "opt.eq.right");
         _ = self.builder.buildStore(right, right_alloca);
 
         // Get left tag
@@ -34799,9 +34802,9 @@ pub const Emitter = struct {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
         // Store both results for GEP access
-        const left_alloca = self.builder.buildAlloca(result_type, "res.eq.left");
+        const left_alloca = self.buildEntryBlockAlloca(result_type, "res.eq.left");
         _ = self.builder.buildStore(left, left_alloca);
-        const right_alloca = self.builder.buildAlloca(result_type, "res.eq.right");
+        const right_alloca = self.buildEntryBlockAlloca(result_type, "res.eq.right");
         _ = self.builder.buildStore(right, right_alloca);
 
         // Get left tag
@@ -34981,7 +34984,7 @@ pub const Emitter = struct {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
         // Store to temp for GEP access
-        const result_alloca = self.builder.buildAlloca(result_type, "unwrap_err.tmp");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "unwrap_err.tmp");
         _ = self.builder.buildStore(result_val, result_alloca);
 
         // Get the tag (index 0)
@@ -35021,7 +35024,7 @@ pub const Emitter = struct {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
         // Store to temp for GEP access
-        const val_alloca = self.builder.buildAlloca(value_type, "unwrap_or.tmp");
+        const val_alloca = self.buildEntryBlockAlloca(value_type, "unwrap_or.tmp");
         _ = self.builder.buildStore(value, val_alloca);
 
         // Get the tag (index 0)
@@ -35073,7 +35076,7 @@ pub const Emitter = struct {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
         // Store Result to temp for GEP access
-        const result_alloca = self.builder.buildAlloca(result_type, "result.ok.tmp");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "result.ok.tmp");
         _ = self.builder.buildStore(result_val, result_alloca);
 
         // Get the tag (index 0)
@@ -35103,7 +35106,7 @@ pub const Emitter = struct {
         const merge_block = llvm.appendBasicBlock(self.ctx, func, "result.ok.merge");
 
         // Alloca for the optional result
-        const opt_alloca = self.builder.buildAlloca(opt_type, "result.ok.opt");
+        const opt_alloca = self.buildEntryBlockAlloca(opt_type, "result.ok.opt");
 
         // Branch based on tag: tag==1 means Ok, tag==0 means Err
         _ = self.builder.buildCondBr(tag, is_ok_block, is_err_block);
@@ -35145,7 +35148,7 @@ pub const Emitter = struct {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
         // Store Result to temp for GEP access
-        const result_alloca = self.builder.buildAlloca(result_type, "result.err.tmp");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "result.err.tmp");
         _ = self.builder.buildStore(result_val, result_alloca);
 
         // Get the tag (index 0)
@@ -35175,7 +35178,7 @@ pub const Emitter = struct {
         const merge_block = llvm.appendBasicBlock(self.ctx, func, "result.err.merge");
 
         // Alloca for the optional result
-        const opt_alloca = self.builder.buildAlloca(opt_type, "result.err.opt");
+        const opt_alloca = self.buildEntryBlockAlloca(opt_type, "result.err.opt");
 
         // Branch based on tag: tag==0 means Err, tag==1 means Ok
         _ = self.builder.buildCondBr(tag, is_ok_block, is_err_block);
@@ -35218,7 +35221,7 @@ pub const Emitter = struct {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
         // Store value to temp for GEP access
-        const val_alloca = self.builder.buildAlloca(value_type, "map.tmp");
+        const val_alloca = self.buildEntryBlockAlloca(value_type, "map.tmp");
         _ = self.builder.buildStore(value, val_alloca);
 
         // Get the tag (index 0)
@@ -35268,7 +35271,7 @@ pub const Emitter = struct {
             result_type = llvm.Types.struct_(self.ctx, &result_fields, false);
 
             // Create Ok(mapped_val)
-            const result_alloca = self.builder.buildAlloca(result_type, "map.result.ok");
+            const result_alloca = self.buildEntryBlockAlloca(result_type, "map.result.ok");
             var res_tag_indices = [_]llvm.ValueRef{
                 llvm.Const.int32(self.ctx, 0),
                 llvm.Const.int32(self.ctx, 0),
@@ -35310,7 +35313,7 @@ pub const Emitter = struct {
             const err_val = self.builder.buildLoad(err_type, err_ptr, "map.err");
 
             // Create Err(err_val) with new result type
-            const result_alloca = self.builder.buildAlloca(result_type, "map.result.err");
+            const result_alloca = self.buildEntryBlockAlloca(result_type, "map.result.err");
             var res_tag_indices = [_]llvm.ValueRef{
                 llvm.Const.int32(self.ctx, 0),
                 llvm.Const.int32(self.ctx, 0),
@@ -35350,7 +35353,7 @@ pub const Emitter = struct {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
         // Store value to temp for GEP access
-        const val_alloca = self.builder.buildAlloca(value_type, "map_err.tmp");
+        const val_alloca = self.buildEntryBlockAlloca(value_type, "map_err.tmp");
         _ = self.builder.buildStore(value, val_alloca);
 
         // Get the tag (index 0)
@@ -35405,7 +35408,7 @@ pub const Emitter = struct {
 
         // Go back to Ok block and create Ok(ok_val) with new result type
         self.builder.positionAtEnd(ok_block);
-        const ok_result_alloca = self.builder.buildAlloca(result_type, "map_err.result.ok");
+        const ok_result_alloca = self.buildEntryBlockAlloca(result_type, "map_err.result.ok");
         var ok_res_tag_indices = [_]llvm.ValueRef{
             llvm.Const.int32(self.ctx, 0),
             llvm.Const.int32(self.ctx, 0),
@@ -35426,7 +35429,7 @@ pub const Emitter = struct {
 
         // Continue Err block: create Err(mapped_err_val)
         self.builder.positionAtEnd(err_block);
-        const err_result_alloca = self.builder.buildAlloca(result_type, "map_err.result.err");
+        const err_result_alloca = self.buildEntryBlockAlloca(result_type, "map_err.result.err");
         var err_res_tag_indices = [_]llvm.ValueRef{
             llvm.Const.int32(self.ctx, 0),
             llvm.Const.int32(self.ctx, 0),
@@ -35463,7 +35466,7 @@ pub const Emitter = struct {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
         // Store value to temp for GEP access
-        const val_alloca = self.builder.buildAlloca(value_type, "and_then.tmp");
+        const val_alloca = self.buildEntryBlockAlloca(value_type, "and_then.tmp");
         _ = self.builder.buildStore(value, val_alloca);
 
         // Get the tag (index 0)
@@ -35534,7 +35537,7 @@ pub const Emitter = struct {
             const err_val = self.builder.buildLoad(err_type, err_ptr, "and_then.err");
 
             // Create Err with result_type (already computed above)
-            const result_alloca = self.builder.buildAlloca(result_type, "and_then.result.err");
+            const result_alloca = self.buildEntryBlockAlloca(result_type, "and_then.result.err");
             var res_tag_indices = [_]llvm.ValueRef{
                 llvm.Const.int32(self.ctx, 0),
                 llvm.Const.int32(self.ctx, 0),
@@ -35574,7 +35577,7 @@ pub const Emitter = struct {
         const closure_struct_type = self.getClosureStructType();
 
         // Allocate space to store the closure value
-        const closure_alloca = self.builder.buildAlloca(closure_struct_type, "map.closure.tmp");
+        const closure_alloca = self.buildEntryBlockAlloca(closure_struct_type, "map.closure.tmp");
         _ = self.builder.buildStore(closure_val, closure_alloca);
 
         // Load function pointer
@@ -35610,7 +35613,7 @@ pub const Emitter = struct {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
         // Store value to temp for GEP access
-        const val_alloca = self.builder.buildAlloca(value_type, "context.tmp");
+        const val_alloca = self.buildEntryBlockAlloca(value_type, "context.tmp");
         _ = self.builder.buildStore(value, val_alloca);
 
         // Get the tag (index 0)
@@ -35653,7 +35656,7 @@ pub const Emitter = struct {
         const result_type = llvm.Types.struct_(self.ctx, &result_fields, false);
 
         // Allocate result
-        const result_alloca = self.builder.buildAlloca(result_type, "context.result");
+        const result_alloca = self.buildEntryBlockAlloca(result_type, "context.result");
 
         // Create basic blocks
         const ok_block = llvm.appendBasicBlock(self.ctx, func, "context.ok");
@@ -35692,10 +35695,10 @@ pub const Emitter = struct {
         const err_val = self.builder.buildLoad(err_type, err_ptr, "context.err.val");
 
         // Allocate a new result for the error case
-        const err_result_alloca = self.builder.buildAlloca(result_type, "context.result.err.alloca");
+        const err_result_alloca = self.buildEntryBlockAlloca(result_type, "context.result.err.alloca");
 
         // Allocate ContextError
-        const ctx_err_alloca = self.builder.buildAlloca(context_err_type, "context.ctx_err");
+        const ctx_err_alloca = self.buildEntryBlockAlloca(context_err_type, "context.ctx_err");
 
         // Store message (index 0)
         var ctx_msg_indices = [_]llvm.ValueRef{
@@ -35785,7 +35788,7 @@ pub const Emitter = struct {
     /// Emit ContextError.message() - returns the context message string.
     fn emitContextErrorMessage(self: *Emitter, ctx_err_val: llvm.ValueRef, ctx_err_type: llvm.TypeRef) EmitError!llvm.ValueRef {
         // Store ContextError to temp for GEP access
-        const ctx_err_alloca = self.builder.buildAlloca(ctx_err_type, "ctx_err.msg.tmp");
+        const ctx_err_alloca = self.buildEntryBlockAlloca(ctx_err_type, "ctx_err.msg.tmp");
         _ = self.builder.buildStore(ctx_err_val, ctx_err_alloca);
 
         // Get message (index 0)
@@ -35800,7 +35803,7 @@ pub const Emitter = struct {
     /// Emit ContextError.cause() - returns the original error.
     fn emitContextErrorCause(self: *Emitter, ctx_err_val: llvm.ValueRef, ctx_err_type: llvm.TypeRef) EmitError!llvm.ValueRef {
         // Store ContextError to temp for GEP access
-        const ctx_err_alloca = self.builder.buildAlloca(ctx_err_type, "ctx_err.cause.tmp");
+        const ctx_err_alloca = self.buildEntryBlockAlloca(ctx_err_type, "ctx_err.cause.tmp");
         _ = self.builder.buildStore(ctx_err_val, ctx_err_alloca);
 
         // Get cause (index 1)
@@ -35842,7 +35845,7 @@ pub const Emitter = struct {
         // Allocate a buffer (1024 bytes should be enough for most error chains)
         const buffer_size: u64 = 1024;
         const buffer_type = llvm.Types.array(i8_type, buffer_size);
-        const buffer = self.builder.buildAlloca(buffer_type, "display_chain.buf");
+        const buffer = self.buildEntryBlockAlloca(buffer_type, "display_chain.buf");
 
         // Get pointer to buffer start
         var buf_indices = [_]llvm.ValueRef{
@@ -35852,7 +35855,7 @@ pub const Emitter = struct {
         const buffer_ptr = self.builder.buildGEP(buffer_type, buffer, &buf_indices, "display_chain.buf_ptr");
 
         // Track current position in buffer
-        const offset_alloca = self.builder.buildAlloca(i64_type, "display_chain.offset");
+        const offset_alloca = self.buildEntryBlockAlloca(i64_type, "display_chain.offset");
         _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), offset_alloca);
 
         // Helper to append a string to the buffer
@@ -35866,7 +35869,7 @@ pub const Emitter = struct {
         var current_ctx_err_type = ctx_err_type;
 
         // Store the ContextError for GEP access
-        var ctx_err_alloca = self.builder.buildAlloca(ctx_err_type, "display_chain.ctx_err");
+        var ctx_err_alloca = self.buildEntryBlockAlloca(ctx_err_type, "display_chain.ctx_err");
         _ = self.builder.buildStore(ctx_err_val, ctx_err_alloca);
 
         // Get first message
@@ -35949,7 +35952,7 @@ pub const Emitter = struct {
 
             // Store the inner ContextError
             current_ctx_err_type = cause_type;
-            ctx_err_alloca = self.builder.buildAlloca(cause_type, "display_chain.inner_ctx_err");
+            ctx_err_alloca = self.buildEntryBlockAlloca(cause_type, "display_chain.inner_ctx_err");
             _ = self.builder.buildStore(cause_val, ctx_err_alloca);
 
             // Get message from inner ContextError
@@ -38431,7 +38434,7 @@ pub const Emitter = struct {
     /// letting the body mutate its own copy; storing the pointer itself made a generic
     /// body read the pointer as the struct (Bug 107).
     fn bindParamAlloca(self: *Emitter, param_value: llvm.ValueRef, param_ty: llvm.TypeRef, name: [:0]const u8, is_byval: bool) llvm.ValueRef {
-        const alloca = self.builder.buildAlloca(param_ty, name);
+        const alloca = self.buildEntryBlockAlloca(param_ty, name);
         const value = if (is_byval) self.builder.buildLoad(param_ty, param_value, "byval.load") else param_value;
         _ = self.builder.buildStore(value, alloca);
         return alloca;
@@ -38748,7 +38751,7 @@ pub const Emitter = struct {
             const param_name = self.allocator.dupeZ(u8, param.name) catch return EmitError.OutOfMemory;
             defer self.allocator.free(param_name);
 
-            const alloca = self.builder.buildAlloca(param_ty, param_name);
+            const alloca = self.buildEntryBlockAlloca(param_ty, param_name);
             _ = self.builder.buildStore(param_value, alloca);
 
             // Check if this is a reference parameter

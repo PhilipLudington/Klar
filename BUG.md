@@ -46,9 +46,11 @@
 
 ---
 
-## [ ] Bug 5: Builtin emitters allocate on the stack at the call site — `fs_stat` / `process_run` inside a loop grow the stack every iteration
+## [x] Bug 5: Builtin emitters allocate on the stack at the call site — `fs_stat` / `process_run` inside a loop grow the stack every iteration
 
-**Status:** Open
+**Status:** Fixed
+
+**System:** codegen stack temporaries — `buildEntryBlockAlloca` and every alloca in `src/codegen/emit.zig`
 
 **Description:** `buildEntryBlockAlloca` (`src/codegen/emit.zig:491` at HEAD) exists
 and its comment states the reason: an `alloca` that is not in the function's entry
@@ -77,6 +79,21 @@ Fable 5.1 shard-A generalist, HIGH `[performance]`; verified by counting `buildA
 vs `buildEntryBlockAlloca` in the two emitters at `e7b54e7` and at HEAD. Fix: use
 `buildEntryBlockAlloca` for every alloca in `emitEnvGet`, `emitEnvSet`, `emitFsStat`,
 `emitProcessRun` (and any later builtin that copied the pattern).
+
+**Fix:** The pattern was not confined to the builtins: 369 allocas in 181 emitter
+functions (method calls, collection methods, `for` loops, struct literals, closures)
+were built at the insertion point, and nine more called `llvm.c.LLVMBuildAlloca`
+directly. All of them now go through `buildEntryBlockAlloca` (`src/codegen/emit.zig`)
+except `emitCellNew`'s storage: a Cell is that slot's address, so it stays at the call
+site to give each evaluation its own Cell. That function takes the function to hoist into from the
+builder's insert block rather than `current_function`, which the runtime-helper
+bodies (`getOrDeclareStringSubstring` and the like) never set; with
+`current_function`, `string_primitives.kl` fails LLVM verification. Reproduced at
+runtime before the fix: 200,000 `fs_stat` calls in a loop segfault (exit 139).
+
+**Test:** `test/native/loop_stack_temporaries.kl` (exits 0; 139 before the fix) and the
+native runner's `alloca_entry_block` IR check on the same file (6 of 14 allocas outside
+an entry block before the fix).
 
 ---
 
@@ -3844,3 +3861,64 @@ whole 9-byte `Inner` at offset 1: one byte past the 9-byte alloca.
 
 **Found by:** /qa-review on fix/bug-34-enum-payload-layout, 2026-10-21 — code-reviewer
 PRE-EXISTING, probe `scratch/rv3.kl` / `rv3.ll:12-21`; reviewer's evidence, not re-read.
+
+---
+
+## [ ] Bug 128: Native `List.first()` fails to link — `klar_list_first` is declared but nothing defines it
+
+**Status:** Open
+**Deferred:** after v0.6.0 — the build stops with a linker error rather than producing a
+wrong program, and `list.get(0)` or `list.len()` does the same job
+
+**System:** native List runtime externs — the `getOrDeclareList*` declarations in
+`src/codegen/emit.zig` (`getOrDeclareListFirst` at `:32772`) and `src/runtime/list.zig`
+
+**Description:** `emitMethodCall` lowers `first()` on a `List#[T]` to a call of the extern
+`klar_list_first`. That function exists only in `src/runtime/list.zig`
+(`export fn klar_list_first`, `:151`), which is not linked into a native program, so the
+link fails. The other ten `getOrDeclareList*` externs (`klar_list_get`,
+`klar_list_clone`, …) are declared the same way; whether any of them is reachable from a
+Klar program was not checked.
+
+**Steps to reproduce:**
+1. In `main`: `let words: List#[i32] = List.new#[i32]()`, `words.push(1)`,
+   `let first: ?i32 = words.first()`.
+2. `klar build <file> -o build/p`.
+
+**Expected:** `Built build/p`, and the program reads `Some(1)`.
+
+**Actual:** `Undefined symbols for architecture arm64: "_klar_list_first"`, then
+`Linker error: Linker failed.`
+
+**Found by:** fix/bug-5-entry-block-allocas, 2026-10-22, writing Bug 5's loop test
+(macOS arm64, LLVM 21).
+
+---
+
+## [ ] Bug 129: A native `Cell` returned from the function that made it points at freed stack
+
+**Status:** Open
+**Deferred:** after v0.6.0 — only a Cell that outlives its creating function is hit; Cells
+used where they are made read correctly. A heap-backed Cell, if the Bug 5 branch's Cell
+fix takes that route, closes this too
+
+**System:** native Cell lowering — `emitCellNew` in `src/codegen/emit.zig`
+
+**Description:** `emitCellNew` (`src/codegen/emit.zig:12877`) represents `Cell#[T]` as a
+pointer to a stack alloca in the creating function and returns that pointer. A Cell
+returned from that function (or stored in a struct or List that is) keeps the address of
+a frame that no longer exists, so a later `get()` reads whatever the stack holds then.
+
+**Steps to reproduce:**
+1. `fn make() -> Cell#[i32] { return Cell.new(41) }`
+2. In `main`: `let c: Cell#[i32] = make()`, call another function that uses some stack,
+   then print `c.get()`.
+3. `klar build <file> -o build/p` and run it.
+
+**Expected:** `41`.
+
+**Actual:** Not run; by reading, `c` points into `make`'s freed frame, so the value is
+whatever overwrote it.
+
+**Found by:** /qa-review on fix/bug-5-entry-block-allocas, 2026-10-22 — code-reviewer-a;
+verified by reading `src/codegen/emit.zig:12888` (`return cell_alloca;`).
