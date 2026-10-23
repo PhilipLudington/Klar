@@ -35,7 +35,7 @@ impl PriorityQueue {
         return Some(self.data[0])
     }
 
-    fn grow(self: PriorityQueue) -> void {
+    fn grow(self: inout PriorityQueue) -> void {
         let old_cap: i32 = self.cfg[1]
         let new_cap: i32 = old_cap * 2
         var i: i32 = 0
@@ -46,7 +46,7 @@ impl PriorityQueue {
         self.cfg[1] = new_cap
     }
 
-    fn sift_up(self: PriorityQueue, idx: i32) -> void {
+    fn sift_up(self: inout PriorityQueue, idx: i32) -> void {
         var i: i32 = idx
         while i > 0 {
             let parent: i32 = (i - 1) / 2
@@ -61,7 +61,7 @@ impl PriorityQueue {
         }
     }
 
-    fn sift_down(self: PriorityQueue, idx: i32) -> void {
+    fn sift_down(self: inout PriorityQueue, idx: i32) -> void {
         let sz: i32 = self.cfg[0]
         var i: i32 = idx
         var running: bool = true
@@ -92,7 +92,7 @@ impl PriorityQueue {
         }
     }
 
-    pub fn push(self: PriorityQueue, value: i32) -> void {
+    pub fn push(self: inout PriorityQueue, value: i32) -> void {
         let sz: i32 = self.cfg[0]
         if sz == self.cfg[1] {
             self.grow()
@@ -102,7 +102,7 @@ impl PriorityQueue {
         self.sift_up(sz)
     }
 
-    pub fn pop(self: PriorityQueue) -> ?i32 {
+    pub fn pop(self: inout PriorityQueue) -> ?i32 {
         let sz: i32 = self.cfg[0]
         if sz == 0 {
             return None
@@ -119,7 +119,7 @@ impl PriorityQueue {
         return Some(min_val)
     }
 
-    pub fn clear(self: PriorityQueue) -> void {
+    pub fn clear(self: inout PriorityQueue) -> void {
         self.cfg[0] = 0
     }
 

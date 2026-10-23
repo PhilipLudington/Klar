@@ -1,0 +1,39 @@
+// Expected: check-pass
+// Bug 130: the deep check refuses only writes rooted in an immutable place; a `var`
+// binding, an `inout` parameter and `inout self` take element and field writes.
+
+struct Inner { x: i32 }
+struct Outer { inner: Inner }
+
+struct Counter { n: i32 }
+
+impl Counter {
+    fn bump(self: inout Counter) -> void {
+        self.n += 1
+    }
+}
+
+fn set_x(p: inout Inner) -> void {
+    p.x = 5
+}
+
+fn set_first(list: inout List#[i32]) -> void {
+    (*list)[0] = 9
+}
+
+fn main() -> i32 {
+    var a: [i32; 2] = [1, 2]
+    a[0] = 9
+    a[1] += 1
+    var o: Outer = Outer { inner: Inner { x: 1 } }
+    o.inner.x = 5
+    var c: Counter = Counter { n: 0 }
+    c.bump()
+    var i: Inner = Inner { x: 0 }
+    set_x(ref i)
+    var xs: List#[i32] = List.new#[i32]()
+    xs.push(1)
+    xs[0] = 2
+    set_first(ref xs)
+    return a[0]
+}

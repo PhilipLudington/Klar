@@ -26,7 +26,8 @@ fn slice_read(s: [i32], i: i32) -> i32 {
 }
 
 fn slice_write(s: [i32], i: i32) -> void {
-    s[i] = 5
+    var w: [i32] = s
+    w[i] = 5
 }
 
 fn color_code(c: Color) -> i32 {

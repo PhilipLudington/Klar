@@ -1,0 +1,8 @@
+// Expected: check-error mutability_error
+// Bug 130: an element write into an array bound by `let` is refused at check time.
+
+fn main() -> i32 {
+    let a: [i32; 2] = [1, 2]
+    a[0] = 9
+    return a[0]
+}

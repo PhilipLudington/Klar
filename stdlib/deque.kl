@@ -99,7 +99,7 @@ impl Deque {
 
     // --- Grow (depends on nothing) ---
 
-    fn grow(self: Deque) -> void {
+    fn grow(self: inout Deque) -> void {
         let old_cap: i32 = self.cfg[2]
         let new_cap: i32 = old_cap * 2
         let head: i32 = self.cfg[0]
@@ -129,7 +129,7 @@ impl Deque {
 
     // --- Push operations (depend on grow) ---
 
-    pub fn push_back(self: Deque, value: i32) -> void {
+    pub fn push_back(self: inout Deque, value: i32) -> void {
         if self.cfg[1] == self.cfg[2] {
             self.grow()
         }
@@ -141,7 +141,7 @@ impl Deque {
         self.cfg[1] = length + 1
     }
 
-    pub fn push_front(self: Deque, value: i32) -> void {
+    pub fn push_front(self: inout Deque, value: i32) -> void {
         if self.cfg[1] == self.cfg[2] {
             self.grow()
         }
@@ -155,7 +155,7 @@ impl Deque {
 
     // --- Pop operations (no method deps beyond mask) ---
 
-    pub fn pop_front(self: Deque) -> ?i32 {
+    pub fn pop_front(self: inout Deque) -> ?i32 {
         if self.cfg[1] == 0 {
             return None
         }
@@ -167,7 +167,7 @@ impl Deque {
         return Some(value)
     }
 
-    pub fn pop_back(self: Deque) -> ?i32 {
+    pub fn pop_back(self: inout Deque) -> ?i32 {
         if self.cfg[1] == 0 {
             return None
         }
@@ -182,7 +182,7 @@ impl Deque {
 
     // --- Bulk operations ---
 
-    pub fn clear(self: Deque) -> void {
+    pub fn clear(self: inout Deque) -> void {
         self.cfg[0] = 0
         self.cfg[1] = 0
     }

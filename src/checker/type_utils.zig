@@ -108,36 +108,63 @@ pub fn isAssignable(tc: anytype, expr: ast.Expr) bool {
 }
 
 /// Report an assignment target that cannot be assigned: one that is not a place,
-/// or a bare name bound immutably (`let`, a parameter). Every `=` and `op=` goes
-/// through here. Element and field writes are not refused yet (Bug 63's scope).
+/// or a place rooted in an immutable binding (`let`, a by-value parameter or
+/// `self`), its elements and fields included, handles too (deep `let`,
+/// docs/decisions/2026-10-23-let-depth.md). Every `=` and `op=` goes through here.
 pub fn checkAssignTarget(tc: anytype, target: ast.Expr, span: ast.Span) void {
     if (!isAssignable(tc, target)) {
         tc.addError(.invalid_assignment, span, "cannot assign to this expression", .{});
         return;
     }
-    // An undeclared name is already reported as undefined_variable; only a found,
-    // immutable binding is a mutability error.
+    // A bare name is reassigned only when its binding is `var`; an `inout` name is
+    // written through with `*p`, never rebound.
     if (target == .identifier) {
         if (tc.current_scope.lookup(target.identifier.name)) |sym| {
             if (!sym.mutable) {
                 tc.addError(.mutability_error, span, "cannot assign to immutable binding '{s}'", .{target.identifier.name});
             }
         }
+        return;
+    }
+    if (isMutable(tc, target)) return;
+    switch (placeRoot(target)) {
+        .identifier => |id| {
+            // An undeclared name is already reported as undefined_variable; only a
+            // found, immutable binding is a mutability error.
+            if (tc.current_scope.lookup(id.name) == null) return;
+            tc.addError(.mutability_error, span, "cannot assign to an element or field of immutable binding '{s}'", .{id.name});
+        },
+        .unary => tc.addError(.mutability_error, span, "cannot assign through a read-only reference", .{}),
+        else => tc.addError(.mutability_error, span, "cannot assign to an element or field of a temporary value", .{}),
     }
 }
 
+/// The expression a place is rooted in: the target with every field access,
+/// index and grouping stripped off.
+fn placeRoot(expr: ast.Expr) ast.Expr {
+    return switch (expr) {
+        .field => |f| placeRoot(f.object),
+        .index => |i| placeRoot(i.object),
+        .grouped => |g| placeRoot(g.expr),
+        else => expr,
+    };
+}
+
 /// Check if an expression refers to a mutable location.
-/// Recursively checks through field access and indexing.
+/// Recursively checks through field access and indexing. A name bound to an
+/// `inout` reference is a mutable location: writes go through to the caller's.
 pub fn isMutable(tc: anytype, expr: ast.Expr) bool {
     switch (expr) {
         .identifier => |id| {
             if (tc.current_scope.lookup(id.name)) |sym| {
-                return sym.mutable;
+                if (sym.mutable) return true;
+                return sym.type_ == .reference and sym.type_.reference.mutable;
             }
             return false;
         },
         .field => |f| return isMutable(tc, f.object),
         .index => |i| return isMutable(tc, i.object),
+        .grouped => |g| return isMutable(tc, g.expr),
         .unary => |u| {
             if (u.op == .deref) {
                 const operand_type = tc.checkExpr(u.operand);

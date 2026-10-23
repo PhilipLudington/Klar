@@ -1,0 +1,16 @@
+// Expected: check-error mutability_error
+// Bug 130: a method that takes `self` by value cannot write its fields.
+
+struct Counter { n: i32 }
+
+impl Counter {
+    fn bump(self: Counter) -> void {
+        self.n += 1
+    }
+}
+
+fn main() -> i32 {
+    let c: Counter = Counter { n: 0 }
+    c.bump()
+    return 0
+}

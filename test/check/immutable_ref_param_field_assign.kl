@@ -1,0 +1,14 @@
+// Expected: check-error mutability_error
+// Bug 130: a field write through a `ref` (read-only) parameter is refused.
+
+struct P { x: i32 }
+
+fn set_x(p: ref P) -> void {
+    p.x = 5
+}
+
+fn main() -> i32 {
+    let p: P = P { x: 1 }
+    set_x(ref p)
+    return 0
+}

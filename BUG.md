@@ -3948,12 +3948,9 @@ verified by reading `src/codegen/emit.zig:12888` (`return cell_alloca;`).
 
 ---
 
-## [ ] Bug 130: An element or field write through a `let` binding passes `klar check`
+## [x] Bug 130: An element or field write through a `let` binding passes `klar check`
 
-**Status:** Open
-
-**Deferred:** after v0.6.0 — the value written is the one the program asked for, so a trial
-program gets no wrong answer and no crash; the fix needs a language decision first (below).
+**Status:** Fixed
 
 **System:** assignment target checking — `checkAssignTarget` in `src/checker/type_utils.zig`, called by `checkBinary` (`src/checker/expressions.zig`) and `checkAssignment` (`src/checker/statements.zig`)
 
@@ -3964,9 +3961,13 @@ in an immutable binding (`isMutable`'s recursion) is not a drop-in fix: it rejec
 tracked files, every one through an element write on a `List` or slice handle, such as
 `self.buf[i] = v` in `stdlib/deque.kl`, `stdlib/btree_map.kl` and `stdlib/priority_queue.kl`,
 `list[i] = v` on a `List` parameter in `benchmarks/runtime/quicksort.kl`, and `s[i] = 5` on a
-slice in `test/native/runtime_traps.kl`. Whether a write through a handle (List, slice) needs
-a mutable binding, while a write into a value (array, struct) does, is the decision. Before
-Bug 63's fix the REPL's statement path refused all of these and files refused none.
+slice in `test/native/runtime_traps.kl`. Before Bug 63's fix the REPL's statement path
+refused all of these and files refused none. Decided 2026-10-23
+(docs/decisions/2026-10-23-let-depth.md): every element and field write rooted in a `let`
+binding or a by-value parameter is a `mutability_error`, handles included. The stdlib
+collections' mutating methods take `inout self`, and the other files take `var` or `inout`.
+Scope: `src/checker/`, `stdlib/*`, `benchmarks/runtime/quicksort.kl`,
+`test/native/runtime_traps.kl`.
 
 **Steps to reproduce:**
 1. `struct P { x: i32 }` and `fn main() -> i32 { let a: [i32; 2] = [1, 2]  a[0] = 9  let p: P = P { x: 1 }  p.x = 5  return a[0] + p.x }`
@@ -3978,3 +3979,135 @@ Bug 63's fix the REPL's statement path refused all of these and files refused no
 
 **Found by:** Builder on fix/bug-63-immutable-assign, 2026-10-22 — measured by checking
 every tracked `.kl` file with the full `isMutable` check in place.
+
+**Fix:** `checkAssignTarget` (`src/checker/type_utils.zig`) refuses every element, field
+and deref write whose place `isMutable` does not find mutable, naming the root binding
+("cannot assign to an element or field of immutable binding '<name>'"). `isMutable` looks
+through parentheses and counts a name bound to an `inout` reference as mutable; bare
+names keep Bug 63's rule. The REPL's assignments go through the same check, so it refuses
+these writes again. `checkMethodCallImpl` (`src/checker/checker.zig`) finds a method
+called through a reference receiver when that method takes `self` by reference, so an
+`inout self` method can call another. `stdlib/deque.kl`, `btree_map.kl` and
+`priority_queue.kl` take `inout self` on their mutating methods,
+`benchmarks/runtime/quicksort.kl` moves its list in and returns it, and
+`test/native/runtime_traps.kl` writes through a `var` slice.
+
+**Test:** `test/check/immutable_let_element_assign.kl`, `immutable_let_field_assign.kl`,
+`immutable_param_list_element_assign.kl`, `immutable_self_field_assign.kl`,
+`immutable_ref_param_field_assign.kl`; `test/check/mutable_place_assign_pass.kl` keeps
+`var`, `inout` parameters and `inout self` writable; the REPL unit test "REPL refuses
+element and field writes through a let binding (Bug 130)" in `src/repl.zig`.
+
+---
+
+## [ ] Bug 131: An `inout List#[T]` parameter cannot be indexed or have List methods called on it
+
+**Status:** Open
+
+**Deferred:** after v0.6.0 — a build or check error, never a wrong result; a function that
+changes a caller's List can take it by value and return it (`benchmarks/runtime/quicksort.kl`).
+
+**System:** reference receivers — `checkIndex` and `checkBuiltinMethod` in `src/checker/`, index lowering in `src/codegen/emit.zig`
+
+**Description:** Since Bug 130, a function that writes a caller's List elements must take
+it `inout`. Through such a parameter, `(*list)[i]` passes `klar check` but native codegen
+stops with `Codegen error: UnsupportedFeature`, for reads and writes alike; `list[i]`
+fails check with "cannot index this type", and `list.get(i)` / `list.set(i, v)` fail check
+with "method 'get' not found" (field access auto-dereferences a reference; indexing and
+builtin methods do not). `test/check/mutable_place_assign_pass.kl` passes check with a
+`(*list)[0] = 9` that cannot build.
+
+**Steps to reproduce:**
+1. `fn first(list: inout List#[i32]) -> i32 { let a: i32 = (*list)[0]  return a }`, called as `first(ref l)` on a `var l: List#[i32]` holding one element.
+2. `klar build prog.kl`
+
+**Expected:** builds; the program returns the element.
+
+**Actual:** (2026-10-23, fix/bug-130-deep-let) `Codegen error: UnsupportedFeature`.
+
+**Found by:** Builder on fix/bug-130-deep-let, 2026-10-23, migrating quicksort to `inout`.
+
+---
+
+## [ ] Bug 132: The VM fails every call to an `inout self` method
+
+**Status:** Open
+
+**Deferred:** after v0.6.0 — the VM stops with a runtime error rather than computing a
+wrong value, and native runs these programs.
+
+**System:** VM method calls — `inout self` receiver passing in `src/compiler.zig` / `src/vm.zig`
+
+**Description:** A method declared `fn bump(self: inout C)` called on a `var c: C` as
+`c.bump()` runs natively and in the interpreter, but the bytecode VM stops with
+`Runtime error in main: TypeError`. Since Bug 130 every stdlib collection's mutating
+method takes `inout self`, so the VM cannot run them.
+
+**Steps to reproduce:**
+1. `struct C { n: i32 }`, `impl C { fn bump(self: inout C) -> void { self.n = self.n + 1 } }`, `main`: `var c: C = C { n: 0 }  c.bump()  c.bump()  return c.n`
+2. `klar run prog.kl --vm`
+
+**Expected:** exit 2, as `klar build` and `--interpret` give.
+
+**Actual:** (2026-10-23, fix/bug-130-deep-let) `Runtime error in main: TypeError`, exit 1.
+
+**Found by:** Builder on fix/bug-130-deep-let, 2026-10-23.
+
+---
+
+## [ ] Bug 133: A statement starting with `(` continues the previous line as a call
+
+**Status:** Open
+
+**Deferred:** after v0.6.0 — the result is a check error at the wrong place, not a wrong
+program; a trailing `;` on the previous line works around it.
+
+**System:** statement boundaries — postfix call parsing in `src/parser.zig`
+
+**Description:** The parser applies a postfix `(` across a newline, so a line that ends
+in an expression followed by a line that starts with `(`, such as `(*list)[i] = v`
+(the only way to write through an `inout` List, Bug 131), parses as one call:
+`(*list).get(j)(*list)[i] = v`. The errors land on the earlier line ("cannot call
+non-function type") and the next statement disappears.
+
+**Steps to reproduce:**
+1. `fn f(list: inout List#[i32]) -> void { ⏎ let a: ?i32 = (*list).get(0) ⏎ (*list)[0] = 1 ⏎ }`
+2. `klar check prog.kl`
+
+**Expected:** two statements; any errors are about what each statement does.
+
+**Actual:** (2026-10-23, fix/bug-130-deep-let) "cannot call non-function type" on line 2,
+and `(*list)[0] = 1` is never checked as its own statement.
+
+**Found by:** Builder on fix/bug-130-deep-let, 2026-10-23.
+
+---
+
+## [ ] Bug 134: Calling an `inout self` method on a `let` binding or by-value parameter passes `klar check`
+
+**Status:** Open
+
+**Deferred:** after v0.6.0 — a missing check error, not a wrong program at runtime; not
+one of the three Next Up kinds (a review find, not in the phase's deliverables).
+
+**System:** assignment target checking — method-call receiver in `checkMethodCallImpl` (`src/checker/checker.zig`)
+
+**Description:** Bug 130 refuses element and field writes rooted in a `let`, a by-value
+parameter or a by-value `self`, but a call to a method that takes `self: inout T` is not
+checked against the receiver's mutability. `s.bump()` on `let s: S` and on `fn g(s: S)`
+both pass, so a `let` value can still be changed through any mutating method, the stdlib
+collections' `inout self` methods included. The deep-`let` decision
+(docs/decisions/2026-10-23-let-depth.md) and docs/memory/references.md ("You can only take
+an `inout` reference to a `var`") both say this is an error.
+
+**Steps to reproduce:**
+1. `struct S { x: i32 }` with `impl S { fn bump(self: inout S) -> void { self.x = 1 } }`
+2. `fn main() -> i32 { let s: S = S { x: 0 } ⏎ s.bump() ⏎ return 0 }`
+3. `klar check prog.kl`
+
+**Expected:** a `mutability_error` at `s.bump()`, as for `s.x = 1`.
+
+**Actual:** (2026-10-23, fix/bug-130-deep-let) no error; the same for `fn g(s: S) { s.bump() }`.
+
+**Found by:** /qa-review on fix/bug-130-deep-let, 2026-10-23 — code-reviewer-a, probe
+scratchpad `b.kl`; reviewer's evidence, not re-read.
