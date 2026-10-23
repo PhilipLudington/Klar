@@ -700,6 +700,26 @@ test "Repl initialization" {
     defer repl.deinit();
 }
 
+test "REPL refuses element and field writes through a let binding (Bug 130)" {
+    const testing = std.testing;
+    // An arena: the REPL's interpreter does not free every binding yet, and this
+    // test is about the check, not leaks.
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    var repl = try Repl.init(arena.allocator());
+    defer repl.deinit();
+
+    _ = try repl.evalLine("let a: [i32; 2] = [1, 2]");
+    try testing.expectError(error.TypeError, repl.evalLine("a[0] = 9"));
+
+    _ = try repl.evalLine("struct P { x: i32 }");
+    _ = try repl.evalLine("let p: P = P { x: 1 }");
+    try testing.expectError(error.TypeError, repl.evalLine("p.x = 5"));
+
+    _ = try repl.evalLine("var q: P = P { x: 1 }");
+    _ = try repl.evalLine("q.x = 5");
+}
+
 test "parseCommand help" {
     const cmd = Repl.parseCommand(":help");
     try std.testing.expectEqual(Command.Kind.help, cmd.kind);

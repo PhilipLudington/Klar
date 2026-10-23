@@ -1,0 +1,14 @@
+// Expected: check-error mutability_error
+// Bug 130: deep `let` covers handles too: an element write through a by-value
+// List parameter is refused (docs/decisions/2026-10-23-let-depth.md).
+
+fn set_first(list: List#[i32]) -> void {
+    list[0] = 9
+}
+
+fn main() -> i32 {
+    var xs: List#[i32] = List.new#[i32]()
+    xs.push(1)
+    set_first(xs)
+    return 0
+}

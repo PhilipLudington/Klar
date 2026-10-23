@@ -1,0 +1,11 @@
+// Expected: check-error mutability_error
+// Bug 130: a nested field write into a struct bound by `let` is refused at check time.
+
+struct Inner { x: i32 }
+struct Outer { inner: Inner }
+
+fn main() -> i32 {
+    let o: Outer = Outer { inner: Inner { x: 1 } }
+    o.inner.x = 5
+    return o.inner.x
+}
