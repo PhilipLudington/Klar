@@ -1,0 +1,11 @@
+// Expected: check-error use_after_move
+// Bug 115: a `var` initializer moves a non-Copy value, as a `let` initializer does,
+// so the moved-from name is unusable afterwards.
+
+fn main() -> i32 {
+    var a: String = String.from("abc")
+    var b: String = a
+    b.push('x')
+    println(a.as_str())
+    return 0
+}

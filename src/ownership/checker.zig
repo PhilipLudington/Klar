@@ -233,20 +233,26 @@ pub const OwnershipChecker = struct {
         // Define the new variable
         try self.defineVariable(let_decl.name, .unknown, let_decl.span, is_copy);
 
-        // If RHS was an identifier that's not Copy, mark it as moved
-        if (!is_copy) {
-            if (value_state) |vs| {
-                if (!vs.is_copy and vs.state == .owned) {
-                    vs.markMoved(let_decl.span);
-                }
-            }
-        }
+        self.moveInitializer(value_state, is_copy, let_decl.span);
     }
 
     fn analyzeVar(self: *OwnershipChecker, var_decl: *ast.VarDecl) !void {
-        _ = try self.analyzeExpr(var_decl.value);
+        const value_state = try self.analyzeExpr(var_decl.value);
         const is_copy = self.isCopyTypeExpr(var_decl.type_);
         try self.defineVariable(var_decl.name, .unknown, var_decl.span, is_copy);
+        self.moveInitializer(value_state, is_copy, var_decl.span);
+    }
+
+    /// A `let` or `var` initializer moves a non-Copy owned variable into the new binding,
+    /// whatever the binding kind (Bug 115).
+    fn moveInitializer(self: *OwnershipChecker, value_state: ?*VariableState, is_copy: bool, span: Span) void {
+        _ = self;
+        if (is_copy) return;
+        if (value_state) |vs| {
+            if (!vs.is_copy and vs.state == .owned) {
+                vs.markMoved(span);
+            }
+        }
     }
 
     fn analyzeAssignment(self: *OwnershipChecker, assign: *ast.Assignment) !void {
