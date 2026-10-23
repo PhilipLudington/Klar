@@ -82,8 +82,10 @@ vs `buildEntryBlockAlloca` in the two emitters at `e7b54e7` and at HEAD. Fix: us
 
 **Fix:** The pattern was not confined to the builtins: 369 allocas in 181 emitter
 functions (method calls, collection methods, `for` loops, struct literals, closures)
-were built at the insertion point. Every one now goes through `buildEntryBlockAlloca`
-(`src/codegen/emit.zig`), and that function takes the function to hoist into from the
+were built at the insertion point, and nine more called `llvm.c.LLVMBuildAlloca`
+directly. All of them now go through `buildEntryBlockAlloca` (`src/codegen/emit.zig`)
+except `emitCellNew`'s storage: a Cell is that slot's address, so it stays at the call
+site to give each evaluation its own Cell. That function takes the function to hoist into from the
 builder's insert block rather than `current_function`, which the runtime-helper
 bodies (`getOrDeclareStringSubstring` and the like) never set; with
 `current_function`, `string_primitives.kl` fails LLVM verification. Reproduced at
