@@ -3895,12 +3895,12 @@ Klar program was not checked.
 
 ---
 
-## [ ] Bug 129: A native `Cell` returned from the function that made it points at freed stack
+## [ ] Bug 129: Native `Cell` storage is a call-site stack slot — a returned Cell dangles and `Cell.new` in a loop grows the stack
 
 **Status:** Open
-**Deferred:** after v0.6.0 — only a Cell that outlives its creating function is hit; Cells
-used where they are made read correctly. A heap-backed Cell, if the Bug 5 branch's Cell
-fix takes that route, closes this too
+**Deferred:** after v0.6.0 — only Cells that outlive their function or are made in very
+long loops are hit; the fix needs a drop path for Cell, a design change
+(`docs/decisions/2026-10-22-cell-storage-deferred.md`)
 
 **System:** native Cell lowering — `emitCellNew` in `src/codegen/emit.zig`
 
@@ -3909,16 +3909,25 @@ pointer to a stack alloca in the creating function and returns that pointer. A C
 returned from that function (or stored in a struct or List that is) keeps the address of
 a frame that no longer exists, so a later `get()` reads whatever the stack holds then.
 
+`Cell.new` evaluated inside a loop takes a fresh stack slot on every pass, freed only when
+the function returns, so enough iterations overflow the stack the way Bug 5 did. The slot
+is deliberately not hoisted (PR 74), since hoisting made every Cell made in a loop alias
+one slot (`test/native/cell_loop_identity.kl`). Both halves close with heap-backed Cell
+storage and a drop path.
+
 **Steps to reproduce:**
 1. `fn make() -> Cell#[i32] { return Cell.new(41) }`
 2. In `main`: `let c: Cell#[i32] = make()`, call another function that uses some stack,
    then print `c.get()`.
 3. `klar build <file> -o build/p` and run it.
+4. Loop case: in `main`, `for i: i32 in 0..2000000 { let c: Cell#[i32] = Cell.new(i)
+   total = total +% c.get() }`, then print `total`; build natively and run it.
 
-**Expected:** `41`.
+**Expected:** `41`; the loop case prints the wrapped sum and exits 0.
 
-**Actual:** Not run; by reading, `c` points into `make`'s freed frame, so the value is
-whatever overwrote it.
+**Actual:** Returned Cell: not run; by reading, `c` points into `make`'s freed frame, so
+the value is whatever overwrote it. Loop case (run 2026-10-22 on `main` at c3002bf):
+segfaults, exit 139, before printing anything.
 
 **Found by:** /qa-review on fix/bug-5-entry-block-allocas, 2026-10-22 — code-reviewer-a;
 verified by reading `src/codegen/emit.zig:12888` (`return cell_alloca;`).
