@@ -46,9 +46,11 @@
 
 ---
 
-## [ ] Bug 5: Builtin emitters allocate on the stack at the call site — `fs_stat` / `process_run` inside a loop grow the stack every iteration
+## [x] Bug 5: Builtin emitters allocate on the stack at the call site — `fs_stat` / `process_run` inside a loop grow the stack every iteration
 
-**Status:** Open
+**Status:** Fixed
+
+**System:** codegen stack temporaries — `buildEntryBlockAlloca` and every alloca in `src/codegen/emit.zig`
 
 **Description:** `buildEntryBlockAlloca` (`src/codegen/emit.zig:491` at HEAD) exists
 and its comment states the reason: an `alloca` that is not in the function's entry
@@ -77,6 +79,19 @@ Fable 5.1 shard-A generalist, HIGH `[performance]`; verified by counting `buildA
 vs `buildEntryBlockAlloca` in the two emitters at `e7b54e7` and at HEAD. Fix: use
 `buildEntryBlockAlloca` for every alloca in `emitEnvGet`, `emitEnvSet`, `emitFsStat`,
 `emitProcessRun` (and any later builtin that copied the pattern).
+
+**Fix:** The pattern was not confined to the builtins: 369 allocas in 181 emitter
+functions (method calls, collection methods, `for` loops, struct literals, closures)
+were built at the insertion point. Every one now goes through `buildEntryBlockAlloca`
+(`src/codegen/emit.zig`), and that function takes the function to hoist into from the
+builder's insert block rather than `current_function`, which the runtime-helper
+bodies (`getOrDeclareStringSubstring` and the like) never set; with
+`current_function`, `string_primitives.kl` fails LLVM verification. Reproduced at
+runtime before the fix: 200,000 `fs_stat` calls in a loop segfault (exit 139).
+
+**Test:** `test/native/loop_stack_temporaries.kl` (exits 0; 139 before the fix) and the
+native runner's `alloca_entry_block` IR check on the same file (6 of 14 allocas outside
+an entry block before the fix).
 
 ---
 
