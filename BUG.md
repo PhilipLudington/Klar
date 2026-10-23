@@ -4058,3 +4058,56 @@ Bug 49's fix (exit 0, unseen, before it).
 
 **Found by:** Builder on fix/bug-49-exit-status, 2026-10-23 — the selfhost suite went red
 once `klar check` exited 1 on ownership errors.
+
+---
+
+## [ ] Bug 133: `klar run` exits 0 when it cannot create its temp path
+
+**Status:** Open
+
+**System:** driver exit status — `checkFile`, `buildNative` and `main` in `src/main.zig`
+
+**Deferred:** after the current milestone — it fires only when the temp path overflows
+`temp_path_buf` or no temp directory is set, which no ordinary run reaches.
+
+**Description:** In `runNativeFileWithOptions` (`src/main.zig:3778-3785`), the
+"Failed to create temp path" branches write to stderr and do a bare `return;`, so `main`
+sees success and the process exits 0. It is the same pattern as Bug 49, in a function
+Bug 49's fix edited; that fix converted the `buildNative` call but not these two paths.
+
+**Steps to reproduce:**
+1. Run `klar run <file>` with a temp directory path long enough to overflow
+   `temp_path_buf` (or, on Windows, with no temp directory set).
+
+**Expected:** The error, then exit 1.
+
+**Actual:** The error, then exit 0.
+
+**Found by:** /qa-review on fix/bug-49-exit-status, 2026-10-23 — code-reviewer; reviewer's
+evidence, not re-read.
+
+---
+
+## [ ] Bug 134: An unknown command and other commands' argument errors exit 0
+
+**Status:** Open
+
+**System:** driver exit status — `checkFile`, `buildNative` and `main` in `src/main.zig`
+
+**Deferred:** after the current milestone — Bug 49 covered `check`, `build` and `run`;
+`docs/decisions/2026-10-23-ownership-errors-exit-1.md` leaves the other commands open.
+
+**Description:** `runCli` prints an error and returns normally for an unknown command and
+for argument errors in commands other than `check` and `build` (`run`, `disasm`, `add`,
+…), so the process exits 0. `docs/getting-started/cli-reference.md` § Exit Codes promises
+a non-zero exit on failure.
+
+**Steps to reproduce:**
+1. `klar frobnicate; echo $?`
+
+**Expected:** `Unknown command`, then exit 1.
+
+**Actual:** `Unknown command`, then exit 0.
+
+**Found by:** /qa-review on fix/bug-49-exit-status, 2026-10-23 — code-reviewer probe;
+reviewer's evidence, not re-read.

@@ -1158,3 +1158,46 @@ reviewer's reading, not re-verified.
 
 **Found by:** /qa-review on fix/bug-63-immutable-assign, 2026-10-23 — file-size-checker
 Growth Ledger (Limit band); reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 54: Most of Bug 49's exit-status paths have no status test
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `scripts/run-args-tests.sh` (Bug 49 section), `src/main.zig:866-934`, `src/main.zig:4538-4646`, `src/main.zig:748-780`
+**Due when:** touching `scripts/run-args-tests.sh` · touching `src/main.zig` exit paths
+
+**Description:** Bug 49's fix made many failure paths exit 1, but the args suite pins only
+the six entry-point cases. Unpinned: `check --partial` (1 with diagnostics, 0 clean),
+`--scope-at` / `--expected-type-at` exiting 0 on a program with type errors, `check`
+argument errors (unknown option, a missing or invalid `--scope-at` value, both queries at
+once, no input file), a query position out of range, a malformed `klar.json` under
+`klar build`, and `build --target <bogus>`.
+
+**Payment:** `expect_status` cases for each, e.g. `check exit_status_type_error.kl
+--partial` → non-zero, `check no_args.kl --partial` → 0, `check exit_status_type_error.kl
+--expected-type-at 3:18` → 0, `check no_args.kl --bogus` → non-zero, `check no_args.kl
+--scope-at 999:1` → non-zero, `build no_args.kl --target not-a-triple` → non-zero.
+
+**Found by:** /qa-review on fix/bug-49-exit-status, 2026-10-23 — test-checker GAPS;
+reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 55: The selfhost `OWNERSHIP_XFAIL` classifier's failure branches never run
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `scripts/run-selfhost-tests.sh:286-327`
+**Due when:** touching `scripts/run-selfhost-tests.sh` · when Bug 132 is taken
+
+**Description:** Phase 1 marks four selfhost files as expected ownership failures. Its
+"now passes, remove the mark" and "failed some other way" branches are never run, so a
+wrong `grep` condition would leave a mark on after Bug 132 is fixed and nothing would say so.
+
+**Payment:** Extract the Phase 1 classifier into a function and run it on a clean file and
+a type-error file under an XFAIL name, asserting FAIL for each.
+
+**Found by:** /qa-review on fix/bug-49-exit-status, 2026-10-23 — test-checker GAPS;
+reviewer's reading, not re-verified.
