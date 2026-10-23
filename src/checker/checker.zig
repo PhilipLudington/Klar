@@ -4869,6 +4869,10 @@ pub const TypeChecker = struct {
         return type_utils.isAssignable(self, expr);
     }
 
+    pub fn checkAssignTarget(self: *TypeChecker, target: ast.Expr, span: ast.Span) void {
+        type_utils.checkAssignTarget(self, target, span);
+    }
+
     pub fn isMutable(self: *TypeChecker, expr: ast.Expr) bool {
         return type_utils.isMutable(self, expr);
     }

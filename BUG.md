@@ -1591,9 +1591,11 @@ per alternative and patch them all after the final `op_false`.
 
 ---
 
-## [ ] Bug 63: Assignment to an immutable `let` binding passes `klar check` and compiles natively
+## [x] Bug 63: Assignment to an immutable `let` binding passes `klar check` and compiles natively
 
-**Status:** Open
+**Status:** Fixed
+
+**System:** assignment target checking — `checkAssignTarget` in `src/checker/type_utils.zig`, called by `checkBinary` (`src/checker/expressions.zig`) and `checkAssignment` (`src/checker/statements.zig`)
 
 **Description:** The checker's assignment path (`src/checker/expressions.zig:392` at HEAD, `:356`
 at `e7b54e7`) runs only `isAssignable`, which is true for every identifier, index, field and
@@ -1615,6 +1617,18 @@ backend, and executed; only the tree-walking interpreter refuses, and only at ru
 running the four commands above on the installed compiler. Fix: check `sym.mutable` in the
 binary-assign path (the symbol carries it — `expressions.zig:315` reads it for references), or
 route `=` to the statement node that already checks it.
+
+**Fix:** Every `=` and `op=` target goes through one check, `checkAssignTarget`
+(`src/checker/type_utils.zig`), which refuses a bare name bound immutably (`let`, a
+parameter) with `mutability_error` "cannot assign to immutable binding '<name>'". The
+file path (`checkBinary`) and the REPL's statement node (`checkAssignment`, built only by
+`parseReplInput`) both call it, so the REPL no longer refuses element and field writes
+through a `let` that a file accepts; that question is Bug 130. Since every backend runs
+the checker first, `check`, `build`, `run` and `run --interpret` all stop with the error.
+
+**Test:** `test/check/immutable_let_assign.kl`, `test/check/immutable_let_compound_assign.kl`,
+`test/check/immutable_param_assign.kl`, `test/native/immutable_let_assign_build_error.kl`;
+`test/check/mutable_var_assign_pass.kl` keeps `var` assignable.
 
 ---
 
