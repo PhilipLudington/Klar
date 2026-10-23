@@ -147,12 +147,13 @@ in user programs first, then checker/contract correctness, then tooling, then de
       `build` and `check` returns `error.CommandFailed`, which `main` turns into exit 1)
 
 **Move checking and explicit move/clone (Philip, 2026-10-18; not in the v0.6.0 cut set)**
-- [ ] Ownership move tracking — Bug 115: `var b: String = a` never marks `a` moved
+- [x] Ownership move tracking — Bug 115: `var b: String = a` never marks `a` moved
       (`src/ownership/checker.zig` `analyzeVar`, where `analyzeLet` does), so both names
       share one String and `klar check` passes. Lands before the design below, which
       relies on the checker refusing a use after a move; Bugs 52 (build skips the
       ownership pass) and 49 (`check` exits 0 on failure) are the other two gaps.
-      (found: PR 65 side note, 2026-10-18)
+      (found: PR 65 side note, 2026-10-18) (completed 2026-10-23: `let` and `var`
+      initializers both go through `moveInitializer`; a plain `b = a` assignment is Bug 135)
 - [ ] Design — explicit move/clone: write a design section (docs/design/) making a
       move or a copy of a non-Copy value explicit at the use site, with keywords
       `move a` and `clone a`; `clone` dispatches to the `Clone` trait the way `==`

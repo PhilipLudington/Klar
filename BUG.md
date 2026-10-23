@@ -3478,9 +3478,9 @@ fix/bug-113-fn-typed-params, 2026-10-20).
 
 ---
 
-## [ ] Bug 115: A move into a `var` binding is not tracked, so the moved-from name stays usable
+## [x] Bug 115: A move into a `var` binding is not tracked, so the moved-from name stays usable
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** ownership move tracking — `OwnershipChecker.analyzeVar`
 (`src/ownership/checker.zig` ~246), which defines the new variable but never marks the
@@ -3505,6 +3505,14 @@ lets the program through.
 
 **Found by:** a side note on PR 65 (Bug 108) and the session's probes, 2026-10-18,
 discussed with Philip; decision record `docs/decisions/2026-10-18-explicit-move-clone.md`.
+
+**Fix:** `analyzeLet` and `analyzeVar` (`src/ownership/checker.zig`) both end in
+`moveInitializer`, which marks a non-Copy owned identifier initializer moved; the rule
+used to live inline in `analyzeLet` only. A plain `b = a` assignment still does not move
+`a` (Bug 135). The selfhost `klar check` results are unchanged.
+
+**Test:** `test/check/ownership_var_binding_move.kl` (and
+`test/check/ownership_var_copy_no_move.kl` for the Copy side).
 
 ---
 
