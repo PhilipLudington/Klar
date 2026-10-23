@@ -3997,3 +3997,86 @@ called through a reference receiver when that method takes `self` by reference, 
 `immutable_ref_param_field_assign.kl`; `test/check/mutable_place_assign_pass.kl` keeps
 `var`, `inout` parameters and `inout self` writable; the REPL unit test "REPL refuses
 element and field writes through a let binding (Bug 130)" in `src/repl.zig`.
+
+---
+
+## [ ] Bug 131: An `inout List#[T]` parameter cannot be indexed or have List methods called on it
+
+**Status:** Open
+
+**Deferred:** after v0.6.0 — a build or check error, never a wrong result; a function that
+changes a caller's List can take it by value and return it (`benchmarks/runtime/quicksort.kl`).
+
+**System:** reference receivers — `checkIndex` and `checkBuiltinMethod` in `src/checker/`, index lowering in `src/codegen/emit.zig`
+
+**Description:** Since Bug 130, a function that writes a caller's List elements must take
+it `inout`. Through such a parameter, `(*list)[i]` passes `klar check` but native codegen
+stops with `Codegen error: UnsupportedFeature`, for reads and writes alike; `list[i]`
+fails check with "cannot index this type", and `list.get(i)` / `list.set(i, v)` fail check
+with "method 'get' not found" (field access auto-dereferences a reference; indexing and
+builtin methods do not). `test/check/mutable_place_assign_pass.kl` passes check with a
+`(*list)[0] = 9` that cannot build.
+
+**Steps to reproduce:**
+1. `fn first(list: inout List#[i32]) -> i32 { let a: i32 = (*list)[0]  return a }`, called as `first(ref l)` on a `var l: List#[i32]` holding one element.
+2. `klar build prog.kl`
+
+**Expected:** builds; the program returns the element.
+
+**Actual:** (2026-10-23, fix/bug-130-deep-let) `Codegen error: UnsupportedFeature`.
+
+**Found by:** Builder on fix/bug-130-deep-let, 2026-10-23, migrating quicksort to `inout`.
+
+---
+
+## [ ] Bug 132: The VM fails every call to an `inout self` method
+
+**Status:** Open
+
+**Deferred:** after v0.6.0 — the VM stops with a runtime error rather than computing a
+wrong value, and native runs these programs.
+
+**System:** VM method calls — `inout self` receiver passing in `src/compiler.zig` / `src/vm.zig`
+
+**Description:** A method declared `fn bump(self: inout C)` called on a `var c: C` as
+`c.bump()` runs natively and in the interpreter, but the bytecode VM stops with
+`Runtime error in main: TypeError`. Since Bug 130 every stdlib collection's mutating
+method takes `inout self`, so the VM cannot run them.
+
+**Steps to reproduce:**
+1. `struct C { n: i32 }`, `impl C { fn bump(self: inout C) -> void { self.n = self.n + 1 } }`, `main`: `var c: C = C { n: 0 }  c.bump()  c.bump()  return c.n`
+2. `klar run prog.kl --vm`
+
+**Expected:** exit 2, as `klar build` and `--interpret` give.
+
+**Actual:** (2026-10-23, fix/bug-130-deep-let) `Runtime error in main: TypeError`, exit 1.
+
+**Found by:** Builder on fix/bug-130-deep-let, 2026-10-23.
+
+---
+
+## [ ] Bug 133: A statement starting with `(` continues the previous line as a call
+
+**Status:** Open
+
+**Deferred:** after v0.6.0 — the result is a check error at the wrong place, not a wrong
+program; a trailing `;` on the previous line works around it.
+
+**System:** statement boundaries — postfix call parsing in `src/parser.zig`
+
+**Description:** The parser applies a postfix `(` across a newline, so a line that ends
+in an expression followed by a line that starts with `(`, such as `(*list)[i] = v`
+(the only way to write through an `inout` List, Bug 131), parses as one call:
+`(*list).get(j)(*list)[i] = v`. The errors land on the earlier line ("cannot call
+non-function type") and the next statement disappears.
+
+**Steps to reproduce:**
+1. `fn f(list: inout List#[i32]) -> void { ⏎ let a: ?i32 = (*list).get(0) ⏎ (*list)[0] = 1 ⏎ }`
+2. `klar check prog.kl`
+
+**Expected:** two statements; any errors are about what each statement does.
+
+**Actual:** (2026-10-23, fix/bug-130-deep-let) "cannot call non-function type" on line 2,
+and `(*list)[0] = 1` is never checked as its own statement.
+
+**Found by:** Builder on fix/bug-130-deep-let, 2026-10-23.
