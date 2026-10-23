@@ -4121,3 +4121,36 @@ a non-zero exit on failure.
 
 **Found by:** /qa-review on fix/bug-49-exit-status, 2026-10-23 — code-reviewer probe;
 reviewer's evidence, not re-read.
+
+---
+
+## [ ] Bug 135: A plain `b = a` assignment never moves `a`, so the moved-from name stays usable
+
+**Status:** Open
+
+**System:** ownership move tracking — `src/ownership/checker.zig`
+
+**Deferred:** after the current milestone — `klar build` and `klar run` skip the ownership
+pass (Bug 52), so no native program is affected; it should land before the explicit
+move/clone design (PLAN.md Next Up) is implemented, since that design relies on the
+checker refusing a use after a move.
+
+**Description:** The parser reads `b = a` as an `expr_stmt` holding a `binary` with op
+`assign` (`klar dump-ast`), so the ownership checker sees it in `analyzeBinary`, which
+analyzes both sides and marks nothing moved. `analyzeAssignment` is never reached for it.
+Bug 115's fix covers `let` and `var` initializers only. Klar's ownership docs
+(`docs/memory/ownership.md` § Move Semantics) say assignment moves a non-Copy value.
+Marking the move alone would not be enough: the assignment also needs to make `b` owned
+again, which is Bug 132's loop-reassignment shape.
+
+**Steps to reproduce:**
+1. `fn main() -> i32 { var a: String = String.from("abc")`, `var b: String =
+   String.from("x")`, `b = a`, `println(a.as_str())`, `return 0 }`.
+2. `klar check` it.
+
+**Expected:** `use_after_move` at the `a.as_str()` line.
+
+**Actual:** `All checks passed` (2026-10-23, macOS arm64, `fix/bug-115-var-move` at
+`469d0fe`).
+
+**Found by:** the Bug 115 fix's probe of the remaining copies, 2026-10-23.
