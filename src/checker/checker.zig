@@ -6092,3 +6092,25 @@ test "await accepts future-typed local values" {
 
     try testing.expect(!checker.hasErrors());
 }
+
+test "assigning to an undeclared name reports only the undefined name (Bug 63 review)" {
+    const testing = std.testing;
+    const source =
+        \\fn main() -> i32 {
+        \\    y = 2
+        \\    return 0
+        \\}
+    ;
+
+    var parsed = try testParseModuleForScope(source);
+    defer parsed.arena.deinit();
+
+    var checker = TypeChecker.init(testing.allocator);
+    defer checker.deinit();
+    checker.checkModule(parsed.module);
+
+    try testing.expect(checker.hasErrors());
+    for (checker.errors.items) |err| {
+        try testing.expect(err.kind != .mutability_error);
+    }
+}
