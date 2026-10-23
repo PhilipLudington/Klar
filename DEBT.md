@@ -1201,3 +1201,24 @@ a type-error file under an XFAIL name, asserting FAIL for each.
 
 **Found by:** /qa-review on fix/bug-49-exit-status, 2026-10-23 — test-checker GAPS;
 reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 56: Nothing pins the selfhost files' use-after-move counts
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/ownership/checker.zig` `moveInitializer`, `scripts/run-selfhost-tests.sh` Phase 1
+**Due when:** touching `src/ownership/checker.zig` · when Bug 132 is taken
+
+**Description:** Bug 115's fix claims the selfhost `klar check` results are unchanged: the
+four `OWNERSHIP_XFAIL` files report 127, 12, 12 and 3 use-after-move errors. Phase 1 only
+checks that those files fail. A new false move in one of them would raise its count and no
+gate would notice.
+
+**Payment:** In Phase 1, count `use of moved` lines per XFAIL file and compare them with a
+recorded baseline (checker_decl 127, checker 12, module_resolver 12, parser 3). Fail when a
+count goes up.
+
+**Found by:** /qa-review on fix/bug-115-var-move, 2026-10-23 — test-checker GAPS;
+reviewer's reading, not re-verified.
