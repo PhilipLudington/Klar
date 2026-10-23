@@ -3945,3 +3945,36 @@ segfaults, exit 139, before printing anything.
 
 **Found by:** /qa-review on fix/bug-5-entry-block-allocas, 2026-10-22 — code-reviewer-a;
 verified by reading `src/codegen/emit.zig:12888` (`return cell_alloca;`).
+
+---
+
+## [ ] Bug 130: An element or field write through a `let` binding passes `klar check`
+
+**Status:** Open
+
+**Deferred:** after v0.6.0 — the value written is the one the program asked for, so a trial
+program gets no wrong answer and no crash; the fix needs a language decision first (below).
+
+**System:** assignment target checking — `checkAssignTarget` in `src/checker/type_utils.zig`, called by `checkBinary` (`src/checker/expressions.zig`) and `checkAssignment` (`src/checker/statements.zig`)
+
+**Description:** Bug 63's fix refuses `=` and `op=` to a bare immutable name only.
+`a[0] = 9` on `let a: [i32; 2]` and `p.x = 5` on `let p: P` still pass, though both
+change a value the `let` declared immutable. Refusing every element and field write rooted
+in an immutable binding (`isMutable`'s recursion) is not a drop-in fix: it rejects 8
+tracked files, every one through an element write on a `List` or slice handle, such as
+`self.buf[i] = v` in `stdlib/deque.kl`, `stdlib/btree_map.kl` and `stdlib/priority_queue.kl`,
+`list[i] = v` on a `List` parameter in `benchmarks/runtime/quicksort.kl`, and `s[i] = 5` on a
+slice in `test/native/runtime_traps.kl`. Whether a write through a handle (List, slice) needs
+a mutable binding, while a write into a value (array, struct) does, is the decision. Before
+Bug 63's fix the REPL's statement path refused all of these and files refused none.
+
+**Steps to reproduce:**
+1. `struct P { x: i32 }` and `fn main() -> i32 { let a: [i32; 2] = [1, 2]  a[0] = 9  let p: P = P { x: 1 }  p.x = 5  return a[0] + p.x }`
+2. `klar check prog.kl`
+
+**Expected:** a `mutability_error` for each of the two writes into a value bound by `let`.
+
+**Actual:** (2026-10-22, fix/bug-63-immutable-assign at cbdce97) "All checks passed".
+
+**Found by:** Builder on fix/bug-63-immutable-assign, 2026-10-22 — measured by checking
+every tracked `.kl` file with the full `isMutable` check in place.
