@@ -12884,8 +12884,10 @@ pub const Emitter = struct {
         const value = try self.emitExpr(method.args[0]);
         const value_type = llvm.typeOf(value);
 
-        // Allocate stack space for the cell's value
-        const cell_alloca = self.buildEntryBlockAlloca(value_type, "cell.storage");
+        // Deliberately at the call site, not hoisted (the one alloca outside
+        // buildEntryBlockAlloca): the Cell is this slot's address, so each
+        // evaluation in a loop needs its own slot or every Cell made there aliases.
+        const cell_alloca = self.builder.buildAlloca(value_type, "cell.storage");
 
         // Store the initial value
         _ = self.builder.buildStore(value, cell_alloca);
@@ -33070,7 +33072,7 @@ pub const Emitter = struct {
         const slice_type = llvm.Types.struct_(self.ctx, &slice_fields, false);
 
         // Allocate space for the result
-        const result_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, opt_type, "first_result");
+        const result_ptr = self.buildEntryBlockAlloca(opt_type, "first_result");
 
         // Get array length
         const array_size = self.getArraySize(expr);
@@ -33164,7 +33166,7 @@ pub const Emitter = struct {
         };
         const slice_type = llvm.Types.struct_(self.ctx, &slice_fields, false);
 
-        const result_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, opt_type, "last_result");
+        const result_ptr = self.buildEntryBlockAlloca(opt_type, "last_result");
 
         const array_size = self.getArraySize(expr);
         const is_fixed_array = array_size != null;
@@ -33342,7 +33344,7 @@ pub const Emitter = struct {
 
         // Allocate result variable
         const i1_type = llvm.Types.int1(self.ctx);
-        const result_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, i1_type, "contains_result");
+        const result_ptr = self.buildEntryBlockAlloca(i1_type, "contains_result");
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), result_ptr); // Initialize to false
 
         // Get array length
@@ -33366,7 +33368,7 @@ pub const Emitter = struct {
 
         // Loop init - allocate index
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_init_bb);
-        const idx_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, i64_type, "idx_ptr");
+        const idx_ptr = self.buildEntryBlockAlloca(i64_type, "idx_ptr");
         _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), idx_ptr);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_cond_bb);
 
@@ -33657,7 +33659,7 @@ pub const Emitter = struct {
 
         // Return block: build slice struct { result_ptr, char_count }
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, ret_bb);
-        const slice_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, slice_type, "slice_ptr");
+        const slice_ptr = self.buildEntryBlockAlloca(slice_type, "slice_ptr");
         const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, slice_ptr, 0, "ptr_field");
         _ = llvm.c.LLVMBuildStore(self.builder.ref, result_ptr, ptr_field);
         const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, slice_ptr, 1, "len_field");
@@ -33720,8 +33722,8 @@ pub const Emitter = struct {
         );
 
         // Allocate variables for start and end indices
-        const start_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, i64_type, "start_ptr");
-        const end_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, i64_type, "end_ptr");
+        const start_ptr = self.buildEntryBlockAlloca(i64_type, "start_ptr");
+        const end_ptr = self.buildEntryBlockAlloca(i64_type, "end_ptr");
         _ = llvm.c.LLVMBuildStore(self.builder.ref, zero_i64, start_ptr);
         _ = llvm.c.LLVMBuildStore(self.builder.ref, len, end_ptr);
 
@@ -33898,7 +33900,7 @@ pub const Emitter = struct {
         );
 
         // Initialize loop counter
-        const i_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, i64_type, "i_ptr");
+        const i_ptr = self.buildEntryBlockAlloca(i64_type, "i_ptr");
         _ = llvm.c.LLVMBuildStore(self.builder.ref, zero_i64, i_ptr);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_bb);
 
@@ -34009,7 +34011,7 @@ pub const Emitter = struct {
         );
 
         // Initialize loop counter
-        const i_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, i64_type, "i_ptr");
+        const i_ptr = self.buildEntryBlockAlloca(i64_type, "i_ptr");
         _ = llvm.c.LLVMBuildStore(self.builder.ref, zero_i64, i_ptr);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_bb);
 
