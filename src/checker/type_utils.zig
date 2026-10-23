@@ -115,8 +115,14 @@ pub fn checkAssignTarget(tc: anytype, target: ast.Expr, span: ast.Span) void {
         tc.addError(.invalid_assignment, span, "cannot assign to this expression", .{});
         return;
     }
-    if (target == .identifier and !isMutable(tc, target)) {
-        tc.addError(.mutability_error, span, "cannot assign to immutable binding '{s}'", .{target.identifier.name});
+    // An undeclared name is already reported as undefined_variable; only a found,
+    // immutable binding is a mutability error.
+    if (target == .identifier) {
+        if (tc.current_scope.lookup(target.identifier.name)) |sym| {
+            if (!sym.mutable) {
+                tc.addError(.mutability_error, span, "cannot assign to immutable binding '{s}'", .{target.identifier.name});
+            }
+        }
     }
 }
 
