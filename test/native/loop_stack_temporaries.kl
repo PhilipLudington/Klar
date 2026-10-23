@@ -1,0 +1,39 @@
+// Temporaries a loop body needs live in the function's entry block (Bug 5)
+// `fs_stat` keeps a 256-byte stat buffer and its Result on the stack. Allocated
+// at the call site, inside the loop, that space is taken again on every
+// iteration and returned only when `main` returns, so 200,000 calls overrun
+// the 8 MB main-thread stack. The runner also reads this file's IR: every
+// `alloca` must sit in its function's entry block.
+
+fn count_dirs(n: i32) -> i32 {
+    var dirs: i32 = 0
+    var i: i32 = 0
+    while i < n {
+        let st: Result#[FileStat, IoError] = fs_stat(".")
+        if st.is_ok() {
+            let info: FileStat = st!
+            if info.is_dir {
+                dirs = dirs + 1
+            }
+        }
+        i = i + 1
+    }
+    return dirs
+}
+
+fn main() -> i32 {
+    let n: i32 = 200000
+    if count_dirs(n) != n {
+        return 1
+    }
+    var total: i32 = 0
+    for k: i32 in 0..n {
+        let words: List#[i32] = List.new#[i32]()
+        words.push(k)
+        total = total +% words.len()
+    }
+    if total == 0 {
+        return 2
+    }
+    return 0
+}
