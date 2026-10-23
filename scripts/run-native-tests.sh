@@ -194,6 +194,8 @@ get_expected() {
         string_data_to_string) echo 0 ;;  # String.to_string() is an independent copy (Bug 118)
         enum_payload_layout) echo 0 ;;  # char and struct payloads read back whole (Bug 34)
         loop_stack_temporaries) echo 0 ;;  # 200,000 loop iterations in constant stack (Bug 5)
+        loop_stack_methods) echo 0 ;;  # array and string methods in a loop (Bug 5)
+        cell_loop_identity) echo 0 ;;  # each Cell made in a loop keeps its own value
         *) echo -1 ;;  # -1 means accept any result
     esac
 }
@@ -462,46 +464,44 @@ rm -rf "$layout_dir"
 # Entry-block allocas (Bug 5): an `alloca` outside a function's entry block takes
 # fresh stack space each time it runs, freed only when the function returns, so one
 # inside a loop body grows the stack every iteration. This reads the IR of
-# test/native/loop_stack_temporaries.kl, whose loops call a builtin and List
-# methods, and requires every `alloca` to sit in its function's first block.
+# test/native/loop_stack_temporaries.kl and loop_stack_methods.kl, whose loops call
+# builtins, List, array and string methods, and requires every `alloca` to sit in
+# its function's first block.
 alloca_name="alloca_entry_block"
 alloca_dir="$BUILD_DIR/klar_alloca_ir_$$"
 mkdir -p "$alloca_dir"
-alloca_ir="$alloca_dir/loop_stack_temporaries.ll"
-( cd "$alloca_dir" && "$KLAR" build "$TEST_DIR/loop_stack_temporaries.kl" -c -o "$alloca_dir/loop_stack_temporaries.o" --emit-llvm >/dev/null 2>&1 )
-if [ -f "$alloca_ir" ]; then
-    # Block 0 is the function's first block; each later label starts another.
-    alloca_counts=$(awk '
-        /^define / { infn = 1; blk = 0; seen = 0; next }
-        /^}/ { infn = 0; next }
-        !infn { next }
-        /^[A-Za-z_.0-9]+:/ { if (seen) blk++; seen = 1; next }
-        NF > 0 { seen = 1 }
-        /= alloca / { total++; if (blk > 0) outside++ }
-        END { printf "%d %d\n", total, outside }
-    ' "$alloca_ir")
-    alloca_total=${alloca_counts% *}
-    alloca_outside=${alloca_counts#* }
-    if [ "$alloca_total" -gt 0 ] && [ "$alloca_outside" -eq 0 ]; then
-        echo "✓ $alloca_name ($alloca_total allocas, all in entry blocks)"
-        PASSED=$((PASSED + 1))
-    else
-        alloca_why="$alloca_outside of $alloca_total allocas outside an entry block"
-        echo "✗ $alloca_name ($alloca_why)"
-        FAILED=$((FAILED + 1))
-        if [ -n "$FAILURES" ]; then
-            FAILURES="$FAILURES,"
+for alloca_src in loop_stack_temporaries loop_stack_methods; do
+    alloca_ir="$alloca_dir/$alloca_src.ll"
+    ( cd "$alloca_dir" && "$KLAR" build "$TEST_DIR/$alloca_src.kl" -c -o "$alloca_dir/$alloca_src.o" --emit-llvm >/dev/null 2>&1 )
+    if [ -f "$alloca_ir" ]; then
+        # Block 0 is the function's first block; each later label starts another.
+        alloca_counts=$(awk '
+            /^define / { infn = 1; blk = 0; seen = 0; next }
+            /^}/ { infn = 0; next }
+            !infn { next }
+            /^[A-Za-z_.0-9]+:/ { if (seen) blk++; seen = 1; next }
+            NF > 0 { seen = 1 }
+            /= alloca / { total++; if (blk > 0) outside++ }
+            END { printf "%d %d\n", total, outside }
+        ' "$alloca_ir")
+        alloca_total=${alloca_counts% *}
+        alloca_outside=${alloca_counts#* }
+        if [ "$alloca_total" -gt 0 ] && [ "$alloca_outside" -eq 0 ]; then
+            echo "✓ $alloca_name: $alloca_src ($alloca_total allocas, all in entry blocks)"
+            PASSED=$((PASSED + 1))
+            continue
         fi
-        FAILURES="$FAILURES\"$alloca_name: $alloca_why\""
+        alloca_why="$alloca_src: $alloca_outside of $alloca_total allocas outside an entry block"
+    else
+        alloca_why="$alloca_src.kl did not compile to LLVM IR"
     fi
-else
-    echo "✗ $alloca_name (loop_stack_temporaries.kl did not compile to LLVM IR)"
+    echo "✗ $alloca_name ($alloca_why)"
     FAILED=$((FAILED + 1))
     if [ -n "$FAILURES" ]; then
         FAILURES="$FAILURES,"
     fi
-    FAILURES="$FAILURES\"$alloca_name: loop_stack_temporaries.kl did not compile to LLVM IR\""
-fi
+    FAILURES="$FAILURES\"$alloca_name: $alloca_why\""
+done
 rm -rf "$alloca_dir"
 
 # Timeout branch (Debt 7): a binary that never returns must be reported as timed

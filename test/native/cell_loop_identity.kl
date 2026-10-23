@@ -1,0 +1,19 @@
+// A Cell made inside a loop is its own Cell (qa-fix on the Bug 5 branch)
+// Each turn's `Cell.new(i)` must keep its own value after the loop: the three
+// Cells read back 0, 1 and 2, not the last value three times.
+
+fn main() -> i32 {
+    var cells: List#[Cell#[i32]] = List.new#[Cell#[i32]]()
+    for i: i32 in 0..3 {
+        let c: Cell#[i32] = Cell.new(i)
+        cells.push(c)
+    }
+    var sum: i32 = 0
+    for c: Cell#[i32] in cells {
+        sum = sum + c.get()
+    }
+    if sum != 3 {
+        return 1
+    }
+    return 0
+}
