@@ -21,7 +21,7 @@ phase tasks. Bug fixes follow `~/.claude/rules/bug-format.md` § Fixing a bug: t
 test is committed first and seen failing, then the fix. Order: wrong results and crashes
 in user programs first, then checker/contract correctness, then tooling, then debt.
 
-- [ ] Nightly CI red at 25bfe92 (Windows (full suite)) — selfhost checker parity
+- [x] Nightly CI red at 25bfe92 (Windows (full suite)) — selfhost checker parity
       `many_params` exits non-zero with no output (`selfhost-too-strict`): a stack overflow.
       Since f7cccf6 (Bug 5: every alloca in the entry block) the selfhost `checker_parity`
       binary uses ~128K of stack per level of binary-expression nesting (~80K before), so
@@ -32,6 +32,8 @@ in user programs first, then checker/contract correctness, then tooling, then de
       2026-10-23). Fix: link every Windows Klar binary with an 8M main-thread stack, as
       macOS and Linux give; frame shrinking with `llvm.lifetime` markers is Debt 57
       (Philip, 2026-10-23; `docs/decisions/2026-10-23-windows-main-thread-stack.md`).
+      (completed 2026-10-23: every Windows link reserves an 8M main-thread stack, MSVC
+      `/STACK` and MinGW `--stack`)
 - [x] Nightly CI red at cde6bdf (Linux x86_64 (gate)) — `float_compound_assign` fails to
       link: `undefined reference to 'fmod'`, since f64 `%` lowers to libm's `fmod` and the
       Linux link line has no `-lm` — https://github.com/PhilipLudington/Klar/actions/runs/39440684403
