@@ -21,6 +21,16 @@ phase tasks. Bug fixes follow `~/.claude/rules/bug-format.md` § Fixing a bug: t
 test is committed first and seen failing, then the fix. Order: wrong results and crashes
 in user programs first, then checker/contract correctness, then tooling, then debt.
 
+- [ ] Nightly CI red at 25bfe92 (Windows (full suite)) — selfhost checker parity
+      `many_params` exits non-zero with no output (`selfhost-too-strict`): a stack overflow.
+      Since f7cccf6 (Bug 5: every alloca in the entry block) the selfhost `checker_parity`
+      binary uses ~128K of stack per level of binary-expression nesting (~80K before), so
+      `many_params`' 8-term sum needs ~1M at -O0 (640K at 2950b09), and Windows gives the
+      main thread 1M where macOS/Linux give 8M. Reproduced on macOS with `ulimit -s 896`;
+      no lifetime markers are emitted, so no frame slots are shared —
+      https://github.com/PhilipLudington/Klar/actions/runs/39970742553 (found: nightly
+      2026-10-23). WAITING ON PHILIP (asked 2026-10-23): give Windows binaries an 8M stack
+      at link time, or shrink frames with `llvm.lifetime` markers?
 - [x] Nightly CI red at cde6bdf (Linux x86_64 (gate)) — `float_compound_assign` fails to
       link: `undefined reference to 'fmod'`, since f64 `%` lowers to libm's `fmod` and the
       Linux link line has no `-lm` — https://github.com/PhilipLudington/Klar/actions/runs/39440684403
