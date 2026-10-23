@@ -1222,3 +1222,29 @@ count goes up.
 
 **Found by:** /qa-review on fix/bug-115-var-move, 2026-10-23 — test-checker GAPS;
 reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 57: Codegen emits no `llvm.lifetime` markers, so stack frames never share slots
+
+**Status:** Open
+**Kind:** performance
+**Where:** `src/codegen/emit.zig` `buildEntryBlockAlloca`
+**Due when:** touching `src/codegen/emit.zig` · when a Klar program overflows the 8M stack on any platform
+
+**Description:** Since f7cccf6 (Bug 5) every alloca is built in its function's entry block,
+so a frame holds a slot for every branch's temporaries at once. With no `llvm.lifetime.start`
+/ `llvm.lifetime.end` markers, LLVM's stack colouring cannot overlap slots whose lives do not
+overlap. The selfhost `checker_parity` binary went from about 80K to about 128K of stack per
+level of binary-expression nesting at `-O0` (`test/native/many_params.kl`, an 8-term sum,
+needs about 1M where it needed 640K at 2950b09). The Windows nightly overflowed on it
+(2026-10-23). Philip chose to give Windows binaries an 8M main-thread stack instead
+(`docs/decisions/2026-10-23-windows-main-thread-stack.md`), so the larger frames stay on
+every platform.
+
+**Payment:** Emit `llvm.lifetime.start` where a slot's value begins and `llvm.lifetime.end`
+where its scope ends, for the allocas `buildEntryBlockAlloca` builds. Measure with a
+`ulimit -s` sweep on `checker_parity` over an N-term sum at `-O2`, where stack colouring
+runs; `-O0` will not change.
+
+**Found by:** /continue-plan nightly CI triage on fix/nightly-windows-stack, 2026-10-23.
