@@ -562,6 +562,8 @@ expect_status() {
         pass "$desc"
     elif [ "$expected" = "nonzero" ] && [ $status -ne 0 ]; then
         pass "$desc"
+    elif [ "$expected" = "one" ] && [ $status -eq 1 ]; then
+        pass "$desc"
     else
         fail "$desc (exit $status)"
         head -3 "$EXIT_TMP/out.txt" | sed 's/^/  /'
@@ -588,8 +590,13 @@ expect_status "build exit status: missing file exits non-zero" nonzero \
     build "$EXIT_TMP/does_not_exist.kl" -o "$EXIT_TMP/missing"
 expect_status "build exit status: clean file exits 0" zero \
     build "$TEST_DIR/no_args.kl" -o "$EXIT_TMP/clean"
-expect_status "run exit status: type error exits non-zero" nonzero \
+# Exactly 1: before the fix, native run exec'd a binary that was never built and exited 127.
+expect_status "run exit status: type error exits 1" one \
     run "$TEST_DIR/exit_status_type_error.kl"
+expect_status "run --vm exit status: type error exits 1" one \
+    run "$TEST_DIR/exit_status_type_error.kl" --vm
+expect_status "run --interpret exit status: type error exits 1" one \
+    run "$TEST_DIR/exit_status_type_error.kl" --interpret
 rm -rf "$EXIT_TMP"
 
 echo ""
