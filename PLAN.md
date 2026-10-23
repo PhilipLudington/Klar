@@ -140,10 +140,11 @@ in user programs first, then checker/contract correctness, then tooling, then de
       Check mutability in the binary-assign path; failing test first. (qa-audit 2026-09-05)
       (completed 2026-10-22: every `=` and `op=` target goes through `checkAssignTarget`,
       which refuses a bare `let` or parameter name; element and field writes are Bug 130)
-- [ ] Bug 49 — `build`/`check` exit 0 on failure at `e7b54e7` (`src/main.zig:3420`). Fix it
+- [x] Bug 49 — `build`/`check` exit 0 on failure at `e7b54e7` (`src/main.zig:3420`). Fix it
       directly: the failing test (a broken file, expect a non-zero exit from both commands) is
       the measurement; if it passes at HEAD, keep it as the regression test and close the
-      bug. (qa-audit 2026-09-04)
+      bug. (qa-audit 2026-09-04) (completed 2026-10-23, with Bug 77: every failure path of
+      `build` and `check` returns `error.CommandFailed`, which `main` turns into exit 1)
 
 **Move checking and explicit move/clone (Philip, 2026-10-18; not in the v0.6.0 cut set)**
 - [ ] Ownership move tracking — Bug 115: `var b: String = a` never marks `a` moved

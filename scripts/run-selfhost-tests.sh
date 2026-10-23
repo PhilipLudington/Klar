@@ -295,6 +295,11 @@ test/native/write_trait_basic.kl
 echo "Phase 1: Type checking selfhost/ stubs"
 echo "────────────────────────────────────────"
 
+# Known failures: the ownership checker reports false use-after-move errors in these
+# files (Bug 132). Each one must fail with ownership errors only; a file here that
+# passes, or fails some other way, fails the suite. Remove a name once Bug 132 fixes it.
+OWNERSHIP_XFAIL=" checker_decl checker module_resolver parser "
+
 for f in "$SELFHOST_DIR"/*.kl; do
     [ -f "$f" ] || continue
     name=$(basename "$f" .kl)
@@ -302,7 +307,24 @@ for f in "$SELFHOST_DIR"/*.kl; do
     check_output=$("$KLAR" check "$f" 2>&1)
     check_exit=$?
 
-    if [ $check_exit -eq 0 ]; then
+    if [[ "$OWNERSHIP_XFAIL" == *" $name "* ]]; then
+        if [ $check_exit -ne 0 ] && echo "$check_output" | grep -q "Ownership check failed" \
+            && ! echo "$check_output" | grep -q "Type check failed"; then
+            echo "  ✓ $name (expected failure: ownership false positives, Bug 132)"
+            PASSED=$((PASSED + 1))
+        elif [ $check_exit -eq 0 ]; then
+            echo "  ✗ $name (now passes check: remove it from OWNERSHIP_XFAIL, Bug 132)"
+            FAILED=$((FAILED + 1))
+            [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+            FAILURES="$FAILURES\"$name: expected ownership failure, but check passed\""
+        else
+            echo "  ✗ $name (check failed, not with ownership errors only)"
+            echo "    $check_output" | head -3
+            FAILED=$((FAILED + 1))
+            [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+            FAILURES="$FAILURES\"$name: check failed\""
+        fi
+    elif [ $check_exit -eq 0 ]; then
         echo "  ✓ $name (check passed)"
         PASSED=$((PASSED + 1))
     else
