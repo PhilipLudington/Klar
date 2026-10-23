@@ -1,0 +1,21 @@
+// Expected: check-error mutability_error
+// Bug 130 review: a read-only `ref self` method cannot call an `inout self`
+// method on its receiver.
+
+struct S { x: i32 }
+
+impl S {
+    fn bump(self: inout S) -> void {
+        self.x = 1
+    }
+
+    fn viaref(self: ref S) -> void {
+        self.bump()
+    }
+}
+
+fn main() -> i32 {
+    var s: S = S { x: 0 }
+    s.viaref()
+    return s.x
+}
