@@ -1,0 +1,11 @@
+// Expected: check-error mutability_error
+// Bug 63: a parameter is an immutable binding; `=` to it is refused at check time.
+
+fn bump(n: i32) -> i32 {
+    n = n + 1
+    return n
+}
+
+fn main() -> i32 {
+    return bump(1)
+}

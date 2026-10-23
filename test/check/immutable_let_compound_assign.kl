@@ -1,0 +1,8 @@
+// Expected: check-error mutability_error
+// Bug 63: a compound assignment to a `let` binding is refused at check time.
+
+fn main() -> i32 {
+    let x: i32 = 1
+    x += 2
+    return x
+}

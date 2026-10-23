@@ -1,0 +1,9 @@
+// Expected: check-pass
+// Bug 63: the mutability check refuses only immutable bindings; `var` takes `=` and `op=`.
+
+fn main() -> i32 {
+    var x: i32 = 1
+    x = 2
+    x += 3
+    return x
+}

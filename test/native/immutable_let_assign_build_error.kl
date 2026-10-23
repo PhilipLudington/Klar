@@ -1,0 +1,9 @@
+// Expected: build-error
+// Bug 63: `klar build` refuses `=` to a `let` binding instead of compiling the
+// mutation (the binary used to exit 2).
+
+fn main() -> i32 {
+    let x: i32 = 1
+    x = 2
+    return x
+}
