@@ -4080,3 +4080,34 @@ non-function type") and the next statement disappears.
 and `(*list)[0] = 1` is never checked as its own statement.
 
 **Found by:** Builder on fix/bug-130-deep-let, 2026-10-23.
+
+---
+
+## [ ] Bug 134: Calling an `inout self` method on a `let` binding or by-value parameter passes `klar check`
+
+**Status:** Open
+
+**Deferred:** after v0.6.0 — a missing check error, not a wrong program at runtime; not
+one of the three Next Up kinds (a review find, not in the phase's deliverables).
+
+**System:** assignment target checking — method-call receiver in `checkMethodCallImpl` (`src/checker/checker.zig`)
+
+**Description:** Bug 130 refuses element and field writes rooted in a `let`, a by-value
+parameter or a by-value `self`, but a call to a method that takes `self: inout T` is not
+checked against the receiver's mutability. `s.bump()` on `let s: S` and on `fn g(s: S)`
+both pass, so a `let` value can still be changed through any mutating method, the stdlib
+collections' `inout self` methods included. The deep-`let` decision
+(docs/decisions/2026-10-23-let-depth.md) and docs/memory/references.md ("You can only take
+an `inout` reference to a `var`") both say this is an error.
+
+**Steps to reproduce:**
+1. `struct S { x: i32 }` with `impl S { fn bump(self: inout S) -> void { self.x = 1 } }`
+2. `fn main() -> i32 { let s: S = S { x: 0 } ⏎ s.bump() ⏎ return 0 }`
+3. `klar check prog.kl`
+
+**Expected:** a `mutability_error` at `s.bump()`, as for `s.x = 1`.
+
+**Actual:** (2026-10-23, fix/bug-130-deep-let) no error; the same for `fn g(s: S) { s.bump() }`.
+
+**Found by:** /qa-review on fix/bug-130-deep-let, 2026-10-23 — code-reviewer-a, probe
+scratchpad `b.kl`; reviewer's evidence, not re-read.

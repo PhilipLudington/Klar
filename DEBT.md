@@ -1158,3 +1158,27 @@ reviewer's reading, not re-verified.
 
 **Found by:** /qa-review on fix/bug-63-immutable-assign, 2026-10-23 — file-size-checker
 Growth Ledger (Limit band); reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 54: Five deep-`let` refusal paths have no test
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/checker/type_utils.zig` `checkAssignTarget` / `isMutable`, `src/checker/checker.zig` `checkMethodCallImpl` (through-reference lookup)
+**Due when:** touching `src/checker/type_utils.zig` · touching `checkMethodCallImpl` in `src/checker/checker.zig`
+
+**Description:** Bug 130's fix pinned its headline cases, but these paths stay green if
+deleted: a by-value `self` method reached through a reference staying refused; an element
+or field write rooted in an undeclared name reporting no `mutability_error`; the
+read-only-reference deref branch (`(*p).x = 5` on `p: ref P`); the temporary-value branch
+(`make_p().x = 5`, possibly unreachable); an element write on a `let`-bound List or slice.
+
+**Payment:** `test/check/byvalue_self_through_ref_call.kl`,
+`test/check/immutable_ref_param_deref_assign.kl`,
+`test/check/immutable_let_list_element_assign.kl`, a fixture for `make_p().x = 5` that
+decides the branch's reachability, and a unit test beside `checker.zig`'s Bug 63 undeclared-name
+test using `y[0] = 2` and `y.x = 2`.
+
+**Found by:** /qa-review on fix/bug-130-deep-let, 2026-10-23 — test-checker GAPS;
+reviewer's reading, not re-verified.
