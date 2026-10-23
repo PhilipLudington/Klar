@@ -3,35 +3,44 @@
 // then verifies the result is sorted.
 // Native-only (uses List operations not available in VM).
 
-fn swap(list: List#[i32], i: i32, j: i32) -> void {
-    let tmp: ?i32 = list.get(i)
-    let val_j: ?i32 = list.get(j)
-    list[i] = val_j ?? 0
-    list[j] = tmp ?? 0
+// The list is moved in and handed back: a by-value parameter is immutable (deep
+// `let`, docs/decisions/2026-10-23-let-depth.md), so each function rebinds it as `var`.
+
+fn swap(list: List#[i32], i: i32, j: i32) -> List#[i32] {
+    var l: List#[i32] = list
+    let tmp: ?i32 = l.get(i)
+    let val_j: ?i32 = l.get(j)
+    l[i] = val_j ?? 0
+    l[j] = tmp ?? 0
+    return l
 }
 
-fn partition(list: List#[i32], lo: i32, hi: i32) -> i32 {
-    let pivot: ?i32 = list.get(hi)
+fn partition(list: List#[i32], lo: i32, hi: i32) -> (List#[i32], i32) {
+    var l: List#[i32] = list
+    let pivot: ?i32 = l.get(hi)
     let pivot_val: i32 = pivot ?? 0
     var i: i32 = lo - 1
     for j: i32 in lo..hi {
-        let val: ?i32 = list.get(j)
+        let val: ?i32 = l.get(j)
         let v: i32 = val ?? 0
         if v <= pivot_val {
             i = i + 1
-            swap(list, i, j)
+            l = swap(l, i, j)
         }
     }
-    swap(list, i + 1, hi)
-    return i + 1
+    l = swap(l, i + 1, hi)
+    return (l, i + 1)
 }
 
-fn quicksort(list: List#[i32], lo: i32, hi: i32) -> void {
+fn quicksort(list: List#[i32], lo: i32, hi: i32) -> List#[i32] {
+    var l: List#[i32] = list
     if lo < hi {
-        let p: i32 = partition(list, lo, hi)
-        quicksort(list, lo, p - 1)
-        quicksort(list, p + 1, hi)
+        let parts: (List#[i32], i32) = partition(l, lo, hi)
+        let p: i32 = parts.1
+        l = quicksort(parts.0, lo, p - 1)
+        l = quicksort(l, p + 1, hi)
     }
+    return l
 }
 
 fn main() -> i32 {
@@ -52,7 +61,7 @@ fn main() -> i32 {
     }
 
     // Sort
-    quicksort(list, 0, n - 1)
+    list = quicksort(list, 0, n - 1)
 
     // Verify sorted
     var prev: i32 = 0

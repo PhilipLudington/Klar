@@ -93,7 +93,7 @@ impl BTreeMap {
 
     // --- Node allocation (no method deps) ---
 
-    pub fn alloc_nd(self: BTreeMap, leaf: bool) -> i32 {
+    pub fn alloc_nd(self: inout BTreeMap, leaf: bool) -> i32 {
         let id: i32 = self.cfg[1]
         self.cfg[1] = id + 1
         self.node_num_keys.push(0)
@@ -114,7 +114,7 @@ impl BTreeMap {
 
     // --- Split (depends on alloc_nd) ---
 
-    pub fn split_child(self: BTreeMap, parent: i32, ci: i32) -> void {
+    pub fn split_child(self: inout BTreeMap, parent: i32, ci: i32) -> void {
         let y: i32 = self.node_children[parent * 4 + ci]
         let z: i32 = self.alloc_nd(self.node_leaf[y])
         // z gets key at index 2 from y (upper t-1 = 1 key)
@@ -146,7 +146,7 @@ impl BTreeMap {
 
     // --- Insert non-full (depends on split_child, self-recursive) ---
 
-    pub fn ins_nf(self: BTreeMap, nd: i32, key: i32, value: i32) -> void {
+    pub fn ins_nf(self: inout BTreeMap, nd: i32, key: i32, value: i32) -> void {
         var i: i32 = self.node_num_keys[nd] - 1
         if self.node_leaf[nd] {
             var j: i32 = 0
@@ -191,7 +191,7 @@ impl BTreeMap {
 
     // --- Insert (depends on alloc_nd, split_child, ins_nf) ---
 
-    pub fn insert(self: BTreeMap, key: i32, value: i32) -> void {
+    pub fn insert(self: inout BTreeMap, key: i32, value: i32) -> void {
         let root: i32 = self.cfg[0]
         if root == -1 {
             let r: i32 = self.alloc_nd(true)
@@ -263,7 +263,7 @@ impl BTreeMap {
 
     // --- Removal helpers (no forward deps) ---
 
-    pub fn merge_ch(self: BTreeMap, parent: i32, idx: i32) -> void {
+    pub fn merge_ch(self: inout BTreeMap, parent: i32, idx: i32) -> void {
         let left: i32 = self.node_children[parent * 4 + idx]
         let right: i32 = self.node_children[parent * 4 + idx + 1]
         let ln: i32 = self.node_num_keys[left]
@@ -299,7 +299,7 @@ impl BTreeMap {
         self.node_num_keys[parent] = pn - 1
     }
 
-    pub fn borrow_left(self: BTreeMap, parent: i32, idx: i32) -> void {
+    pub fn borrow_left(self: inout BTreeMap, parent: i32, idx: i32) -> void {
         let child: i32 = self.node_children[parent * 4 + idx]
         let left: i32 = self.node_children[parent * 4 + idx - 1]
         let cn: i32 = self.node_num_keys[child]
@@ -328,7 +328,7 @@ impl BTreeMap {
         self.node_num_keys[left] = ln - 1
     }
 
-    pub fn borrow_right(self: BTreeMap, parent: i32, idx: i32) -> void {
+    pub fn borrow_right(self: inout BTreeMap, parent: i32, idx: i32) -> void {
         let child: i32 = self.node_children[parent * 4 + idx]
         let right: i32 = self.node_children[parent * 4 + idx + 1]
         let cn: i32 = self.node_num_keys[child]
@@ -359,7 +359,7 @@ impl BTreeMap {
 
     // --- ensure_min (depends on borrow_left, borrow_right, merge_ch) ---
 
-    pub fn ensure_min(self: BTreeMap, parent: i32, idx: i32) -> void {
+    pub fn ensure_min(self: inout BTreeMap, parent: i32, idx: i32) -> void {
         let n: i32 = self.node_num_keys[parent]
         if idx > 0 {
             let ls: i32 = self.node_children[parent * 4 + idx - 1]
@@ -385,7 +385,7 @@ impl BTreeMap {
     // --- rm_node: single recursive method for all removal cases ---
     // (inlined rm_leaf, rm_internal, rm_subtree to avoid circular deps)
 
-    pub fn rm_node(self: BTreeMap, nd: i32, key: i32) -> ?i32 {
+    pub fn rm_node(self: inout BTreeMap, nd: i32, key: i32) -> ?i32 {
         let n: i32 = self.node_num_keys[nd]
         var idx: i32 = 0
         while idx < n and self.node_keys[nd * 3 + idx] < key {
@@ -460,7 +460,7 @@ impl BTreeMap {
 
     // --- Remove (depends on rm_node) ---
 
-    pub fn remove(self: BTreeMap, key: i32) -> ?i32 {
+    pub fn remove(self: inout BTreeMap, key: i32) -> ?i32 {
         let root: i32 = self.cfg[0]
         if root == -1 {
             return None

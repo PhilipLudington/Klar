@@ -21,7 +21,7 @@ phase tasks. Bug fixes follow `~/.claude/rules/bug-format.md` § Fixing a bug: t
 test is committed first and seen failing, then the fix. Order: wrong results and crashes
 in user programs first, then checker/contract correctness, then tooling, then debt.
 
-- [ ] Assignment target checking — Bug 130: element and field writes through a `let` or by-value parameter are refused (deep `let`, decided 2026-10-23); the 8 dependent files move to `var`/`inout self`, and the REPL refuses them again. (Philip, 2026-10-23)
+- [x] Assignment target checking — Bug 130: element and field writes through a `let` or by-value parameter are refused (deep `let`, decided 2026-10-23); the 8 dependent files move to `var`/`inout self`, and the REPL refuses them again. (Philip, 2026-10-23) (completed 2026-10-23)
 - [ ] Docs examples as tests — every ```klar block in docs/ is run; its `// Error:` comments must match a check error and its stated output must match, in each backend (check, build, run --vm, run --interpret). A block that cannot run is marked as such. (Philip, 2026-10-23; see docs/decisions/2026-10-23-spec-conformance.md)
 - [ ] Spec conformance sweep — for every rule docs/ states in words, a small program run through check, build, VM, interpreter and REPL; every mismatch filed to BUG.md; the programs kept as tests. (Philip, 2026-10-23; same record)
 - [x] Nightly CI red at cde6bdf (Linux x86_64 (gate)) — `float_compound_assign` fails to

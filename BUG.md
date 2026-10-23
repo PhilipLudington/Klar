@@ -3948,9 +3948,9 @@ verified by reading `src/codegen/emit.zig:12888` (`return cell_alloca;`).
 
 ---
 
-## [ ] Bug 130: An element or field write through a `let` binding passes `klar check`
+## [x] Bug 130: An element or field write through a `let` binding passes `klar check`
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** assignment target checking — `checkAssignTarget` in `src/checker/type_utils.zig`, called by `checkBinary` (`src/checker/expressions.zig`) and `checkAssignment` (`src/checker/statements.zig`)
 
@@ -3979,3 +3979,21 @@ Scope: `src/checker/`, `stdlib/*`, `benchmarks/runtime/quicksort.kl`,
 
 **Found by:** Builder on fix/bug-63-immutable-assign, 2026-10-22 — measured by checking
 every tracked `.kl` file with the full `isMutable` check in place.
+
+**Fix:** `checkAssignTarget` (`src/checker/type_utils.zig`) refuses every element, field
+and deref write whose place `isMutable` does not find mutable, naming the root binding
+("cannot assign to an element or field of immutable binding '<name>'"). `isMutable` looks
+through parentheses and counts a name bound to an `inout` reference as mutable; bare
+names keep Bug 63's rule. The REPL's assignments go through the same check, so it refuses
+these writes again. `checkMethodCallImpl` (`src/checker/checker.zig`) finds a method
+called through a reference receiver when that method takes `self` by reference, so an
+`inout self` method can call another. `stdlib/deque.kl`, `btree_map.kl` and
+`priority_queue.kl` take `inout self` on their mutating methods,
+`benchmarks/runtime/quicksort.kl` moves its list in and returns it, and
+`test/native/runtime_traps.kl` writes through a `var` slice.
+
+**Test:** `test/check/immutable_let_element_assign.kl`, `immutable_let_field_assign.kl`,
+`immutable_param_list_element_assign.kl`, `immutable_self_field_assign.kl`,
+`immutable_ref_param_field_assign.kl`; `test/check/mutable_place_assign_pass.kl` keeps
+`var`, `inout` parameters and `inout self` writable; the REPL unit test "REPL refuses
+element and field writes through a let binding (Bug 130)" in `src/repl.zig`.

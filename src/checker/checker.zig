@@ -4389,10 +4389,21 @@ pub const TypeChecker = struct {
         if (method_calls.checkBuiltinMethod(self, method, object_type)) |result| {
             return result;
         }
+        // A method called through a reference (`self.grow()` inside an `inout self`
+        // method) is looked up on the referenced type, as field access is, when the
+        // method takes `self` by reference too. A by-value `self` reached through a
+        // reference is not lowered by native codegen yet, so it stays refused.
+        var receiver_type = object_type;
+        while (receiver_type == .reference) receiver_type = receiver_type.reference.inner;
+        const through_reference = object_type == .reference;
+
         // Look up user-defined method on struct types
-        if (object_type == .struct_) {
-            const struct_type = object_type.struct_;
-            if (self.lookupStructMethod(struct_type.name, method.method_name)) |struct_method| {
+        if (receiver_type == .struct_) {
+            const struct_type = receiver_type.struct_;
+            if (self.lookupStructMethod(struct_type.name, method.method_name)) |struct_method| found: {
+                if (through_reference and !(struct_method.has_self and
+                    struct_method.func_type.function.params.len > 0 and
+                    struct_method.func_type.function.params[0] == .reference)) break :found;
                 // Check if calling a deprecated method
                 meta_validation.checkDeprecatedMethodCall(self, struct_type.name, method.method_name, method.span);
 
