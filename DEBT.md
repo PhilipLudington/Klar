@@ -1061,3 +1061,100 @@ of the commit it was written at.
 **Found by:** /qa-review on fix/bug-5-entry-block-allocas, 2026-10-22 — code-reviewer-b
 WATCH (BUG.md `[documentation]` notes, seen in 5 prior branches); reviewer's reading, not
 re-verified.
+
+---
+
+## [ ] Debt 49: The REPL's assignment check has no test
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/checker/statements.zig` `checkAssignment`
+**Due when:** touching `src/checker/statements.zig` · touching `src/repl.zig`
+
+**Description:** The Bug 63 fix routed the REPL's `checkAssignment` (the statement node only
+`parseReplInput` builds) through `checkAssignTarget`. That changed two REPL behaviours: `let`
+reassignment is still refused with the new message, and an element write through a `let`
+(`a[0] = 9`) is now accepted. No test reaches this path.
+
+**Payment:** A Zig unit test in `src/repl.zig` beside the `parseCommand` tests: feed
+`let x: i32 = 1` then `x = 2` and assert `mutability_error`; feed `let a: [i32; 2] = [1, 2]`
+then `a[0] = 9` and assert no error.
+
+**Found by:** /qa-review on fix/bug-63-immutable-assign, 2026-10-23 — test-checker GAPS;
+reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 50: Assignment-target refusals pinned for `=` and `+=` only
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/checker/expressions.zig` `checkBinary`, `src/checker/type_utils.zig` `checkAssignTarget`
+**Due when:** touching `src/checker/type_utils.zig`
+
+**Description:** Of the compound operators on a `let`, only `+=` has a check test; `-=`,
+`*=`, `/=`, `%=` share the switch arm but are unpinned. The `invalid_assignment` branch
+(`1 = 2`, `f() = 3`) has no check test either.
+
+**Payment:** One `test/check/` file per compound operator expecting `mutability_error` (the
+runner reports one result per file), and `test/check/assign_non_place.kl` expecting
+`invalid_assignment`.
+
+**Found by:** /qa-review on fix/bug-63-immutable-assign, 2026-10-23 — test-checker GAPS;
+reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 51: Bug 63's `run` and `run --interpret` refusal is unpinned
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `BUG.md` Bug 63 `**Fix:**`
+**Due when:** touching `src/checker/type_utils.zig` · touching `scripts/run-app-tests.sh`
+
+**Description:** Bug 63's Fix says the VM and interpreter now refuse a `let` reassignment
+too, because the checker gates them. Only `check` and `build` are pinned.
+
+**Payment:** An app or module test that runs `klar run` and `klar run --interpret` on the
+`let x = 1; x = 2` program and asserts a non-zero exit with `mutability_error` in the output.
+
+**Found by:** /qa-review on fix/bug-63-immutable-assign, 2026-10-23 — test-checker GAPS;
+reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 52: No suite checks `stdlib/` and `benchmarks/` on their own
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `stdlib/*.kl`, `benchmarks/`, `scripts/run-check-tests.sh`
+**Due when:** touching `src/checker/type_utils.zig` · when Bug 130 is taken
+
+**Description:** Bug 63's claim that no tracked program is newly refused was a one-time
+sweep. Bug 130 will tighten `checkAssignTarget` to element and field writes, which would
+reject stdlib files, and nothing would notice.
+
+**Payment:** A check-suite step that runs `klar check` over `stdlib/*.kl` (and the
+benchmarks) and expects each to pass.
+
+**Found by:** /qa-review on fix/bug-63-immutable-assign, 2026-10-23 — test-checker GAPS;
+reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 53: `src/checker/checker.zig` is 6094 raw lines, three times the ceiling
+
+**Status:** Open
+**Kind:** extraction
+**Where:** `src/checker/checker.zig` `initBuiltins` (~793–2507), cursor/IDE queries (~3118–3735)
+**Due when:** touching `src/checker/checker.zig` with more than a forwarder
+
+**Description:** The file keeps growing with almost no deletions (+4, +8, +94, +60, +104,
++223 over the last 15 commits). It sits in the Limit band.
+
+**Payment:** Move `initBuiltins` (~1715 lines, one function) to
+`src/checker/builtins_init.zig`; then the `collect*AtCursor` / `inferExpectedTypeIn*` /
+`extractScopeAtOffset*` group (~620 lines) to `src/checker/cursor_query.zig`.
+
+**Found by:** /qa-review on fix/bug-63-immutable-assign, 2026-10-23 — file-size-checker
+Growth Ledger (Limit band); reviewer's reading, not re-verified.

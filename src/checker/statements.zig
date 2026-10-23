@@ -74,12 +74,7 @@ pub fn checkAssignment(tc: anytype, assign: *ast.Assignment) void {
     const target_type = tc.checkExpr(assign.target);
     const value_type = tc.checkExpr(assign.value);
 
-    if (!tc.isAssignable(assign.target)) {
-        tc.addError(.invalid_assignment, assign.span, "cannot assign to this expression", .{});
-    }
-    if (!tc.isMutable(assign.target)) {
-        tc.addError(.mutability_error, assign.span, "cannot assign to immutable variable", .{});
-    }
+    tc.checkAssignTarget(assign.target, assign.span);
 
     if (assign.op == .assign) {
         if (!tc.checkAssignmentCompatible(target_type, value_type)) {

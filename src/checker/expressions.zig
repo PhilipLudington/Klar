@@ -388,9 +388,7 @@ fn checkBinary(tc: anytype, bin: *ast.Binary) Type {
     switch (bin.op) {
         .assign, .add_assign, .sub_assign, .mul_assign, .div_assign, .mod_assign => {
             // Check that left side is assignable and mutable
-            if (!tc.isAssignable(bin.left)) {
-                tc.addError(.invalid_assignment, bin.span, "cannot assign to this expression", .{});
-            }
+            tc.checkAssignTarget(bin.left, bin.span);
             if (bin.op == .assign) {
                 if (!tc.checkAssignmentCompatible(left_type, right_type)) {
                     const expected_str = types.typeToString(tc.allocator, left_type) catch "unknown";

@@ -107,6 +107,25 @@ pub fn isAssignable(tc: anytype, expr: ast.Expr) bool {
     };
 }
 
+/// Report an assignment target that cannot be assigned: one that is not a place,
+/// or a bare name bound immutably (`let`, a parameter). Every `=` and `op=` goes
+/// through here. Element and field writes are not refused yet (Bug 63's scope).
+pub fn checkAssignTarget(tc: anytype, target: ast.Expr, span: ast.Span) void {
+    if (!isAssignable(tc, target)) {
+        tc.addError(.invalid_assignment, span, "cannot assign to this expression", .{});
+        return;
+    }
+    // An undeclared name is already reported as undefined_variable; only a found,
+    // immutable binding is a mutability error.
+    if (target == .identifier) {
+        if (tc.current_scope.lookup(target.identifier.name)) |sym| {
+            if (!sym.mutable) {
+                tc.addError(.mutability_error, span, "cannot assign to immutable binding '{s}'", .{target.identifier.name});
+            }
+        }
+    }
+}
+
 /// Check if an expression refers to a mutable location.
 /// Recursively checks through field access and indexing.
 pub fn isMutable(tc: anytype, expr: ast.Expr) bool {

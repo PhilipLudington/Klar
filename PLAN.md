@@ -135,9 +135,11 @@ in user programs first, then checker/contract correctness, then tooling, then de
       grow the stack every iteration (`emit.zig`); hoist to the entry block. (qa-review 2026-09-03)
       (completed 2026-10-22: every alloca in `emit.zig`, not only the builtins', goes
       through `buildEntryBlockAlloca`, which hoists into the insert block's function)
-- [ ] Bug 63 — `let x = 1; x = 2` passes `klar check` and compiles natively (`src/checker/expressions.zig:392`
+- [x] Bug 63 — `let x = 1; x = 2` passes `klar check` and compiles natively (`src/checker/expressions.zig:392`
       never reads `sym.mutable`; the statement-level check at `statements.zig:78` is unreachable).
       Check mutability in the binary-assign path; failing test first. (qa-audit 2026-09-05)
+      (completed 2026-10-22: every `=` and `op=` target goes through `checkAssignTarget`,
+      which refuses a bare `let` or parameter name; element and field writes are Bug 130)
 - [ ] Bug 49 — `build`/`check` exit 0 on failure at `e7b54e7` (`src/main.zig:3420`). Fix it
       directly: the failing test (a broken file, expect a non-zero exit from both commands) is
       the measurement; if it passes at HEAD, keep it as the regression test and close the
