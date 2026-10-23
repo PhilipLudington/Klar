@@ -82,8 +82,11 @@ If you find yourself typing `./zig-out/bin/klar` in a Bash command, **STOP** and
 ## Running Klar Programs
 
 ```bash
-# Run with bytecode VM (default)
+# Run via native compilation (default)
 ./zig-out/bin/klar run program.kl
+
+# Run with bytecode VM
+./zig-out/bin/klar run program.kl --vm
 
 # Run with tree-walking interpreter
 ./zig-out/bin/klar run program.kl --interpret
@@ -156,7 +159,7 @@ Source (.kl) → Lexer → Parser → AST → Type Checker → [Backend]
               ┌─────────────────────────────┴─────────────────────────────┐
               │                             │                             │
          Interpreter              Bytecode Compiler              IR Builder
-         (--interpret)               (default)                      ↓
+         (--interpret)                 (--vm)                 (default) ↓
               │                         │                      LLVM Codegen
               ↓                         ↓                           ↓
            Output                      VM                    Native Binary
@@ -298,7 +301,7 @@ fn read_config() -> Result#[Config, Error] {
 ### When Debugging
 
 - **Use `klar run` for quick testing** - Don't build to a temp file and execute separately. Use `./zig-out/bin/klar run file.kl` instead of `./zig-out/bin/klar build file.kl -o /tmp/test && /tmp/test`
-- Use `--interpret` flag with `klar run` to use the tree-walking interpreter instead of the bytecode VM
+- `klar run` compiles natively by default; add `--vm` for the bytecode VM or `--interpret` for the tree-walking interpreter
 - Use `--emit-llvm` to inspect generated LLVM IR
 - Use `--emit-ir` to inspect internal IR before LLVM
 - The VM has `--debug` flag for bytecode tracing
