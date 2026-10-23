@@ -3952,9 +3952,6 @@ verified by reading `src/codegen/emit.zig:12888` (`return cell_alloca;`).
 
 **Status:** Open
 
-**Deferred:** after v0.6.0 — the value written is the one the program asked for, so a trial
-program gets no wrong answer and no crash; the fix needs a language decision first (below).
-
 **System:** assignment target checking — `checkAssignTarget` in `src/checker/type_utils.zig`, called by `checkBinary` (`src/checker/expressions.zig`) and `checkAssignment` (`src/checker/statements.zig`)
 
 **Description:** Bug 63's fix refuses `=` and `op=` to a bare immutable name only.
@@ -3964,9 +3961,13 @@ in an immutable binding (`isMutable`'s recursion) is not a drop-in fix: it rejec
 tracked files, every one through an element write on a `List` or slice handle, such as
 `self.buf[i] = v` in `stdlib/deque.kl`, `stdlib/btree_map.kl` and `stdlib/priority_queue.kl`,
 `list[i] = v` on a `List` parameter in `benchmarks/runtime/quicksort.kl`, and `s[i] = 5` on a
-slice in `test/native/runtime_traps.kl`. Whether a write through a handle (List, slice) needs
-a mutable binding, while a write into a value (array, struct) does, is the decision. Before
-Bug 63's fix the REPL's statement path refused all of these and files refused none.
+slice in `test/native/runtime_traps.kl`. Before Bug 63's fix the REPL's statement path
+refused all of these and files refused none. Decided 2026-10-23
+(docs/decisions/2026-10-23-let-depth.md): every element and field write rooted in a `let`
+binding or a by-value parameter is a `mutability_error`, handles included. The stdlib
+collections' mutating methods take `inout self`, and the other files take `var` or `inout`.
+Scope: `src/checker/`, `stdlib/*`, `benchmarks/runtime/quicksort.kl`,
+`test/native/runtime_traps.kl`.
 
 **Steps to reproduce:**
 1. `struct P { x: i32 }` and `fn main() -> i32 { let a: [i32; 2] = [1, 2]  a[0] = 9  let p: P = P { x: 1 }  p.x = 5  return a[0] + p.x }`
