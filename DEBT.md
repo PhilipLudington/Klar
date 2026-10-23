@@ -993,3 +993,71 @@ BUG.md.
 
 **Found by:** /qa-review on fix/bug-34-enum-payload-layout, 2026-10-21 — code-reviewer and
 test-checker WATCH, promoted on recurrence; reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 46: Bug 5's entry-block hoist is IR-checked on one file, and nothing keeps new allocas going through it
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/codegen/emit.zig` `buildEntryBlockAlloca` (~512-546) and its call sites;
+`scripts/run-native-tests.sh` `alloca_entry_block` check
+**Due when:** touching `src/codegen/emit.zig` `buildEntryBlockAlloca` · adding an alloca to
+`src/codegen/emit.zig`
+
+**Description:** The `alloca_entry_block` IR check reads only
+`test/native/loop_stack_temporaries.kl` (14 allocas: `fs_stat`, `List.new`/`push`/`len` in
+loops). The other converted sites — `process_run`, `env_get`/`env_set`, for-loops over
+Map/Set/slice/array, struct, tuple and array literals, `Some`/`Ok`, sret and closure calls
+— never have their IR checked. No check stops a new direct `self.builder.buildAlloca` or
+`llvm.c.LLVMBuildAlloca` outside the helper. The helper-body path (allocas made while a
+runtime helper is built) is pinned only by `string_primitives.kl` failing to build, and the
+helper's two fallbacks (no insert block, no entry block) have no test.
+
+**Payment:** A wider loop probe under the same IR check, with those constructs in loop
+bodies; a runner step that allows `buildAlloca`/`LLVMBuildAlloca` only inside
+`buildEntryBlockAlloca`; the IR check extended to the runtime-helper `define`s of
+`string_primitives.kl`.
+
+**Found by:** /qa-review on fix/bug-5-entry-block-allocas, 2026-10-22 — test-checker GAPS
+and WATCH, code-reviewer-b WATCH (the `emit.zig` and `run-native-tests.sh`
+`[test-coverage]` notes, seen in 9 and 7 prior branches); reviewer's reading, not
+re-verified.
+
+---
+
+## [ ] Debt 47: The native runner's IR checks are inline in `run-native-tests.sh`, now in the Watch band
+
+**Status:** Open
+**Kind:** extraction
+**Where:** `scripts/run-native-tests.sh` (561 raw, ~452 code lines)
+**Due when:** touching `scripts/run-native-tests.sh` with another IR check
+
+**Description:** Each new IR check (the latest, `alloca_entry_block`, +46 lines) is added
+inline to the runner, which crossed into the Watch band on the Bug 5 branch.
+
+**Payment:** Move the self-contained IR check blocks into their own script, called from the
+runner, starting with `alloca_entry_block` (~46 lines).
+
+**Found by:** /qa-review on fix/bug-5-entry-block-allocas, 2026-10-22 — file-size-checker
+WATCH, seen also on fix/bug-34-enum-payload-layout and fix/bug-74-75-runtime-checks;
+reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 48: Bug 5's description still cites `emit.zig:491 at HEAD`
+
+**Status:** Open
+**Kind:** documentation
+**Where:** `BUG.md` Bug 5 `**Description:**`
+**Due when:** touching Bug 5's entry in `BUG.md`
+
+**Description:** The fixed entry's description cites `emit.zig:491 at HEAD` and the
+`e7b54e7` comparison; the line has moved since the fix.
+
+**Payment:** Change the cite to the function name (`buildEntryBlockAlloca`) or mark it as
+of the commit it was written at.
+
+**Found by:** /qa-review on fix/bug-5-entry-block-allocas, 2026-10-22 — code-reviewer-b
+WATCH (BUG.md `[documentation]` notes, seen in 5 prior branches); reviewer's reading, not
+re-verified.

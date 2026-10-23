@@ -3890,3 +3890,33 @@ Klar program was not checked.
 
 **Found by:** fix/bug-5-entry-block-allocas, 2026-10-22, writing Bug 5's loop test
 (macOS arm64, LLVM 21).
+
+---
+
+## [ ] Bug 129: A native `Cell` returned from the function that made it points at freed stack
+
+**Status:** Open
+**Deferred:** after v0.6.0 — only a Cell that outlives its creating function is hit; Cells
+used where they are made read correctly. A heap-backed Cell, if the Bug 5 branch's Cell
+fix takes that route, closes this too
+
+**System:** native Cell lowering — `emitCellNew` in `src/codegen/emit.zig`
+
+**Description:** `emitCellNew` (`src/codegen/emit.zig:12877`) represents `Cell#[T]` as a
+pointer to a stack alloca in the creating function and returns that pointer. A Cell
+returned from that function (or stored in a struct or List that is) keeps the address of
+a frame that no longer exists, so a later `get()` reads whatever the stack holds then.
+
+**Steps to reproduce:**
+1. `fn make() -> Cell#[i32] { return Cell.new(41) }`
+2. In `main`: `let c: Cell#[i32] = make()`, call another function that uses some stack,
+   then print `c.get()`.
+3. `klar build <file> -o build/p` and run it.
+
+**Expected:** `41`.
+
+**Actual:** Not run; by reading, `c` points into `make`'s freed frame, so the value is
+whatever overwrote it.
+
+**Found by:** /qa-review on fix/bug-5-entry-block-allocas, 2026-10-22 — code-reviewer-a;
+verified by reading `src/codegen/emit.zig:12888` (`return cell_alloca;`).
