@@ -3859,3 +3859,34 @@ whole 9-byte `Inner` at offset 1: one byte past the 9-byte alloca.
 
 **Found by:** /qa-review on fix/bug-34-enum-payload-layout, 2026-10-21 — code-reviewer
 PRE-EXISTING, probe `scratch/rv3.kl` / `rv3.ll:12-21`; reviewer's evidence, not re-read.
+
+---
+
+## [ ] Bug 128: Native `List.first()` fails to link — `klar_list_first` is declared but nothing defines it
+
+**Status:** Open
+**Deferred:** after v0.6.0 — the build stops with a linker error rather than producing a
+wrong program, and `list.get(0)` or `list.len()` does the same job
+
+**System:** native List runtime externs — the `getOrDeclareList*` declarations in
+`src/codegen/emit.zig` (`getOrDeclareListFirst` at `:32772`) and `src/runtime/list.zig`
+
+**Description:** `emitMethodCall` lowers `first()` on a `List#[T]` to a call of the extern
+`klar_list_first`. That function exists only in `src/runtime/list.zig`
+(`export fn klar_list_first`, `:151`), which is not linked into a native program, so the
+link fails. The other ten `getOrDeclareList*` externs (`klar_list_get`,
+`klar_list_clone`, …) are declared the same way; whether any of them is reachable from a
+Klar program was not checked.
+
+**Steps to reproduce:**
+1. In `main`: `let words: List#[i32] = List.new#[i32]()`, `words.push(1)`,
+   `let first: ?i32 = words.first()`.
+2. `klar build <file> -o build/p`.
+
+**Expected:** `Built build/p`, and the program reads `Some(1)`.
+
+**Actual:** `Undefined symbols for architecture arm64: "_klar_list_first"`, then
+`Linker error: Linker failed.`
+
+**Found by:** fix/bug-5-entry-block-allocas, 2026-10-22, writing Bug 5's loop test
+(macOS arm64, LLVM 21).
