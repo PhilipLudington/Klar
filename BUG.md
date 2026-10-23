@@ -1257,9 +1257,9 @@ ASTs from a non-reset arena, as source strings already are.
 
 ---
 
-## [ ] Bug 49: `klar build` and `klar check` exit 0 when compilation fails
+## [x] Bug 49: `klar build` and `klar check` exit 0 when compilation fails
 
-**Status:** Open (measured at HEAD 2026-10-18, see Actual)
+**Status:** Fixed
 
 **System:** driver exit status — `checkFile`, `buildNative` and `main` in `src/main.zig`
 
@@ -1285,6 +1285,22 @@ and a failed ownership check under `check` (`klar check move_probe.kl` prints
 
 **Found by:** `/qa-audit --calibrate klar-e7b54e7`, 2026-09-04 — driver territory, HIGH
 `[error-handling]`; verified by reading at `e7b54e7`, unverified at HEAD.
+
+**Fix:** A failed command now returns `error.CommandFailed` after printing why, and `main`
+(`src/main.zig`, now a wrapper around `runCli`) turns that error into exit status 1. Every
+failure path of `buildNative`, `checkFile` and the `build`/`check` argument handling in
+`runCli` returns it, including a failed ownership check and `check --partial` with
+diagnostics; `runNativeFileWithOptions` propagates a failed build instead of swallowing it,
+and the compile and setup failures of `runVmFile` and `runInterpreterFile` (`run --vm`,
+`run --interpret`) return it too.
+The `--scope-at` / `--expected-type-at` queries still exit 0 on a program with type errors,
+since they answer a question about it. Fixed with Bug 77. Exiting 1 on ownership errors
+exposed ownership-checker false positives in four selfhost sources; they are expected
+failures in `scripts/run-selfhost-tests.sh` until Bug 132 is fixed
+(`docs/decisions/2026-10-23-ownership-errors-exit-1.md`).
+
+**Test:** `scripts/run-args-tests.sh`, section "klar check / klar build exit status (Bug
+49)", with `test/args/exit_status_type_error.kl` and `test/args/exit_status_parse_error.kl`.
 
 ---
 
@@ -2126,16 +2142,9 @@ cross-device case on Linux via `/dev/shm`, and on macOS when a RAM disk is mount
 
 ---
 
-## [ ] Bug 77: A failed `klar build` prints its error and exits 0
+## [x] Bug 77: A failed `klar build` prints its error and exits 0
 
-**Status:** Open
-
-**System:** CLI build errors — `buildNative` in `src/main.zig`, the `try stderr.writeAll(msg);
-return;` failure paths
-
-**Deferred:** after the current milestone. Every test script that builds also checks for the
-output file, so a failure is still caught in CI; a user script that trusts the exit code is
-not.
+**Status:** Fixed
 
 **Description:** `buildNative` reports a failure by writing to stderr and returning from a
 `!void` function, so `main` sees success. `src/main.zig` has about 80 such paths. The `-c -o`
@@ -2153,6 +2162,15 @@ rename failure also leaves the object file in the current directory.
 Bug 76).
 
 **Found by:** Builder on `ci/upgrade-runners-actions`, 2026-09-28, while reproducing Bug 76.
+
+**Fix:** Bug 49's fix: every `buildNative` failure path returns `error.CommandFailed`, which
+`main` turns into exit status 1. The object file a failed `-c -o` rename leaves behind is
+Bug 131.
+
+**Test:** `scripts/run-args-tests.sh`, section "klar check / klar build exit status (Bug
+49)" (build on a type error, a parse error and a missing file). The rename failure itself
+needs a second filesystem and has no test here; `src/compat.zig`'s cross-device rename test
+covers the rename.
 
 ---
 
@@ -3978,3 +3996,120 @@ Bug 63's fix the REPL's statement path refused all of these and files refused no
 
 **Found by:** Builder on fix/bug-63-immutable-assign, 2026-10-22 — measured by checking
 every tracked `.kl` file with the full `isMutable` check in place.
+
+---
+
+## [ ] Bug 131: A failed `klar build -c -o` rename leaves the object file in the current directory
+
+**Status:** Open
+
+**System:** CLI build errors — `buildNative` in `src/main.zig`, the `compile_only` rename
+
+**Deferred:** after the current milestone — the build now exits 1 on this failure (Bug 49),
+so a script sees it; the stray `.o` is clutter, not a wrong result.
+
+**Description:** With `-c -o <path>`, `buildNative` writes `<base>.o` in the current
+directory and renames it to `<path>`. When the rename fails, it prints `Failed to rename
+object file` and returns without deleting `<base>.o`.
+
+**Steps to reproduce:**
+1. Mount a RAM disk at `/Volumes/KlarXdev` and check out a tree before Bug 76's fix.
+2. `klar build test/native/freestanding/bare_metal_target.kl --target aarch64-none-elf
+   --freestanding -c -o /Volumes/KlarXdev/b.o`.
+
+**Expected:** No `bare_metal_target.o` left in the current directory.
+
+**Actual:** `bare_metal_target.o` left in the current directory (Bug 77's report,
+2026-09-28).
+
+**Found by:** Builder on fix/bug-49-exit-status, 2026-10-23, split out of Bug 77 when its
+exit-status half was fixed.
+
+---
+
+## [ ] Bug 132: The ownership checker reports use-after-move after an early return and after a loop reassignment
+
+**Status:** Open
+
+**System:** ownership move tracking — `src/ownership/checker.zig`
+
+**Deferred:** after the current milestone — the four selfhost sources it hits are marked as
+expected failures in `scripts/run-selfhost-tests.sh` Phase 1 (`OWNERSHIP_XFAIL`), and
+`klar build` does not run the ownership pass (Bug 52), so no program fails to build.
+Philip's call, 2026-10-23: `docs/decisions/2026-10-23-ownership-errors-exit-1.md`.
+
+**Description:** Two shapes are reported as use-after-move when no use follows a move:
+1. A move inside a branch that returns. In `selfhost/checker_decl.kl:120`, `return c`
+   sits in an `if` that ends the function, yet later uses of `c` on the fall-through path
+   are reported (`125:16`, `134:30`). Same shape: `return ur_ok`
+   (`selfhost/checker.kl:1556`, reported at `1559:61`), `return paths`
+   (`selfhost/module_resolver.kl:122`, reported at `136:13`, `140:12`).
+2. A loop that reassigns the moved name. `p2 = advance(p2)` in `selfhost/parser.kl:163`
+   moves `p2` into the call and rebinds it, yet the next iteration's use is reported
+   (`163:9`, `163:22`).
+
+**Steps to reproduce:**
+1. `klar check selfhost/checker_decl.kl` (likewise `checker`, `module_resolver`,
+   `parser`).
+
+**Expected:** `All checks passed`, exit 0.
+
+**Actual:** `Ownership check failed`, every error `[use_after_move]`: 127 in
+`checker_decl`, 12 in `checker`, 12 in `module_resolver`, 3 in `parser`; exit 1 since
+Bug 49's fix (exit 0, unseen, before it).
+
+**Found by:** Builder on fix/bug-49-exit-status, 2026-10-23 — the selfhost suite went red
+once `klar check` exited 1 on ownership errors.
+
+---
+
+## [ ] Bug 133: `klar run` exits 0 when it cannot create its temp path
+
+**Status:** Open
+
+**System:** driver exit status — `checkFile`, `buildNative` and `main` in `src/main.zig`
+
+**Deferred:** after the current milestone — it fires only when the temp path overflows
+`temp_path_buf` or no temp directory is set, which no ordinary run reaches.
+
+**Description:** In `runNativeFileWithOptions` (`src/main.zig:3778-3785`), the
+"Failed to create temp path" branches write to stderr and do a bare `return;`, so `main`
+sees success and the process exits 0. It is the same pattern as Bug 49, in a function
+Bug 49's fix edited; that fix converted the `buildNative` call but not these two paths.
+
+**Steps to reproduce:**
+1. Run `klar run <file>` with a temp directory path long enough to overflow
+   `temp_path_buf` (or, on Windows, with no temp directory set).
+
+**Expected:** The error, then exit 1.
+
+**Actual:** The error, then exit 0.
+
+**Found by:** /qa-review on fix/bug-49-exit-status, 2026-10-23 — code-reviewer; reviewer's
+evidence, not re-read.
+
+---
+
+## [ ] Bug 134: An unknown command and other commands' argument errors exit 0
+
+**Status:** Open
+
+**System:** driver exit status — `checkFile`, `buildNative` and `main` in `src/main.zig`
+
+**Deferred:** after the current milestone — Bug 49 covered `check`, `build` and `run`;
+`docs/decisions/2026-10-23-ownership-errors-exit-1.md` leaves the other commands open.
+
+**Description:** `runCli` prints an error and returns normally for an unknown command and
+for argument errors in commands other than `check` and `build` (`run`, `disasm`, `add`,
+…), so the process exits 0. `docs/getting-started/cli-reference.md` § Exit Codes promises
+a non-zero exit on failure.
+
+**Steps to reproduce:**
+1. `klar frobnicate; echo $?`
+
+**Expected:** `Unknown command`, then exit 1.
+
+**Actual:** `Unknown command`, then exit 0.
+
+**Found by:** /qa-review on fix/bug-49-exit-status, 2026-10-23 — code-reviewer probe;
+reviewer's evidence, not re-read.

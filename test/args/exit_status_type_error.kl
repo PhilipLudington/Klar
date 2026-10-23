@@ -1,0 +1,5 @@
+// klar check and klar build must exit non-zero on this file (Bug 49).
+fn main() -> i32 {
+    let x: i32 = "not an integer"
+    return x
+}

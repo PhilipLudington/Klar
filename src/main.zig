@@ -472,6 +472,14 @@ fn loadManifestWithErrors(allocator: std.mem.Allocator, path: []const u8, comman
 }
 
 pub fn main(minimal: std.process.Init.Minimal) !void {
+    runCli(minimal) catch |err| switch (err) {
+        // The command has already printed why it failed; the exit status says so too.
+        error.CommandFailed => compat.exit(1),
+        else => return err,
+    };
+}
+
+fn runCli(minimal: std.process.Init.Minimal) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -613,7 +621,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     } else if (std.mem.eql(u8, command, "build")) {
         if (comptime !has_llvm) {
             try getStdErr().writeAll("Error: 'klar build' requires LLVM. Install LLVM development headers and rebuild the compiler.\n");
-            return;
+            return error.CommandFailed;
         }
         // Parse options - need to determine if first arg after "build" is a file or a flag
         var output_path: ?[]const u8 = null;
@@ -740,12 +748,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             // Try to load klar.json from current directory
             loaded_manifest = switch (loadManifestWithErrors(allocator, "klar.json", "build")) {
                 .success => |m| m,
-                .failure => return,
+                .failure => return error.CommandFailed,
             };
 
             entry_path_buf = loaded_manifest.?.getEntryPath(allocator) catch {
                 try getStdErr().writeAll("Error: failed to resolve entry path\n");
-                return;
+                return error.CommandFailed;
             };
             break :blk entry_path_buf.?;
         };
@@ -772,7 +780,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             dep_resolution = resolveDependencies(allocator, m, m.root_dir) catch |err| {
                 // Error already printed by resolveDependencies
                 if (err == error.LockfileMismatch or err == error.DependencyNotFound) {
-                    return;
+                    return error.CommandFailed;
                 }
                 return err;
             };
@@ -800,10 +808,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                     switch (err) {
                         error.KiraNotFound, error.KiraBuildFailed, error.CCompilerNotFound,
                         error.CCompileFailed, error.ImportKiraFailed, error.DependencyPathNotFound,
-                        error.EntryFileNotFound => return, // Error already printed
+                        error.EntryFileNotFound => return error.CommandFailed, // Error already printed
                         error.OutOfMemory => {
                             try getStdErr().writeAll("Error: out of memory building Kira dependencies\n");
-                            return;
+                            return error.CommandFailed;
                         },
                     }
                 };
@@ -815,12 +823,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         defer all_search_paths.deinit(allocator);
         all_search_paths.appendSlice(allocator, search_paths) catch {
             try getStdErr().writeAll("Error: out of memory\n");
-            return;
+            return error.CommandFailed;
         };
         if (kira_result) |kr| {
             all_search_paths.appendSlice(allocator, kr.search_paths.items) catch {
                 try getStdErr().writeAll("Error: out of memory\n");
-                return;
+                return error.CommandFailed;
             };
         }
 
@@ -858,11 +866,11 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             } else if (std.mem.eql(u8, arg, "--scope-at")) {
                 if (i + 1 >= args.len) {
                     try getStdErr().writeAll("Error: missing value for --scope-at (expected <line:col>)\n");
-                    return;
+                    return error.CommandFailed;
                 }
                 const parsed = parseLineColumn(args[i + 1]) catch {
                     try getStdErr().writeAll("Error: invalid --scope-at value, expected <line:col>\n");
-                    return;
+                    return error.CommandFailed;
                 };
                 options.scope_line = parsed.line;
                 options.scope_column = parsed.column;
@@ -870,7 +878,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             } else if (std.mem.startsWith(u8, arg, "--scope-at=")) {
                 const parsed = parseLineColumn(arg["--scope-at=".len..]) catch {
                     try getStdErr().writeAll("Error: invalid --scope-at value, expected <line:col>\n");
-                    return;
+                    return error.CommandFailed;
                 };
                 options.scope_line = parsed.line;
                 options.scope_column = parsed.column;
@@ -881,11 +889,11 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             } else if (std.mem.eql(u8, arg, "--expected-type-at")) {
                 if (i + 1 >= args.len) {
                     try getStdErr().writeAll("Error: missing value for --expected-type-at (expected <line:col>)\n");
-                    return;
+                    return error.CommandFailed;
                 }
                 const parsed = parseLineColumn(args[i + 1]) catch {
                     try getStdErr().writeAll("Error: invalid --expected-type-at value, expected <line:col>\n");
-                    return;
+                    return error.CommandFailed;
                 };
                 options.expected_line = parsed.line;
                 options.expected_column = parsed.column;
@@ -893,7 +901,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             } else if (std.mem.startsWith(u8, arg, "--expected-type-at=")) {
                 const parsed = parseLineColumn(arg["--expected-type-at=".len..]) catch {
                     try getStdErr().writeAll("Error: invalid --expected-type-at value, expected <line:col>\n");
-                    return;
+                    return error.CommandFailed;
                 };
                 options.expected_line = parsed.line;
                 options.expected_column = parsed.column;
@@ -910,30 +918,30 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                 var buf: [256]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Error: unknown check option '{s}'\n", .{arg}) catch "Error: unknown check option\n";
                 try getStdErr().writeAll(msg);
-                return;
+                return error.CommandFailed;
             }
         }
 
         const path = input_path orelse {
             try getStdErr().writeAll("Error: no input file\n");
-            return;
+            return error.CommandFailed;
         };
 
         if ((options.scope_line == null) != (options.scope_column == null)) {
             try getStdErr().writeAll("Error: --scope-at requires both line and column\n");
-            return;
+            return error.CommandFailed;
         }
         if ((options.expected_line == null) != (options.expected_column == null)) {
             try getStdErr().writeAll("Error: --expected-type-at requires both line and column\n");
-            return;
+            return error.CommandFailed;
         }
         if (options.scope_json and options.scope_line == null) {
             try getStdErr().writeAll("Error: --scope-json requires --scope-at <line:col>\n");
-            return;
+            return error.CommandFailed;
         }
         if (options.scope_line != null and options.expected_line != null) {
             try getStdErr().writeAll("Error: --scope-at and --expected-type-at cannot be used together\n");
-            return;
+            return error.CommandFailed;
         }
 
         try checkFile(allocator, path, options);
@@ -1113,7 +1121,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
         try getStdErr().writeAll(msg);
-        return;
+        return error.CommandFailed;
     };
     defer allocator.free(source);
 
@@ -1139,7 +1147,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
             }) catch continue;
             try stderr.writeAll(err_msg);
         }
-        return;
+        return error.CommandFailed;
     };
 
     // Type check
@@ -1176,7 +1184,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
         // Register entry module
         const entry = resolver.resolveEntry(path) catch {
             try stderr.writeAll("Error: could not resolve entry module\n");
-            return;
+            return error.CommandFailed;
         };
         entry.module_ast = module;
         entry.state = .parsed;
@@ -1215,12 +1223,12 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
                 const err_msg = std.fmt.bufPrint(&buf, "Module error: {s}\n", .{err.message}) catch continue;
                 try stderr.writeAll(err_msg);
             }
-            return;
+            return error.CommandFailed;
         }
 
         // Get topological order
         const compilation_order = resolver.getCompilationOrder() catch {
-            return;
+            return error.CommandFailed;
         };
         defer allocator.free(compilation_order);
 
@@ -1253,7 +1261,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
             try stderr.writeAll("Type error(s):\n");
             try writeCheckErrors(&checker, stderr, null, false);
             try printMetaWarnings(&checker, stderr);
-            return;
+            return error.CommandFailed;
         }
         try printMetaWarnings(&checker, stderr);
 
@@ -1276,18 +1284,18 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
 
             const interp_ptr = allocator.create(Interpreter) catch {
                 try stderr.writeAll("Failed to initialize interpreter\n");
-                return;
+                return error.CommandFailed;
             };
             interp_ptr.* = Interpreter.init(allocator) catch {
                 allocator.destroy(interp_ptr);
                 try stderr.writeAll("Failed to initialize interpreter\n");
-                return;
+                return error.CommandFailed;
             };
             owned_interpreters.append(allocator, interp_ptr) catch {
                 interp_ptr.deinit();
                 allocator.destroy(interp_ptr);
                 try stderr.writeAll("Failed to allocate interpreter list\n");
-                return;
+                return error.CommandFailed;
             };
 
             // skip_unexecuted=true: skip deps whose interpreters aren't created yet (circular deps)
@@ -1312,7 +1320,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
 
             module_interpreters.put(allocator, mod, interp_ptr) catch {
                 try stderr.writeAll("Failed to register module interpreter\n");
-                return;
+                return error.CommandFailed;
             };
         }
 
@@ -1332,7 +1340,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
         // Get entry module interpreter and call main
         const entry_interp = module_interpreters.get(entry) orelse {
             try stderr.writeAll("Missing entry module interpreter\n");
-            return;
+            return error.CommandFailed;
         };
 
         try executeMainFunction(entry_interp, path, program_args, arena.allocator(), stderr);
@@ -1347,14 +1355,14 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
         try stderr.writeAll("Type error(s):\n");
         try writeCheckErrors(&checker, stderr, source, false);
         try printMetaWarnings(&checker, stderr);
-        return;
+        return error.CommandFailed;
     }
     try printMetaWarnings(&checker, stderr);
 
     // Single-module execution
     var interp = Interpreter.init(allocator) catch {
         try stderr.writeAll("Failed to initialize interpreter\n");
-        return;
+        return error.CommandFailed;
     };
     defer interp.deinit();
 
@@ -2937,7 +2945,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Error reading typed AST input '{s}': {}\n", .{ json_path, err }) catch "Error reading typed AST input\n";
             try stderr.writeAll(msg);
-            return;
+            return error.CommandFailed;
         };
         defer allocator.free(json_content);
 
@@ -2954,7 +2962,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Error loading multi-module typed AST '{s}': {s}\n", .{ json_path, @errorName(err) }) catch "Error loading multi-module typed AST\n";
                 try stderr.writeAll(msg);
-                return;
+                return error.CommandFailed;
             };
 
             // Check bodies for all modules to populate side tables for codegen
@@ -2973,7 +2981,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Error loading typed AST '{s}': {s}\n", .{ json_path, @errorName(err) }) catch "Error loading typed AST\n";
                 try stderr.writeAll(msg);
-                return;
+                return error.CommandFailed;
             };
 
             // Phase 2: check function bodies to populate side tables needed by codegen
@@ -2999,21 +3007,21 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Error reading AST input '{s}': {}\n", .{ json_path, err }) catch "Error reading AST input\n";
                 try stderr.writeAll(msg);
-                return;
+                return error.CommandFailed;
             };
             defer allocator.free(json_content);
             break :blk ast_from_json.moduleFromJson(allocator, arena.allocator(), json_content) catch |err| {
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Error parsing AST JSON '{s}': {s}\n", .{ json_path, @errorName(err) }) catch "Error parsing AST JSON\n";
                 try stderr.writeAll(msg);
-                return;
+                return error.CommandFailed;
             };
         } else blk: {
             const source = readSourceFile(allocator, path) catch |err| {
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
                 try stderr.writeAll(msg);
-                return;
+                return error.CommandFailed;
             };
             source_buf = source;
 
@@ -3034,7 +3042,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
                     }) catch continue;
                     try stderr.writeAll(err_msg);
                 }
-                return;
+                return error.CommandFailed;
             };
         };
 
@@ -3064,7 +3072,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             // Register entry module
             const entry = resolver.resolveEntry(path) catch {
                 try stderr.writeAll("Error: could not resolve entry module\n");
-                return;
+                return error.CommandFailed;
             };
             entry.module_ast = module;
             entry.state = .parsed;
@@ -3103,12 +3111,12 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
                     const err_msg = std.fmt.bufPrint(&buf, "Module error: {s}\n", .{err.message}) catch continue;
                     try stderr.writeAll(err_msg);
                 }
-                return;
+                return error.CommandFailed;
             }
 
             // Get topological order
             const compilation_order = resolver.getCompilationOrder() catch {
-                return;
+                return error.CommandFailed;
             };
             defer allocator.free(compilation_order);
 
@@ -3174,7 +3182,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         try stderr.writeAll("Type error(s):\n");
         try writeCheckErrors(&checker, stderr, source_buf, false);
         try printMetaWarnings(&checker, stderr);
-        return;
+        return error.CommandFailed;
     }
     try printMetaWarnings(&checker, stderr);
 
@@ -3192,7 +3200,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Invalid target triple '{s}': {s}\n", .{ triple_str, @errorName(err) }) catch "Invalid target triple\n";
             try stderr.writeAll(msg);
-            return;
+            return error.CommandFailed;
         };
 
         if (target_info.?.isCrossCompile()) {
@@ -3206,7 +3214,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     const base_name = std.fs.path.stem(path);
     const module_name = allocator.dupeZ(u8, base_name) catch {
         try stderr.writeAll("Out of memory\n");
-        return;
+        return error.CommandFailed;
     };
     defer allocator.free(module_name);
 
@@ -3220,13 +3228,13 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "IR lowering error: {s}\n", .{@errorName(err)}) catch "IR lowering error\n";
             try stderr.writeAll(msg);
-            return;
+            return error.CommandFailed;
         };
 
         // Write IR to file
         const ir_path_str = std.fmt.allocPrint(allocator, "{s}.ir", .{base_name}) catch {
             try stderr.writeAll("Out of memory\n");
-            return;
+            return error.CommandFailed;
         };
         defer allocator.free(ir_path_str);
 
@@ -3234,7 +3242,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Failed to create IR file: {s}\n", .{@errorName(err)}) catch "Failed to create IR file\n";
             try stderr.writeAll(msg);
-            return;
+            return error.CommandFailed;
         };
         defer ir_file.close();
 
@@ -3243,13 +3251,13 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Failed to generate IR: {s}\n", .{@errorName(err)}) catch "Failed to generate IR\n";
             try stderr.writeAll(msg);
-            return;
+            return error.CommandFailed;
         };
         ir_file.writeAll(ir_output) catch |err| {
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Failed to write IR: {s}\n", .{@errorName(err)}) catch "Failed to write IR\n";
             try stderr.writeAll(msg);
-            return;
+            return error.CommandFailed;
         };
 
         var buf: [512]u8 = undefined;
@@ -3291,7 +3299,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Codegen error (builtin structs): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
         try stderr.writeAll(msg);
-        return;
+        return error.CommandFailed;
     };
 
     // Register all struct declarations first so their types are available
@@ -3303,7 +3311,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Codegen error (struct registration): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
             try stderr.writeAll(msg);
-            return;
+            return error.CommandFailed;
         };
     }
     emitter.setModulePrefix(null);
@@ -3314,7 +3322,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Codegen error (struct monomorphization): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
         try stderr.writeAll(msg);
-        return;
+        return error.CommandFailed;
     };
 
     // Register monomorphized enum types BEFORE emitModule
@@ -3323,7 +3331,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Codegen error (enum monomorphization): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
         try stderr.writeAll(msg);
-        return;
+        return error.CommandFailed;
     };
 
     // Register non-generic enum types BEFORE emitModule
@@ -3332,7 +3340,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Codegen error (non-generic enum registration): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
         try stderr.writeAll(msg);
-        return;
+        return error.CommandFailed;
     };
 
     // Declare monomorphized function signatures BEFORE emitModule
@@ -3341,7 +3349,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Codegen error (monomorphization decl): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
         try stderr.writeAll(msg);
-        return;
+        return error.CommandFailed;
     };
 
     // Declare monomorphized methods for generic structs BEFORE emitModule
@@ -3350,7 +3358,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Codegen error (method decl): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
         try stderr.writeAll(msg);
-        return;
+        return error.CommandFailed;
     };
 
     // Emit all modules
@@ -3368,7 +3376,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
                             var buf: [512]u8 = undefined;
                             const msg = std.fmt.bufPrint(&buf, "Codegen error (struct): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
                             try stderr.writeAll(msg);
-                            return;
+                            return error.CommandFailed;
                         };
                     },
                     else => {},
@@ -3385,7 +3393,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Codegen error (decl): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
                 try stderr.writeAll(msg);
-                return;
+                return error.CommandFailed;
             };
         }
 
@@ -3398,7 +3406,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
                 const prefix_name = module_prefixes.items[i] orelse "(entry)";
                 const msg = std.fmt.bufPrint(&buf, "Codegen error in module '{s}': {s}\n", .{ prefix_name, @errorName(err) }) catch "Codegen error\n";
                 try stderr.writeAll(msg);
-                return;
+                return error.CommandFailed;
             };
         }
         emitter.skip_main = false;
@@ -3410,7 +3418,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Codegen error (main wrapper): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
                 try stderr.writeAll(msg);
-                return;
+                return error.CommandFailed;
             };
         }
     } else {
@@ -3420,7 +3428,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Codegen error: {s}\n", .{@errorName(err)}) catch "Codegen error\n";
                 try stderr.writeAll(msg);
-                return;
+                return error.CommandFailed;
             };
         }
     }
@@ -3430,7 +3438,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Codegen error (monomorphization): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
         try stderr.writeAll(msg);
-        return;
+        return error.CommandFailed;
     };
 
     // Emit monomorphized method bodies
@@ -3438,7 +3446,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Codegen error (methods): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
         try stderr.writeAll(msg);
-        return;
+        return error.CommandFailed;
     };
 
     // Finalize debug info before verification
@@ -3448,19 +3456,19 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "LLVM verification failed: {s}\n", .{@errorName(err)}) catch "LLVM verification failed\n";
         try stderr.writeAll(msg);
-        return;
+        return error.CommandFailed;
     };
 
     // Emit LLVM IR if requested
     if (options.emit_llvm_ir) {
         const ll_path_str = std.fmt.allocPrint(allocator, "{s}.ll", .{base_name}) catch {
             try stderr.writeAll("Out of memory\n");
-            return;
+            return error.CommandFailed;
         };
         defer allocator.free(ll_path_str);
         const ll_path = allocator.dupeZ(u8, ll_path_str) catch {
             try stderr.writeAll("Out of memory\n");
-            return;
+            return error.CommandFailed;
         };
         defer allocator.free(ll_path);
 
@@ -3468,7 +3476,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Failed to write LLVM IR: {s}\n", .{@errorName(err)}) catch "Failed to write LLVM IR\n";
             try stderr.writeAll(msg);
-            return;
+            return error.CommandFailed;
         };
 
         var buf: [512]u8 = undefined;
@@ -3482,7 +3490,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Failed to get target for '{s}': {s}\n", .{ triple, @errorName(err) }) catch "Failed to get target\n";
         try stderr.writeAll(msg);
-        return;
+        return error.CommandFailed;
     };
 
     // Map Klar optimization level to LLVM codegen level
@@ -3509,7 +3517,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         codegen.llvm.c.LLVMCodeModelDefault,
     ) orelse {
         try stderr.writeAll("Failed to create target machine\n");
-        return;
+        return error.CommandFailed;
     };
     defer codegen.llvm.disposeTargetMachine(tm);
 
@@ -3517,12 +3525,12 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     if (options.emit_assembly) {
         const asm_path_str = std.fmt.allocPrint(allocator, "{s}.s", .{base_name}) catch {
             try stderr.writeAll("Out of memory\n");
-            return;
+            return error.CommandFailed;
         };
         defer allocator.free(asm_path_str);
         const asm_path = allocator.dupeZ(u8, asm_path_str) catch {
             try stderr.writeAll("Out of memory\n");
-            return;
+            return error.CommandFailed;
         };
         defer allocator.free(asm_path);
 
@@ -3530,7 +3538,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Failed to write assembly: {s}\n", .{@errorName(err)}) catch "Failed to write assembly\n";
             try stderr.writeAll(msg);
-            return;
+            return error.CommandFailed;
         };
 
         var buf: [512]u8 = undefined;
@@ -3543,12 +3551,12 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     const obj_ext = target_platform.getObjectExtension();
     const obj_path_str = std.fmt.allocPrint(allocator, "{s}{s}", .{ base_name, obj_ext }) catch {
         try stderr.writeAll("Out of memory\n");
-        return;
+        return error.CommandFailed;
     };
     defer allocator.free(obj_path_str);
     const obj_path = allocator.dupeZ(u8, obj_path_str) catch {
         try stderr.writeAll("Out of memory\n");
-        return;
+        return error.CommandFailed;
     };
     defer allocator.free(obj_path);
 
@@ -3627,7 +3635,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Failed to emit object file: {s}\n", .{@errorName(err)}) catch "Failed to emit object file\n";
             try stderr.writeAll(msg);
-            return;
+            return error.CommandFailed;
         };
 
         // Save to cache (if caching enabled)
@@ -3660,7 +3668,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Failed to rename object file: {s}\n", .{@errorName(err)}) catch "Failed to rename object file\n";
                 try stderr.writeAll(msg);
-                return;
+                return error.CommandFailed;
             };
             if (!options.quiet) {
                 var buf: [512]u8 = undefined;
@@ -3685,11 +3693,11 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Failed to create build directory: {s}\n", .{@errorName(err)}) catch "Failed to create build directory\n";
             try stderr.writeAll(msg);
-            return;
+            return error.CommandFailed;
         };
         break :blk std.fmt.allocPrint(allocator, "build/{s}{s}", .{ base_name, exe_ext }) catch {
             try stderr.writeAll("Out of memory\n");
-            return;
+            return error.CommandFailed;
         };
     };
     const owns_exe_path = options.output_path == null;
@@ -3702,7 +3710,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Failed to create output directory: {s}\n", .{@errorName(err)}) catch "Failed to create output directory\n";
                 try stderr.writeAll(msg);
-                return;
+                return error.CommandFailed;
             };
         }
     }
@@ -3732,7 +3740,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         try stderr.writeAll(msg);
         // Clean up object file
         compat.cwd().deleteFile(obj_path) catch {};
-        return;
+        return error.CommandFailed;
     };
 
     // On macOS with debug info, run dsymutil to create .dSYM bundle before deleting .o
@@ -3786,10 +3794,8 @@ fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, prog
     };
 
     // Build the executable
-    buildNative(allocator, path, options, run_ast_input_path, run_typed_ast_input_path) catch {
-        // Errors already printed by buildNative
-        return;
-    };
+    // Errors are printed by buildNative; error.CommandFailed makes `main` exit 1.
+    try buildNative(allocator, path, options, run_ast_input_path, run_typed_ast_input_path);
 
     // Execute the compiled binary with args.
     // On POSIX, we use fork/exec to set argv[0] to the source path while
@@ -4335,21 +4341,21 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Error reading AST input '{s}': {}\n", .{ json_path, err }) catch "Error reading AST input\n";
             try stderr.writeAll(msg);
-            return;
+            return error.CommandFailed;
         };
         defer allocator.free(json_content);
         break :blk ast_from_json.moduleFromJson(allocator, arena.allocator(), json_content) catch |err| {
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Error parsing AST JSON '{s}': {s}\n", .{ json_path, @errorName(err) }) catch "Error parsing AST JSON\n";
             try stderr.writeAll(msg);
-            return;
+            return error.CommandFailed;
         };
     } else blk: {
         const source = readSourceFile(allocator, path) catch |err| {
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
             try stderr.writeAll(msg);
-            return;
+            return error.CommandFailed;
         };
         source_buf = source;
 
@@ -4361,7 +4367,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
                 try stderr.writeAll(msg);
-                return;
+                return error.CommandFailed;
             };
             if (parser.errors.items.len > 0) {
                 had_parse_errors = true;
@@ -4392,7 +4398,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
                     }) catch continue;
                     try stderr.writeAll(err_msg);
                 }
-                return;
+                return error.CommandFailed;
             };
         }
     };
@@ -4441,7 +4447,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
         // Register entry module
         const entry = resolver.resolveEntry(path) catch {
             try stderr.writeAll("Error: could not resolve entry module\n");
-            return;
+            return error.CommandFailed;
         };
         entry.module_ast = module;
         entry.state = .parsed;
@@ -4480,12 +4486,12 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
                 const err_msg = std.fmt.bufPrint(&buf, "Module error: {s}\n", .{err.message}) catch continue;
                 try stderr.writeAll(err_msg);
             }
-            return;
+            return error.CommandFailed;
         }
 
         // Get topological order
         const compilation_order = resolver.getCompilationOrder() catch {
-            return;
+            return error.CommandFailed;
         };
         defer allocator.free(compilation_order);
 
@@ -4529,26 +4535,26 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
         try stderr.writeAll(header);
         try writeCheckErrors(&checker, stderr, source_buf, true);
         try printMetaWarnings(&checker, stderr);
-        if (options.scope_line == null and options.expected_line == null) return; // Query modes can proceed for tooling.
+        if (options.scope_line == null and options.expected_line == null) return error.CommandFailed; // Query modes can proceed for tooling.
     }
 
     if (options.scope_line) |scope_line| {
         const scope_column = options.scope_column.?;
         const source_for_offset = source_buf orelse {
             try stderr.writeAll("Error: --scope-at requires source file (not compatible with --ast-input)\n");
-            return;
+            return error.CommandFailed;
         };
         const cursor_offset = sourceOffsetFromLineColumn(source_for_offset, scope_line, scope_column) orelse {
             var out_buf: [256]u8 = undefined;
             const msg = std.fmt.bufPrint(&out_buf, "Error: position {d}:{d} is outside file bounds\n", .{ scope_line, scope_column }) catch "Error: invalid scope position\n";
             try stderr.writeAll(msg);
-            return;
+            return error.CommandFailed;
         };
 
         const root_scope = scope_root orelse checker.current_scope;
         const scope_entries = checker.extractScopeAtOffsetInScope(module, cursor_offset, root_scope) catch {
             try stderr.writeAll("Error: failed to extract scope at cursor\n");
-            return;
+            return error.CommandFailed;
         };
         defer allocator.free(scope_entries);
 
@@ -4601,13 +4607,13 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
         const expected_column = options.expected_column.?;
         const source_for_offset = source_buf orelse {
             try stderr.writeAll("Error: --expected-type-at requires source file (not compatible with --ast-input)\n");
-            return;
+            return error.CommandFailed;
         };
         const cursor_offset = sourceOffsetFromLineColumn(source_for_offset, expected_line, expected_column) orelse {
             var out_buf: [256]u8 = undefined;
             const msg = std.fmt.bufPrint(&out_buf, "Error: position {d}:{d} is outside file bounds\n", .{ expected_line, expected_column }) catch "Error: invalid expected-type position\n";
             try stderr.writeAll(msg);
-            return;
+            return error.CommandFailed;
         };
 
         const root_scope = scope_root orelse checker.current_scope;
@@ -4636,11 +4642,12 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
     if (options.partial_mode) {
         if (!has_type_errors and !had_parse_errors) {
             try stdout.writeAll("Partial check completed with no diagnostics\n");
+            return;
         }
-        return;
+        return error.CommandFailed;
     }
 
-    if (has_type_errors) return;
+    if (has_type_errors) return error.CommandFailed;
 
     // Ownership analysis
     var ownership_checker = ownership.OwnershipChecker.init(allocator);
@@ -4649,7 +4656,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
     ownership_checker.analyze(module) catch |err| {
         const msg = std.fmt.bufPrint(&buf, "Ownership analysis error: {}\n", .{err}) catch "Ownership analysis error\n";
         try stderr.writeAll(msg);
-        return;
+        return error.CommandFailed;
     };
 
     // Dump ownership state if requested
@@ -4695,6 +4702,8 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
         const timing_msg = std.fmt.bufPrint(&timing_buf, "Timing: parse={d:.1}ms check={d:.1}ms total={d:.1}ms\n", .{ parse_ms, check_ms, total_ms }) catch "";
         try stderr.writeAll(timing_msg);
     }
+
+    if (ownership_checker.hasErrors()) return error.CommandFailed;
 }
 
 fn bindRuntimeImportsForModule(
@@ -5927,7 +5936,7 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
         try getStdErr().writeAll(msg);
-        return;
+        return error.CommandFailed;
     };
     defer allocator.free(source);
 
@@ -5953,7 +5962,7 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
             }) catch continue;
             try stderr.writeAll(err_msg);
         }
-        return;
+        return error.CommandFailed;
     };
 
     // Type check
@@ -5990,7 +5999,7 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
         // Register entry module
         const entry = resolver.resolveEntry(path) catch {
             try stderr.writeAll("Error: could not resolve entry module\n");
-            return;
+            return error.CommandFailed;
         };
         entry.module_ast = module;
         entry.state = .parsed;
@@ -6029,12 +6038,12 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
                 const err_msg = std.fmt.bufPrint(&buf, "Module error: {s}\n", .{err.message}) catch continue;
                 try stderr.writeAll(err_msg);
             }
-            return;
+            return error.CommandFailed;
         }
 
         // Get topological order
         const compilation_order = resolver.getCompilationOrder() catch {
-            return;
+            return error.CommandFailed;
         };
         defer allocator.free(compilation_order);
 
@@ -6071,7 +6080,7 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
         const snippet_source: ?[]const u8 = if (module.imports.len == 0) source else null;
         try writeCheckErrors(&checker, stderr, snippet_source, false);
         try printMetaWarnings(&checker, stderr);
-        return;
+        return error.CommandFailed;
     }
     try printMetaWarnings(&checker, stderr);
 
@@ -6092,7 +6101,7 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
             }) catch continue;
             try stderr.writeAll(err_msg);
         }
-        return;
+        return error.CommandFailed;
     };
     defer {
         function.deinit();
@@ -6102,14 +6111,14 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
     // Run in VM
     var vm = VM.init(allocator) catch {
         try stderr.writeAll("Failed to initialize VM\n");
-        return;
+        return error.CommandFailed;
     };
     defer vm.deinit();
 
     // Set up GC roots and register builtins
     vm.setup() catch {
         try stderr.writeAll("Failed to set up VM\n");
-        return;
+        return error.CommandFailed;
     };
 
     // Set debug mode if requested
@@ -6138,12 +6147,12 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
             defer full_args.deinit(allocator);
             full_args.append(allocator, path) catch {
                 try stderr.writeAll("Failed to allocate args\n");
-                return;
+                return error.CommandFailed;
             };
             for (program_args) |arg| {
                 full_args.append(allocator, arg) catch {
                     try stderr.writeAll("Failed to allocate args\n");
-                    return;
+                    return error.CommandFailed;
                 };
             }
 
