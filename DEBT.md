@@ -1248,3 +1248,51 @@ where its scope ends, for the allocas `buildEntryBlockAlloca` builds. Measure wi
 runs; `-O0` will not change.
 
 **Found by:** /continue-plan nightly CI triage on fix/nightly-windows-stack, 2026-10-23.
+
+---
+
+## [ ] Debt 58: `buildLinkCommand`'s branches other than the stack args have no unit test
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/codegen/linker.zig` `buildLinkCommand` (~147-341)
+**Due when:** touching `src/codegen/linker.zig` `buildLinkCommand`
+
+**Description:** `buildLinkCommand` takes the host OS as a parameter, so every branch can be
+unit-tested on any host, but only the Windows stack args and the Linux no-stack/`-lm` tail
+are pinned. Unpinned: the Windows user link flags (MinGW `-L`/`-l`, MSVC `/LIBPATH:`/`.lib`,
+MSVC skipping `m`) and `extra_objects` ordering; the macOS cross-compile refusal
+(`is_cross and host_os != .macos` → `CrossCompilationNotSupported`); the aarch64 MinGW
+branch; and where the stack arg sits in the command. Test-coverage WATCH lines on this file
+recurred in three branches. The Linux `-lm`-after-libs and cross-gcc cases are Debt 39's.
+
+**Payment:** Unit tests: "a Windows link turns user link paths and libs into MSVC or MinGW
+flags" (`link_paths = {"lib"}`, `link_libs = {"m","foo"}`, `extra_objects = {"x.o"}`, host
+`.windows` and host `.macos`, assert the exact tail of `cmd.args.items`); a cross macOS
+`TargetInfo` from host `.linux` gives `CrossCompilationNotSupported`; an aarch64 Windows
+target from a non-Windows host uses `aarch64-w64-mingw32-gcc` with `-Wl,--stack,8388608`.
+
+**Found by:** /qa-review on fix/windows-main-thread-stack, 2026-10-23 — test-checker GAPS
+and WATCH (also seen on fix-bug-116-macos-sdk, fix-nightly-linux-libm); reviewer's reading,
+not re-verified.
+
+---
+
+## [ ] Debt 59: `src/codegen/linker.zig` is in the Watch band and only grows
+
+**Status:** Open
+**Kind:** extraction
+**Where:** `src/codegen/linker.zig` (522 code lines, 708 raw; `buildLinkCommand` ~195 raw)
+**Due when:** touching `src/codegen/linker.zig` · when it reaches 650 code lines
+
+**Description:** The file grew 472 → 522 code lines on this branch and has only grown over
+its last 15 commits. `buildLinkCommand` is still over the 150-line function limit, a per-OS
+ladder. File-growth WATCH lines on it recurred in three branches.
+
+**Payment:** Move bare-metal and wasm linking (`linkBareMetalTarget`, `tryLinkBareMetal`,
+`linkWasmTarget`, ~180 raw lines) to `src/codegen/linker_embedded.zig`, and the Windows
+arms of `buildLinkCommand` to a `buildWindowsLinkArgs` helper (~50 lines).
+
+**Found by:** /qa-review on fix/windows-main-thread-stack, 2026-10-23 — file-size-checker
+(also seen on fix-bug-116-macos-sdk, fix-nightly-linux-libm); reviewer's reading, not
+re-verified.

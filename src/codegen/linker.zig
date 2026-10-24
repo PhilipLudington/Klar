@@ -84,21 +84,6 @@ fn linkForPlatform(
     target_info_opt: ?target.TargetInfo,
     options: LinkerOptions,
 ) LinkerError!void {
-    // Check for cross-compilation scenarios
-    const is_cross = if (target_info_opt) |ti| ti.isCrossCompile() else false;
-
-    var args = std.ArrayListUnmanaged([]const u8).empty;
-    defer args.deinit(allocator);
-
-    // Track allocated strings so we can free them after linking
-    var allocated_strings = std.ArrayListUnmanaged([]const u8).empty;
-    defer {
-        for (allocated_strings.items) |s| {
-            allocator.free(s);
-        }
-        allocated_strings.deinit(allocator);
-    }
-
     // WebAssembly targets use wasm-ld
     if (platform.isWasm()) {
         return linkWasmTarget(allocator, object_file, output_file, target_info_opt);
@@ -109,9 +94,75 @@ fn linkForPlatform(
         return linkBareMetalTarget(allocator, object_file, output_file, target_info_opt, options);
     }
 
+    var cmd = LinkCommand{};
+    defer cmd.deinit(allocator);
+    try buildLinkCommand(allocator, &cmd, object_file, output_file, platform, target_info_opt, options, builtin.os.tag);
+
+    var child = compat.Child.init(cmd.args.items, allocator);
+    child.stderr_behavior = .Inherit;
+    child.stdout_behavior = .Inherit;
+
+    child.spawn() catch |err| {
+        if (err == error.FileNotFound) return LinkerError.LinkerNotFound;
+        return LinkerError.LinkerFailed;
+    };
+
+    // Wait for completion and get result
+    const result = child.wait() catch return LinkerError.LinkerFailed;
+
+    switch (result) {
+        .Exited => |code| {
+            if (code != 0) {
+                return LinkerError.LinkerFailed;
+            }
+        },
+        else => return LinkerError.LinkerFailed,
+    }
+}
+
+/// Main-thread stack reserved for every Windows executable. macOS and Linux give a
+/// program's main thread 8M; Windows gives 1M unless the image asks for more, so a
+/// program that runs elsewhere overflowed there
+/// (`docs/decisions/2026-10-23-windows-main-thread-stack.md`).
+const windows_main_thread_stack_bytes: u64 = 8 * 1024 * 1024;
+const msvc_stack_arg = std.fmt.comptimePrint("/STACK:{d}", .{windows_main_thread_stack_bytes});
+const mingw_stack_arg = std.fmt.comptimePrint("-Wl,--stack,{d}", .{windows_main_thread_stack_bytes});
+
+/// A linker command line and the strings allocated for it.
+const LinkCommand = struct {
+    args: std.ArrayListUnmanaged([]const u8) = .empty,
+    allocated_strings: std.ArrayListUnmanaged([]const u8) = .empty,
+
+    fn deinit(self: *LinkCommand, allocator: std.mem.Allocator) void {
+        for (self.allocated_strings.items) |s| {
+            allocator.free(s);
+        }
+        self.allocated_strings.deinit(allocator);
+        self.args.deinit(allocator);
+    }
+};
+
+/// Build the system linker command for a hosted target. `host_os` is the OS the
+/// linker runs on (`builtin.os.tag` outside tests): it picks MSVC or MinGW for Windows.
+fn buildLinkCommand(
+    allocator: std.mem.Allocator,
+    cmd: *LinkCommand,
+    object_file: []const u8,
+    output_file: []const u8,
+    platform: target.Platform,
+    target_info_opt: ?target.TargetInfo,
+    options: LinkerOptions,
+    host_os: std.Target.Os.Tag,
+) LinkerError!void {
+    // Check for cross-compilation scenarios
+    const is_cross = if (target_info_opt) |ti| ti.isCrossCompile() else false;
+
+    const args = &cmd.args;
+    const allocated_strings = &cmd.allocated_strings;
+
     switch (platform.os) {
         .macos => {
-            if (is_cross and builtin.os.tag != .macos) {
+            if (is_cross and host_os != .macos) {
                 // Cross-compiling to macOS from non-macOS requires special setup
                 // For now, only support native and macOS-to-macOS cross-arch compilation
                 return LinkerError.CrossCompilationNotSupported;
@@ -148,11 +199,6 @@ fn linkForPlatform(
                     .aarch64 => .aarch64,
                     else => .unknown,
                 };
-                const host_os: target.TargetInfo.Os = switch (builtin.os.tag) {
-                    .linux => .linux,
-                    else => .unknown,
-                };
-
                 // If not on Linux, or different architecture, use cross-compiler
                 if (host_os != .linux or ti.arch != host_arch) {
                     break :blk switch (ti.arch) {
@@ -176,7 +222,7 @@ fn linkForPlatform(
         },
         .windows => {
             // Windows cross-compilation requires MinGW or MSVC cross-tools
-            if (is_cross or builtin.os.tag != .windows) {
+            if (is_cross or host_os != .windows) {
                 // Try MinGW cross-compiler
                 const mingw_gcc = if (target_info_opt) |ti| switch (ti.arch) {
                     .x86_64 => "x86_64-w64-mingw32-gcc",
@@ -190,6 +236,7 @@ fn linkForPlatform(
                     "-o",
                     output_file,
                     object_file,
+                    mingw_stack_arg,
                 }) catch return LinkerError.OutOfMemory;
             } else {
                 // Native Windows linking with MSVC link.exe
@@ -210,6 +257,7 @@ fn linkForPlatform(
                     out_arg,
                     object_file,
                     "/SUBSYSTEM:CONSOLE",
+                    msvc_stack_arg,
                     // Default Windows libraries for CRT and system API
                     "kernel32.lib",
                     "msvcrt.lib",
@@ -236,7 +284,7 @@ fn linkForPlatform(
     for (options.link_paths) |path| {
         switch (platform.os) {
             .windows => {
-                if (is_cross or builtin.os.tag != .windows) {
+                if (is_cross or host_os != .windows) {
                     // MinGW uses -L
                     const formatted = std.fmt.allocPrint(allocator, "-L{s}", .{path}) catch return LinkerError.OutOfMemory;
                     allocated_strings.append(allocator, formatted) catch return LinkerError.OutOfMemory;
@@ -261,7 +309,7 @@ fn linkForPlatform(
     for (options.link_libs) |lib| {
         switch (platform.os) {
             .windows => {
-                if (is_cross or builtin.os.tag != .windows) {
+                if (is_cross or host_os != .windows) {
                     // MinGW uses -l
                     const formatted = std.fmt.allocPrint(allocator, "-l{s}", .{lib}) catch return LinkerError.OutOfMemory;
                     allocated_strings.append(allocator, formatted) catch return LinkerError.OutOfMemory;
@@ -290,27 +338,6 @@ fn linkForPlatform(
     // before the objects needing it.
     if (platform.os == .linux) {
         args.append(allocator, "-lm") catch return LinkerError.OutOfMemory;
-    }
-
-    var child = compat.Child.init(args.items, allocator);
-    child.stderr_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
-
-    child.spawn() catch |err| {
-        if (err == error.FileNotFound) return LinkerError.LinkerNotFound;
-        return LinkerError.LinkerFailed;
-    };
-
-    // Wait for completion and get result
-    const result = child.wait() catch return LinkerError.LinkerFailed;
-
-    switch (result) {
-        .Exited => |code| {
-            if (code != 0) {
-                return LinkerError.LinkerFailed;
-            }
-        },
-        else => return LinkerError.LinkerFailed,
     }
 }
 
@@ -639,4 +666,43 @@ test "findMacOSSDK names the SDK of the toolchain /usr/bin/ld runs, as xcrun rep
 
     const expected = std.mem.trim(u8, out, " \t\r\n");
     try std.testing.expectEqualStrings(expected, findMacOSSDK());
+}
+
+fn linkCommandHas(cmd: *const LinkCommand, arg: []const u8) bool {
+    for (cmd.args.items) |a| {
+        if (std.mem.eql(u8, a, arg)) return true;
+    }
+    return false;
+}
+
+test "every Windows link reserves an 8M main-thread stack, through MSVC or MinGW" {
+    // Windows gives a main thread 1M unless the image asks for more; macOS and Linux give
+    // 8M. The selfhost checker overflowed 1M on Windows only (nightly CI at 25bfe92).
+    const windows: target.Platform = .{ .os = .windows, .arch = .x86_64 };
+
+    var msvc = LinkCommand{};
+    defer msvc.deinit(std.testing.allocator);
+    try buildLinkCommand(std.testing.allocator, &msvc, "prog.obj", "prog.exe", windows, null, .{}, .windows);
+    try std.testing.expect(linkCommandHas(&msvc, "/SUBSYSTEM:CONSOLE"));
+    try std.testing.expect(linkCommandHas(&msvc, "/STACK:8388608"));
+
+    var mingw = LinkCommand{};
+    defer mingw.deinit(std.testing.allocator);
+    try buildLinkCommand(std.testing.allocator, &mingw, "prog.o", "prog.exe", windows, null, .{}, .macos);
+    try std.testing.expectEqualStrings("x86_64-w64-mingw32-gcc", mingw.args.items[0]);
+    try std.testing.expect(linkCommandHas(&mingw, "-Wl,--stack,8388608"));
+}
+
+test "a Linux link carries no stack-size argument" {
+    const linux: target.Platform = .{ .os = .linux, .arch = .x86_64 };
+
+    var cmd = LinkCommand{};
+    defer cmd.deinit(std.testing.allocator);
+    try buildLinkCommand(std.testing.allocator, &cmd, "prog.o", "prog", linux, null, .{}, .linux);
+    try std.testing.expectEqualStrings("gcc", cmd.args.items[0]);
+    try std.testing.expectEqualStrings("-lm", cmd.args.items[cmd.args.items.len - 1]);
+    for (cmd.args.items) |a| {
+        try std.testing.expect(std.mem.indexOf(u8, a, "stack") == null);
+        try std.testing.expect(std.mem.indexOf(u8, a, "STACK") == null);
+    }
 }
