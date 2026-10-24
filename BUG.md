@@ -4154,3 +4154,61 @@ again, which is Bug 132's loop-reassignment shape.
 `469d0fe`).
 
 **Found by:** the Bug 115 fix's probe of the remaining copies, 2026-10-23.
+
+---
+
+## [ ] Bug 136: An argument to a by-value parameter never moves, so the moved-from name stays usable
+
+**Status:** Open
+
+**System:** ownership move tracking — `src/ownership/checker.zig`
+
+**Deferred:** after the current milestone — `klar build` and `klar run` skip the ownership
+pass (Bug 52), so no native program is affected; it should land before the explicit
+move/clone design (`docs/design/explicit-move-clone.md` § 6) is implemented, since that
+design relies on the checker refusing a use after a move.
+
+**Description:** `analyzeCall` and `analyzeMethodCall` analyze every argument and mark
+none moved, so passing a non-Copy local to a by-value parameter leaves it owned. Klar's
+ownership docs (`docs/memory/ownership.md` § Move in Function Calls) say the call moves
+it. Bugs 115 and 135 are the same gap for `let`/`var` initializers and plain assignment.
+
+**Steps to reproduce:**
+1. `fn consume(s: String) -> i32 { return s.len() }` and `fn main() -> i32 { let a:
+   String = String.from("abc")`, `let n: i32 = consume(a)`, `println(a.as_str())`,
+   `return n }`.
+2. `klar check` it.
+
+**Expected:** `use_after_move` at the `a.as_str()` line.
+
+**Actual:** `All checks passed` (2026-10-24, macOS arm64, `main` at `21a75b1`).
+
+**Found by:** writing the explicit move/clone design, 2026-10-24.
+
+---
+
+## [ ] Bug 137: A variable of a type alias of a Copy type is treated as moved, so a later read is a false `use_after_move`
+
+**Status:** Open
+
+**System:** ownership move tracking — `src/ownership/checker.zig`
+
+**Deferred:** after the current milestone — only `klar check` runs the ownership pass
+(Bug 52), so a native build of the program is unaffected; `klar check` wrongly exits 1.
+
+**Description:** `isCopyFromTypeExpr` decides Copy from the spelled type name. A name it
+does not list, such as `Id` from `type Id = i32`, falls to "user-defined structs:
+conservatively not Copy", so `let b: Id = a` marks `a` moved. The type checker resolves
+the alias to `i32`, which is Copy.
+
+**Steps to reproduce:**
+1. `type Id = i32` and `fn main() -> i32 { let a: Id = 1`, `let b: Id = a`,
+   `println(a.to_string())`, `println(b.to_string())`, `return 0 }`.
+2. `klar check` it.
+
+**Expected:** `All checks passed`.
+
+**Actual:** `6:13 [use_after_move]: use of moved variable 'a'`, exit 1 (2026-10-24,
+macOS arm64, `main` at `21a75b1`).
+
+**Found by:** writing the explicit move/clone design, 2026-10-24.

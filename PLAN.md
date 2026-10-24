@@ -167,11 +167,15 @@ in user programs first, then checker/contract correctness, then tooling, then de
       ownership pass) and 49 (`check` exits 0 on failure) are the other two gaps.
       (found: PR 65 side note, 2026-10-18) (completed 2026-10-23: `let` and `var`
       initializers both go through `moveInitializer`; a plain `b = a` assignment is Bug 135)
-- [ ] Design — explicit move/clone: write a design section (docs/design/) making a
+- [x] Design — explicit move/clone: write a design section (docs/design/) making a
       move or a copy of a non-Copy value explicit at the use site, with keywords
       `move a` and `clone a`; `clone` dispatches to the `Clone` trait the way `==`
       does to `Eq`, and calling `a.clone()` directly becomes an error. No code until
-      Philip approves the design. (Philip, 2026-10-18)
+      Philip approves the design. (Philip, 2026-10-18) (completed 2026-10-24:
+      `docs/design/explicit-move-clone.md`, status Proposed, with four open questions in
+      its § 8; writing it found Bugs 136 and 137) WAITING ON PHILIP (asked 2026-10-24):
+      approve the design and answer its § 8 questions (is `string` Copy, does `return s`
+      need `move`, does a by-value `self` receiver move, may a user struct be Copy)
 
 **Crashes and wrong results in running programs**
 - [x] Native channels — Bug 90: a `Sender` reached by an index (`txs[0].send(v)`) or a `for`
