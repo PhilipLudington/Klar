@@ -1174,7 +1174,10 @@ real argv (the Phase 6 `process_spawn` path may already be the model).
 `?string`; `string` is a Copy primitive (`types.zig` `isCopyType`), so no drop is ever
 emitted. Same shape as the `ProcessOutput.stdout` leak fixed in `144d17f`. **To settle:**
 whether the checker's `env_get` return type at HEAD is still the primitive `string` or
-became an owned `String` — if owned, close this.
+became an owned `String` — if owned, close this. **Fix direction decided** (Philip,
+2026-10-24, `docs/design/explicit-move-clone.md` § 8 Q1): `string` stays Copy, so
+`env_get` and every builtin that builds text at run time return an owned `String`, never
+`string`.
 
 **Steps to reproduce:**
 1. `env_get("PATH")` in a loop under a leak checker, native build.
@@ -4172,6 +4175,11 @@ design relies on the checker refusing a use after a move.
 none moved, so passing a non-Copy local to a by-value parameter leaves it owned. Klar's
 ownership docs (`docs/memory/ownership.md` § Move in Function Calls) say the call moves
 it. Bugs 115 and 135 are the same gap for `let`/`var` initializers and plain assignment.
+The same holds for a by-value `self` receiver: `a.finish()` with `fn finish(self)` leaves
+`a` usable, and Philip decided on 2026-10-24 (design § 8 Q3) that it moves `a`. That half
+lands only after the design's § 7 step 2¾ converts read-only methods and the builtin
+traits to `self: ref`, since `Clone::clone` takes `self` by value today and marking it
+would make every `s.clone()` a move.
 
 **Steps to reproduce:**
 1. `fn consume(s: String) -> i32 { return s.len() }` and `fn main() -> i32 { let a:
