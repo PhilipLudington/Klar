@@ -4270,3 +4270,36 @@ exception for parameters.
 **Actual:** `All checks passed` (2026-10-24, macOS arm64, `main` at `9fb2889`).
 
 **Found by:** the ownership move tracking branch (Bugs 132, 135, 137), 2026-10-24.
+
+---
+
+## [ ] Bug 139: A move before `break` or `continue` leaks into the rest of the loop body, a false `use_after_move`
+
+**Status:** Open
+
+**System:** ownership move tracking — `src/ownership/checker.zig`
+
+**Deferred:** after the explicit move/clone rollout's step 1 — it rejects correct code only
+when a branch that moves ends in `break` or `continue`, and no selfhost file or test hits it.
+
+**Description:** `analyzeStmt` treats `.break_stmt` and `.continue_stmt` as no-ops, so they
+do not end a branch's path the way `return` does since Bug 132's fix. A move inside an
+`if` branch that ends in `continue` (or `break`) is merged into the state after the `if`,
+and a later read of the moved-from name in the same loop body is reported as
+`use_after_move` although that read never follows the move. The fix direction: set
+`returned` (or a sibling flag scoped to the loop) on `break`/`continue`.
+
+**Steps to reproduce:**
+1. `fn main() -> i32 { let a: String = String.from("x")`, `var i: i32 = 0`,
+   `while i < 3 { if i == 1 { let b: String = a`, `println(b.as_str())`, `continue }`,
+   `println(a.as_str())`, `i = i + 1 }`, `return 0 }`.
+2. `klar check` it.
+
+**Expected:** `All checks passed` (the read of `a` on the fall-through path never follows the
+move; a second iteration reaching the move again is a separate loop-carried question).
+
+**Actual:** `10:17 use_after_move 'a'` (2026-10-24, macOS arm64, branch at `14125e4`). It
+leaked before this branch too.
+
+**Found by:** /qa-review on fix/ownership-move-tracking, 2026-10-24 — code-reviewer probe
+`scratch/gr/d.kl`; reviewer's evidence, not re-read.
