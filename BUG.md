@@ -4156,6 +4156,14 @@ again, which is Bug 132's loop-reassignment shape.
 
 **System:** ownership move tracking — `src/ownership/checker.zig`
 
+**Deferred:** after the move/clone design's § 7 step 2½ (`impl X: Copy`) and a selfhost
+migration to `ref` parameters — moving arguments alone made 10 selfhost files fail
+`klar check` with 253 `use_after_move` errors, each correct under the approved rules
+(Philip, 2026-10-24; `docs/decisions/2026-10-24-bug136-argument-half-deferred.md`). The
+receiver half waits for step 2¾. Reference implementation of the argument half: the
+`analyzeCall`/`analyzeMethodCall` moves in `fix/ownership-move-tracking`'s prototype,
+described in that decision record.
+
 **Description:** `analyzeCall` and `analyzeMethodCall` analyze every argument and mark
 none moved, so passing a non-Copy local to a by-value parameter leaves it owned. Klar's
 ownership docs (`docs/memory/ownership.md` § Move in Function Calls) say the call moves
@@ -4202,3 +4210,33 @@ the alias to `i32`, which is Copy.
 macOS arm64, `main` at `21a75b1`).
 
 **Found by:** writing the explicit move/clone design, 2026-10-24.
+
+---
+
+## [ ] Bug 138: A parameter is always treated as Copy, so moving one and then using it passes `klar check`
+
+**Status:** Open
+
+**System:** ownership move tracking — `src/ownership/checker.zig`
+
+**Deferred:** with Bug 136's argument half — tracking parameters by their type moves
+every non-Copy parameter the selfhost passes on by value, the same spread that deferred
+136 (`docs/decisions/2026-10-24-bug136-argument-half-deferred.md`).
+
+**Description:** `analyzeFunction`, `analyzeFunctionValue` and `analyzeClosure` define
+every parameter with `is_copy = true`, whatever its declared type, so `moveValue` never
+marks one moved. A `String` parameter handed to a `let` initializer, a `=` or a `return`
+stays usable afterwards. Klar's ownership docs (`docs/memory/ownership.md`) make no
+exception for parameters.
+
+**Steps to reproduce:**
+1. `fn f(s: String) -> i32 { let t: String = s`, `println(t.as_str())`,
+   `println(s.as_str())`, `return 0 }` and `fn main() -> i32 { return
+   f(String.from("abc")) }`.
+2. `klar check` it.
+
+**Expected:** `use_after_move` at the `s.as_str()` line.
+
+**Actual:** `All checks passed` (2026-10-24, macOS arm64, `main` at `9fb2889`).
+
+**Found by:** the ownership move tracking branch (Bugs 132, 135, 137), 2026-10-24.
