@@ -1466,3 +1466,43 @@ touching `src/meta_query.zig` · touching `src/ast.zig`
 
 **Found by:** /qa-audit 2026-09-04 File Growth ledger; moved from `PLAN.md` Next Up by the
 2026-09-22 re-triage rule, 2026-10-24.
+
+---
+
+## [ ] Debt 69: The version's pre-release branch is never exercised
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/version.zig`
+**Due when:** touching `src/version.zig` · before the first pre-release version in `build.zig.zon`
+
+**Description:** `build.zig.zon` is `0.6.0`, so only the plain branch of `version.string`
+runs. Nothing checks that a suffix gives `X.Y.Z-pre`, or that `producer` drops it, and the
+`run-args-tests.sh` producer check expects `Klar Compiler $zon_version` verbatim, so it
+would go red on a `0.7.0-dev` zon even though `producer` is right by design.
+
+**Payment:** Pull the parse-and-format into a helper that takes the version string; add a
+Zig unit test that formats `"0.7.0-dev"` and asserts `string == "0.7.0-dev"` and
+`producer == "Klar Compiler 0.7.0"`; make the script's producer check strip a suffix.
+
+**Found by:** /qa-review on chore/version-0.6.0, 2026-10-24 — test-checker, code-reviewer-a;
+reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 70: The install and REPL guides' sample versions are not checked
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `docs/getting-started/installation.md:140`, `docs/getting-started/installation.md:168`, `docs/getting-started/repl-guide.md:14`
+**Due when:** touching `docs/getting-started/installation.md` · touching `docs/getting-started/repl-guide.md` · touching `build.zig.zon`
+
+**Description:** `run-args-tests.sh` checks that `docs/README.md` names the
+`build.zig.zon` version, but not the sample output in these two guides, so the next
+version bump can leave them stale with every gate green.
+
+**Payment:** Extend the docs check in `scripts/run-args-tests.sh` to grep
+`Klar $zon_version` in `installation.md` and `Klar REPL v$zon_version` in `repl-guide.md`.
+
+**Found by:** /qa-review on chore/version-0.6.0, 2026-10-24 — test-checker; reviewer's
+reading, not re-verified.
