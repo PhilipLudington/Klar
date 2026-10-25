@@ -173,9 +173,10 @@ in user programs first, then checker/contract correctness, then tooling, then de
       does to `Eq`, and calling `a.clone()` directly becomes an error. No code until
       Philip approves the design. (Philip, 2026-10-18) (completed 2026-10-24:
       `docs/design/explicit-move-clone.md`, status Proposed, with four open questions in
-      its § 8; writing it found Bugs 136 and 137) WAITING ON PHILIP (asked 2026-10-24):
-      approve the design and answer its § 8 questions (is `string` Copy, does `return s`
-      need `move`, does a by-value `self` receiver move, may a user struct be Copy)
+      its § 8; writing it found Bugs 136 and 137; § 8 Q1–Q4 answered 2026-10-24,
+      `docs/decisions/2026-10-24-move-clone-open-questions.md`) WAITING ON PHILIP (asked
+      2026-10-24): approve the revised design and its receiver-marker spelling,
+      `(move b).finish()` (§ 8 Q5)
 
 **Crashes and wrong results in running programs**
 - [x] Native channels — Bug 90: a `Sender` reached by an index (`txs[0].send(v)`) or a `for`
