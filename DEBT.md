@@ -1345,3 +1345,124 @@ alias.
 
 **Found by:** /qa-review on fix/ownership-move-tracking, 2026-10-24 — test-checker GAPS;
 reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 62: `src/parser.zig` is 4697 raw lines, past the file-size limit
+
+**Status:** Open
+**Kind:** extraction
+**Where:** `src/parser.zig`
+**Due when:** touching `src/parser.zig` with more than a forwarder
+
+**Description:** Declarations, expressions and types are parsed in one file (3,593 code
+lines at `949fc4c`, 4,697 raw on 2026-10-24).
+
+**Payment:** Split by grammar family: declarations, expressions, types, one file each.
+
+**Found by:** /qa-audit 2026-09-04 File Growth ledger; moved from `PLAN.md` Next Up by the
+2026-09-22 re-triage rule, 2026-10-24.
+
+---
+
+## [ ] Debt 63: `src/interpreter.zig` is 3377 raw lines, past the file-size limit
+
+**Status:** Open
+**Kind:** extraction
+**Where:** `src/interpreter.zig`
+**Due when:** touching `src/interpreter.zig` with more than a forwarder
+
+**Description:** The builtins and `evalMethodCall` live beside the evaluator (2,644 code
+lines at `949fc4c`, 3,377 raw on 2026-10-24).
+
+**Payment:** Move the builtins and `evalMethodCall` to their own files.
+
+**Found by:** /qa-audit 2026-09-04 File Growth ledger; moved from `PLAN.md` Next Up by the
+2026-09-22 re-triage rule, 2026-10-24.
+
+---
+
+## [ ] Debt 64: `src/checker/method_calls.zig` is one 2,170-line function
+
+**Status:** Open
+**Kind:** extraction
+**Where:** `src/checker/method_calls.zig` `checkBuiltinMethod`
+**Due when:** touching `src/checker/method_calls.zig` with more than a forwarder
+
+**Description:** `checkBuiltinMethod` holds every builtin receiver's methods (2,219 code
+lines at `949fc4c`, 2,777 raw on 2026-10-24).
+
+**Payment:** Split `checkBuiltinMethod` by receiver family (string, collections, smart
+pointers, I/O handles).
+
+**Found by:** /qa-audit 2026-09-04 File Growth ledger; moved from `PLAN.md` Next Up by the
+2026-09-22 re-triage rule, 2026-10-24.
+
+---
+
+## [ ] Debt 65: `src/formatter.zig` is 2115 raw lines, past the file-size limit
+
+**Status:** Open
+**Kind:** extraction
+**Where:** `src/formatter.zig`
+**Due when:** touching `src/formatter.zig` with more than a forwarder
+
+**Description:** 1,798 code lines at `949fc4c`, 2,115 raw on 2026-10-24; no seam named yet.
+
+**Payment:** Name the seam when the file is next opened, then extract along it.
+
+**Found by:** /qa-audit 2026-09-04 File Growth ledger; moved from `PLAN.md` Next Up by the
+2026-09-22 re-triage rule, 2026-10-24.
+
+---
+
+## [ ] Debt 66: `src/vm.zig` is 2096 raw lines, with a 749-line `run`
+
+**Status:** Open
+**Kind:** extraction
+**Where:** `src/vm.zig` `run`, the string and array method dispatch
+**Due when:** touching `src/vm.zig` with more than a forwarder
+
+**Description:** 1,684 code lines at `949fc4c`, 2,096 raw on 2026-10-24.
+
+**Payment:** Move the string and array method dispatch out of `run` into their own file.
+
+**Found by:** /qa-audit 2026-09-04 File Growth ledger; moved from `PLAN.md` Next Up by the
+2026-09-22 re-triage rule, 2026-10-24.
+
+---
+
+## [ ] Debt 67: `stdlib/yaml.kl` and `stdlib/toml.kl` are past the file-size limit
+
+**Status:** Open
+**Kind:** extraction
+**Where:** `stdlib/yaml.kl`, `stdlib/toml.kl`
+**Due when:** touching `stdlib/yaml.kl` · touching `stdlib/toml.kl`
+
+**Description:** 1,499 and 1,353 code lines at `949fc4c`; 1,852 and 1,682 raw on
+2026-10-24.
+
+**Payment:** Split each into its parser and its stringify/accessor halves.
+
+**Found by:** /qa-audit 2026-09-04 File Growth ledger; moved from `PLAN.md` Next Up by the
+2026-09-22 re-triage rule, 2026-10-24.
+
+---
+
+## [ ] Debt 68: Seven source files sit just over the file-size limit
+
+**Status:** Open
+**Kind:** extraction
+**Where:** `src/ast_from_json.zig`, `src/compiler.zig`, `src/interop/kira_manifest.zig`,
+`src/lsp.zig`, `src/types.zig`, `src/meta_query.zig`, `src/ast.zig`
+**Due when:** touching `src/ast_from_json.zig` · touching `src/compiler.zig` · touching
+`src/interop/kira_manifest.zig` · touching `src/lsp.zig` · touching `src/types.zig` ·
+touching `src/meta_query.zig` · touching `src/ast.zig`
+
+**Description:** Each was 1,018–1,330 code lines at `949fc4c` (1,254–1,819 raw on
+2026-10-24).
+
+**Payment:** Take each one when a bug branch opens it; no seam named yet.
+
+**Found by:** /qa-audit 2026-09-04 File Growth ledger; moved from `PLAN.md` Next Up by the
+2026-09-22 re-triage rule, 2026-10-24.
