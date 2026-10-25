@@ -174,9 +174,13 @@ in user programs first, then checker/contract correctness, then tooling, then de
       Philip approves the design. (Philip, 2026-10-18) (completed 2026-10-24:
       `docs/design/explicit-move-clone.md`, status Proposed, with four open questions in
       its § 8; writing it found Bugs 136 and 137; § 8 Q1–Q4 answered 2026-10-24,
-      `docs/decisions/2026-10-24-move-clone-open-questions.md`) WAITING ON PHILIP (asked
-      2026-10-24): approve the revised design and its receiver-marker spelling,
-      `(move b).finish()` (§ 8 Q5)
+      `docs/decisions/2026-10-24-move-clone-open-questions.md`); approved 2026-10-24
+      (`docs/decisions/2026-10-24-move-clone-approved.md`)
+- [ ] Ownership move tracking — Bugs 135, 136 (argument half), 137, 132: move/clone
+      rollout step 1 (`docs/design/explicit-move-clone.md` § 7), the § 6 move-checker
+      prerequisites in `src/ownership/checker.zig`. Bug 136's receiver half waits for
+      step 2¾. Bugs 52 and 45, the other § 6 prerequisites, keep their own lines (CLI,
+      driver and LSP; Three-backend contract). (Philip, 2026-10-24: design approved)
 
 **Crashes and wrong results in running programs**
 - [x] Native channels — Bug 90: a `Sender` reached by an index (`txs[0].send(v)`) or a `for`
