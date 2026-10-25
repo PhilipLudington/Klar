@@ -4044,11 +4044,6 @@ exit-status half was fixed.
 
 **System:** ownership move tracking — `src/ownership/checker.zig`
 
-**Deferred:** after the current milestone — the four selfhost sources it hits are marked as
-expected failures in `scripts/run-selfhost-tests.sh` Phase 1 (`OWNERSHIP_XFAIL`), and
-`klar build` does not run the ownership pass (Bug 52), so no program fails to build.
-Philip's call, 2026-10-23: `docs/decisions/2026-10-23-ownership-errors-exit-1.md`.
-
 **Description:** Two shapes are reported as use-after-move when no use follows a move:
 1. A move inside a branch that returns. In `selfhost/checker_decl.kl:120`, `return c`
    sits in an `if` that ends the function, yet later uses of `c` on the fall-through path
@@ -4133,11 +4128,6 @@ reviewer's evidence, not re-read.
 
 **System:** ownership move tracking — `src/ownership/checker.zig`
 
-**Deferred:** after the current milestone — `klar build` and `klar run` skip the ownership
-pass (Bug 52), so no native program is affected; it should land before the explicit
-move/clone design (PLAN.md Next Up) is implemented, since that design relies on the
-checker refusing a use after a move.
-
 **Description:** The parser reads `b = a` as an `expr_stmt` holding a `binary` with op
 `assign` (`klar dump-ast`), so the ownership checker sees it in `analyzeBinary`, which
 analyzes both sides and marks nothing moved. `analyzeAssignment` is never reached for it.
@@ -4165,11 +4155,6 @@ again, which is Bug 132's loop-reassignment shape.
 **Status:** Open
 
 **System:** ownership move tracking — `src/ownership/checker.zig`
-
-**Deferred:** after the current milestone — `klar build` and `klar run` skip the ownership
-pass (Bug 52), so no native program is affected; it should land before the explicit
-move/clone design (`docs/design/explicit-move-clone.md` § 6) is implemented, since that
-design relies on the checker refusing a use after a move.
 
 **Description:** `analyzeCall` and `analyzeMethodCall` analyze every argument and mark
 none moved, so passing a non-Copy local to a by-value parameter leaves it owned. Klar's
@@ -4200,9 +4185,6 @@ would make every `s.clone()` a move.
 **Status:** Open
 
 **System:** ownership move tracking — `src/ownership/checker.zig`
-
-**Deferred:** after the current milestone — only `klar check` runs the ownership pass
-(Bug 52), so a native build of the program is unaffected; `klar check` wrongly exits 1.
 
 **Description:** `isCopyFromTypeExpr` decides Copy from the spelled type name. A name it
 does not list, such as `Id` from `type Id = i32`, falls to "user-defined structs:
