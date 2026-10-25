@@ -3,12 +3,11 @@
 > **Written for Claude.** Precise for a later session, not easy reading. To review
 > it, ask Claude to explain it in plain words and judge the explanation.
 
-> **Status:** Proposed, 2026-10-24; revised the same day with Philip's answers to the
-> four § 8 questions. Waiting on his approval of the revision and his answer to § 8 Q5
-> (the marker's spelling on a method receiver). No code is written against this design
-> until he approves it.
+> **Status:** Approved, 2026-10-24 (Philip); proposed and revised with his answers to
+> § 8 Q1–Q4 the same day, then approved with Q5 as recommended.
 > **Decisions:** [2026-10-18-explicit-move-clone](../decisions/2026-10-18-explicit-move-clone.md),
-> [2026-10-24-move-clone-open-questions](../decisions/2026-10-24-move-clone-open-questions.md)
+> [2026-10-24-move-clone-open-questions](../decisions/2026-10-24-move-clone-open-questions.md),
+> [2026-10-24-move-clone-approved](../decisions/2026-10-24-move-clone-approved.md)
 
 ---
 
@@ -119,7 +118,7 @@ let name: String = move person.name   // person.name is moved, person.age still 
 let copy: List#[i32] = clone self.items
 ```
 
-**On a method receiver** (§ 3, § 8 Q5 asks Philip to approve this spelling) the marker
+**On a method receiver** (§ 3; spelling approved 2026-10-24, § 8 Q5) the marker
 is the same prefix operator, parenthesized: `(move b).finish()` moves `b` into the
 by-value `self`; `(clone b).finish()` hands `finish` a copy and keeps `b`. Since postfix
 operations bind first, the unparenthesized `move b.finish()` means "move the result of
@@ -260,8 +259,10 @@ One PR per step, in order. Each step leaves `./run-tests.sh` green.
 ## 8. Questions for Philip
 
 Q1–Q4 decided by Philip on 2026-10-24
-([decision record](../decisions/2026-10-24-move-clone-open-questions.md)); each is kept
-below as asked, with its answer. Q5 is open.
+([decision record](../decisions/2026-10-24-move-clone-open-questions.md)), and Q5 the
+same day with his approval of the design
+([decision record](../decisions/2026-10-24-move-clone-approved.md)); each is kept below
+as asked, with its answer.
 
 - **Q1. Is the primitive `string` Copy?** **Decided: yes, Copy** (as recommended). Every
   `let b: string = a` stays bare, and runtime-built text is returned as an owned
@@ -294,7 +295,9 @@ below as asked, with its answer. Q5 is open.
   **Decided: allow `impl X: Copy`**, opt-in and checked field by field (§ 2, step 2½).
   With Q3's answer it is also what keeps `p.distance()` on a number-only struct from
   moving `p`. Rejected: no user Copy structs.
-- **Q5. How is the marker spelled on a method receiver?** (open; Q3's consequence)
+- **Q5. How is the marker spelled on a method receiver?** (Q3's consequence)
+  **Decided: the parenthesized prefix operator** (as recommended), `(move b).finish()`
+  and `(clone b).finish()`.
   *Recommendation: the existing prefix operator, parenthesized: `(move b).finish()` and
   `(clone b).finish()`* (§ 4). No new syntax, one meaning for `move`, and only the first
   link of a builder chain is marked. Its cost is the parentheses, on calls that, after
