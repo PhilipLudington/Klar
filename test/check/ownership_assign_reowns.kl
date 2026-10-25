@@ -1,0 +1,12 @@
+// Expected: check-pass
+// Bug 135: assigning a fresh value to a moved variable makes it owned again, so it can
+// be used after the assignment.
+
+fn main() -> i32 {
+    var a: String = String.from("abc")
+    let b: String = a
+    a = String.from("again")
+    println(a.as_str())
+    println(b.as_str())
+    return 0
+}

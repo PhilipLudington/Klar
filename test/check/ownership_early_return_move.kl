@@ -1,0 +1,19 @@
+// Expected: check-pass
+// Bug 132: a move inside a branch that ends in `return` never reaches the code after
+// the branch, so a later use on the fall-through path is not a use after move.
+
+fn pick(flag: bool) -> String {
+    let s: String = String.from("abc")
+    if flag {
+        let kept: String = s
+        return kept
+    }
+    println(s.as_str())
+    return s
+}
+
+fn main() -> i32 {
+    let r: String = pick(false)
+    println(r.as_str())
+    return 0
+}

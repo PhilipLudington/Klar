@@ -1,0 +1,12 @@
+// Expected: check-error use_after_move
+// Bug 135: a plain `b = a` assignment moves a non-Copy `a`, as a `let` initializer
+// does, so the moved-from name is unusable afterwards.
+
+fn main() -> i32 {
+    var a: String = String.from("abc")
+    var b: String = String.from("x")
+    b = a
+    println(b.as_str())
+    println(a.as_str())
+    return 0
+}

@@ -1,9 +1,10 @@
 // Expected: check-error use_after_move
-// Test that strings are non-Copy: assigning moves ownership (Bug 13 fix)
+// Test that String is non-Copy: assigning moves ownership (Bug 13 fix; `string` is
+// Copy since the design's § 8 Q1, so this uses `String`)
 
 fn main() -> i32 {
-    let s1: string = "hello"
-    let s2: string = s1
-    println(s1)
+    let s1: String = String.from("hello")
+    let s2: String = s1
+    println(s1.as_str())
     return 0
 }
