@@ -295,10 +295,10 @@ test/native/write_trait_basic.kl
 echo "Phase 1: Type checking selfhost/ stubs"
 echo "────────────────────────────────────────"
 
-# Known failures: the ownership checker reports false use-after-move errors in these
-# files (Bug 132). Each one must fail with ownership errors only; a file here that
-# passes, or fails some other way, fails the suite. Remove a name once Bug 132 fixes it.
-OWNERSHIP_XFAIL=" checker_decl checker module_resolver parser "
+# Known failures: files the ownership checker is expected to reject, each with
+# ownership errors only; a file here that passes, or fails some other way, fails the
+# suite. Empty since Bug 132's fix: every selfhost file passes `klar check`.
+OWNERSHIP_XFAIL=" "
 
 for f in "$SELFHOST_DIR"/*.kl; do
     [ -f "$f" ] || continue

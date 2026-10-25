@@ -4038,9 +4038,9 @@ exit-status half was fixed.
 
 ---
 
-## [ ] Bug 132: The ownership checker reports use-after-move after an early return and after a loop reassignment
+## [x] Bug 132: The ownership checker reports use-after-move after an early return and after a loop reassignment
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** ownership move tracking — `src/ownership/checker.zig`
 
@@ -4066,6 +4066,20 @@ Bug 49's fix (exit 0, unseen, before it).
 
 **Found by:** Builder on fix/bug-49-exit-status, 2026-10-23 — the selfhost suite went red
 once `klar check` exited 1 on ownership errors.
+
+**Fix:** branch states merge in `src/ownership/checker.zig` (`beginBranches`,
+`startBranch`, `endBranch`, `finishBranches`). Every in-scope variable's state is saved
+at an `if` or `match`, and each branch starts from it. A branch that ends in `return`
+drops its moves, and a variable moved at the end of any branch that falls through is
+moved afterwards. A `return` in a loop or closure body does not end the enclosing path.
+The loop shape had the same cause (`return p2` inside the loop's `if`), plus Bug 135's
+re-own on `p2 = advance(p2)`. All 21 selfhost files pass `klar check`, and the selfhost
+suite's `OWNERSHIP_XFAIL` list is empty.
+
+**Test:** `test/check/ownership_early_return_move.kl`, `ownership_loop_return_move.kl`,
+`ownership_match_return_move.kl`, `ownership_else_branch_fresh.kl`;
+`ownership_branch_move_persists.kl` pins that a move in a branch that falls through still
+counts.
 
 ---
 
@@ -4122,9 +4136,9 @@ reviewer's evidence, not re-read.
 
 ---
 
-## [ ] Bug 135: A plain `b = a` assignment never moves `a`, so the moved-from name stays usable
+## [x] Bug 135: A plain `b = a` assignment never moves `a`, so the moved-from name stays usable
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** ownership move tracking — `src/ownership/checker.zig`
 
@@ -4147,6 +4161,13 @@ again, which is Bug 132's loop-reassignment shape.
 `469d0fe`).
 
 **Found by:** the Bug 115 fix's probe of the remaining copies, 2026-10-23.
+
+**Fix:** `analyzeAssign` in `src/ownership/checker.zig` serves both the assignment
+statement and a `binary` with an assignment op. Plain `=` moves a bare non-Copy value
+through `moveValue`, the path that `let`, `var` and `return` use, and makes a variable
+target owned again, so assigning to a moved name is no error.
+
+**Test:** `test/check/ownership_assign_moves.kl`, `test/check/ownership_assign_reowns.kl`.
 
 ---
 
@@ -4188,9 +4209,9 @@ would make every `s.clone()` a move.
 
 ---
 
-## [ ] Bug 137: A variable of a type alias of a Copy type is treated as moved, so a later read is a false `use_after_move`
+## [x] Bug 137: A variable of a type alias of a Copy type is treated as moved, so a later read is a false `use_after_move`
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** ownership move tracking — `src/ownership/checker.zig`
 
@@ -4210,6 +4231,15 @@ the alias to `i32`, which is Copy.
 macOS arm64, `main` at `21a75b1`).
 
 **Found by:** writing the explicit move/clone design, 2026-10-24.
+
+**Fix:** the ownership pass takes Copy from the resolved type. `isCopyFromTypeExpr`
+resolves a name that is neither a primitive nor a known builtin through
+`OwnershipChecker.type_lookup`, which `main.zig`'s `ownershipTypeLookup` answers from the
+type checker, and asks `Type.isCopyType()`. Primitives come from `Primitive.fromName`, so
+`string` is Copy too (design § 8 Q1).
+
+**Test:** `test/check/ownership_alias_copy.kl`, `ownership_string_copy.kl`;
+`ownership_alias_move.kl` pins that an alias of `String` still moves.
 
 ---
 
