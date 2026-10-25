@@ -21,6 +21,11 @@ phase tasks. Bug fixes follow `~/.claude/rules/bug-format.md` § Fixing a bug: t
 test is committed first and seen failing, then the fix. Order: wrong results and crashes
 in user programs first, then checker/contract correctness, then tooling, then debt.
 
+- [x] Nightly CI red at 6acbb23 (Windows (full suite)) — `many_params` stack overflow
+      again, in the run before PR 82's 8M-stack fix merged —
+      https://github.com/PhilipLudington/Klar/actions/runs/40099558667 (found: nightly
+      2026-10-24) (completed 2026-10-24: already fixed by PR 82, 8bb8667, whose branch run
+      40027464427 was green on every job; main since then is docs only)
 - [x] Nightly CI red at 25bfe92 (Windows (full suite)) — selfhost checker parity
       `many_params` exits non-zero with no output (`selfhost-too-strict`): a stack overflow.
       Since f7cccf6 (Bug 5: every alloca in the entry block) the selfhost `checker_parity`
@@ -176,11 +181,18 @@ in user programs first, then checker/contract correctness, then tooling, then de
       its § 8; writing it found Bugs 136 and 137; § 8 Q1–Q4 answered 2026-10-24,
       `docs/decisions/2026-10-24-move-clone-open-questions.md`); approved 2026-10-24
       (`docs/decisions/2026-10-24-move-clone-approved.md`)
-- [ ] Ownership move tracking — Bugs 135, 136 (argument half), 137, 132: move/clone
-      rollout step 1 (`docs/design/explicit-move-clone.md` § 7), the § 6 move-checker
-      prerequisites in `src/ownership/checker.zig`. Bug 136's receiver half waits for
-      step 2¾. Bugs 52 and 45, the other § 6 prerequisites, keep their own lines (CLI,
-      driver and LSP; Three-backend contract). (Philip, 2026-10-24: design approved)
+- [x] Ownership move tracking — Bugs 135, 137, 132: move/clone rollout step 1
+      (`docs/design/explicit-move-clone.md` § 7), the § 6 move-checker prerequisites in
+      `src/ownership/checker.zig`. Bug 136 waits: its receiver half for step 2¾, its
+      argument half for step 2½ and a selfhost migration to `ref` parameters (Philip,
+      2026-10-24: it alone made 10 selfhost files fail `klar check`;
+      `docs/decisions/2026-10-24-bug136-argument-half-deferred.md`). Bugs 52 and 45, the
+      other § 6 prerequisites, keep their own lines (CLI, driver and LSP; Three-backend
+      contract). (Philip, 2026-10-24: design approved) (completed 2026-10-24: `if` and
+      `match` branches merge their move states and a branch ending in `return` keeps its
+      moves to itself; `=` moves its value and re-owns its target; Copy comes from the
+      type checker's resolved type, so aliases and `string` are Copy; every selfhost file
+      passes `klar check`)
 
 **Crashes and wrong results in running programs**
 - [x] Native channels — Bug 90: a `Sender` reached by an index (`txs[0].send(v)`) or a `for`

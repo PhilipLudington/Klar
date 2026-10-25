@@ -1296,3 +1296,52 @@ arms of `buildLinkCommand` to a `buildWindowsLinkArgs` helper (~50 lines).
 **Found by:** /qa-review on fix/windows-main-thread-stack, 2026-10-23 — file-size-checker
 (also seen on fix-bug-116-macos-sdk, fix-nightly-linux-libm); reviewer's reading, not
 re-verified.
+
+---
+
+## [ ] Debt 60: The ownership pass's move-before-define order has no regression test
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/ownership/checker.zig` `analyzeLet`/`analyzeVar` (~257, ~264)
+**Due when:** touching `src/ownership/checker.zig`
+
+**Description:** The Bugs 132/135/137 fix marks the initializer moved before defining the
+new name, because `value_state` is a pointer into the scope's `StringHashMapUnmanaged` and
+a define that grows the map would leave it dangling (the old order wrote the move through
+freed memory). No fixture has enough locals in one scope for the define to grow the map,
+so reverting the order turns no test red.
+
+**Payment:** `test/check/ownership_let_move_rehash.kl` (`// Expected: check-error
+use_after_move`): `let a: String = String.from("a")`, at least 7 `let xN: i32` locals, then
+`let b: String = a` and `println(a.as_str())`; the same with `var`. Break-check it by
+swapping the order back.
+
+**Found by:** /qa-review on fix/ownership-move-tracking, 2026-10-24 — test-checker;
+reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 61: The ownership pass's branch merge, assignment and Copy lookup have unpinned edge cases
+
+**Status:** Open
+**Kind:** test-gap
+**Where:** `src/ownership/checker.zig` (`endBranch`/`finishBranches` ~652-684, loop and closure `returned` restore ~498-526, `analyzeAssign` ~462-483, `isCopyFromTypeExpr` ~150), `src/main.zig` `ownershipTypeLookup`
+**Due when:** touching `src/ownership/checker.zig`
+
+**Description:** Every current fixture would pass with a "first branch wins" merge. Unpinned:
+a move only in the `else` or a later `match` arm; a re-own in one branch only (must still
+error after); `match` arms starting fresh; a `return` inside a loop or closure within a
+moving branch not ending the outer path; an `if`/`else` where both sides return setting
+`returned`; compound assignment (no move, target read) and `a = a`; a user struct without
+Copy, a user enum and a type parameter `T` still moving through the new resolved-type
+lookup; an alias imported from another module.
+
+**Payment:** `klar check` fixtures per case, as the test-checker's GAPS list in
+`~/.claude/qa-reviews/Klar/fix-ownership-move-tracking/qa-review-report.md` names them
+(e.g. `ownership_else_move_persists.kl`, `ownership_match_arm_fresh.kl`,
+`ownership_struct_move.kl`, `ownership_enum_move.kl`), plus a module test for the imported
+alias.
+
+**Found by:** /qa-review on fix/ownership-move-tracking, 2026-10-24 — test-checker GAPS;
+reviewer's reading, not re-verified.

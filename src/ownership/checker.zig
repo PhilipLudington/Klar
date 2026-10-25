@@ -50,6 +50,24 @@ pub const OwnershipError = struct {
 // Ownership Checker
 // ============================================================================
 
+/// Resolves a named type to the type checker's view of it, so Copy is decided on the
+/// resolved type rather than the spelling (Bug 137: `type Id = i32` is Copy).
+pub const TypeLookup = struct {
+    ctx: *anyopaque,
+    lookupFn: *const fn (ctx: *anyopaque, name: []const u8) ?Type,
+
+    pub fn lookup(self: TypeLookup, name: []const u8) ?Type {
+        return self.lookupFn(self.ctx, name);
+    }
+};
+
+/// One variable's move state, saved at a branch so each branch starts from it.
+const SavedState = struct {
+    vs: *VariableState,
+    state: OwnershipState,
+    move_span: ?Span,
+};
+
 /// Performs ownership analysis on a typed AST.
 /// Detects use-after-move, borrow conflicts, and other ownership violations.
 pub const OwnershipChecker = struct {
@@ -59,6 +77,10 @@ pub const OwnershipChecker = struct {
     global_scope: OwnershipScope,
     scope_arena: std.heap.ArenaAllocator,
     message_arena: std.heap.ArenaAllocator,
+    type_lookup: ?TypeLookup,
+    /// Set by a `return` and cleared at each branch, so a branch that ends in `return`
+    /// keeps its moves to itself (Bug 132).
+    returned: bool,
 
     pub fn init(allocator: Allocator) OwnershipChecker {
         // NOTE: Do NOT set current_scope here! The struct is returned by value,
@@ -71,6 +93,8 @@ pub const OwnershipChecker = struct {
             .global_scope = OwnershipScope.init(allocator, null, .global),
             .scope_arena = std.heap.ArenaAllocator.init(allocator),
             .message_arena = std.heap.ArenaAllocator.init(allocator),
+            .type_lookup = null,
+            .returned = false,
         };
     }
 
@@ -99,46 +123,44 @@ pub const OwnershipChecker = struct {
         return ty.isCopyType();
     }
 
-    /// Determine if a type expression represents a Copy type.
-    /// Uses the syntactic type expression since resolved types aren't available
-    /// in the ownership pass. Primitives and references are Copy; structs,
-    /// strings, smart pointers, and closures are not.
+    /// Determine if a type expression represents a Copy type, by the design's § 2
+    /// table (`docs/design/explicit-move-clone.md`): primitives (`string` among them)
+    /// and references are Copy; `String`, collections, smart pointers, closures, user
+    /// enums and user structs without `is_copy` are not. A name that is neither a
+    /// primitive nor a known builtin is resolved through `type_lookup`, so an alias is
+    /// as Copy as the type it names (Bug 137); with no lookup, or a name it cannot
+    /// resolve (a type parameter), it is not Copy.
     pub fn isCopyTypeExpr(self: *OwnershipChecker, type_expr: ast.TypeExpr) bool {
-        _ = self;
-        return isCopyFromTypeExpr(type_expr);
+        return isCopyFromTypeExpr(type_expr, self.type_lookup);
     }
 
-    fn isCopyFromTypeExpr(type_expr: ast.TypeExpr) bool {
+    fn isCopyFromTypeExpr(type_expr: ast.TypeExpr, type_lookup: ?TypeLookup) bool {
         switch (type_expr) {
             .named => |n| {
-                // Primitive types are Copy
-                const copy_types = [_][]const u8{
-                    "i8",  "i16", "i32",  "i64",  "u8",   "u16",   "u32",   "u64",
-                    "f32", "f64", "bool", "char", "void", "usize", "isize",
-                };
-                for (copy_types) |ct| {
-                    if (std.mem.eql(u8, n.name, ct)) return true;
-                }
+                if (types.Primitive.fromName(n.name) != null) return true;
+                if (std.mem.eql(u8, n.name, "void")) return true;
                 // Non-Copy named types
                 const non_copy_types = [_][]const u8{
-                    "String", "string", "Rc",        "Arc",       "List", "Map", "Set",
-                    "File",   "Path",   "BufReader", "BufWriter",
+                    "String", "Rc",        "Arc",       "List", "Map", "Set",
+                    "File",   "Path",      "BufReader", "BufWriter",
                 };
                 for (non_copy_types) |nct| {
                     if (std.mem.eql(u8, n.name, nct)) return false;
                 }
-                // User-defined structs: conservatively not Copy
+                if (type_lookup) |tl| {
+                    if (tl.lookup(n.name)) |ty| return ty.isCopyType();
+                }
                 return false;
             },
             .reference => return true,
-            .array => |a| return isCopyFromTypeExpr(a.element),
+            .array => |a| return isCopyFromTypeExpr(a.element, type_lookup),
             .tuple => |t| {
                 for (t.elements) |elem| {
-                    if (!isCopyFromTypeExpr(elem)) return false;
+                    if (!isCopyFromTypeExpr(elem, type_lookup)) return false;
                 }
                 return true;
             },
-            .optional => |o| return isCopyFromTypeExpr(o.inner),
+            .optional => |o| return isCopyFromTypeExpr(o.inner, type_lookup),
             .function => return false,
             .extern_function => return true,
             .generic_apply => return false, // Generic types (Rc[T], etc.) conservatively not Copy
@@ -166,6 +188,7 @@ pub const OwnershipChecker = struct {
         // Push function scope
         try self.pushScope(.function);
         defer self.popScope();
+        self.returned = false;
 
         // Define parameters as owned variables
         for (func.params) |param| {
@@ -187,6 +210,7 @@ pub const OwnershipChecker = struct {
     fn analyzeFunctionValue(self: *OwnershipChecker, func: ast.FunctionDecl) !void {
         try self.pushScope(.function);
         defer self.popScope();
+        self.returned = false;
 
         for (func.params) |param| {
             try self.defineVariable(param.name, .unknown, param.span, true);
@@ -230,24 +254,23 @@ pub const OwnershipChecker = struct {
         // Determine Copy status from the declared type expression
         const is_copy = self.isCopyTypeExpr(let_decl.type_);
 
-        // Define the new variable
+        // Move before defining: a define can grow the scope's map, which would leave
+        // `value_state` pointing at freed memory when both names share a scope.
+        if (!is_copy) moveValue(value_state, let_decl.span);
         try self.defineVariable(let_decl.name, .unknown, let_decl.span, is_copy);
-
-        self.moveInitializer(value_state, is_copy, let_decl.span);
     }
 
     fn analyzeVar(self: *OwnershipChecker, var_decl: *ast.VarDecl) !void {
         const value_state = try self.analyzeExpr(var_decl.value);
         const is_copy = self.isCopyTypeExpr(var_decl.type_);
+        if (!is_copy) moveValue(value_state, var_decl.span);
         try self.defineVariable(var_decl.name, .unknown, var_decl.span, is_copy);
-        self.moveInitializer(value_state, is_copy, var_decl.span);
     }
 
-    /// A `let` or `var` initializer moves a non-Copy owned variable into the new binding,
-    /// whatever the binding kind (Bug 115).
-    fn moveInitializer(self: *OwnershipChecker, value_state: ?*VariableState, is_copy: bool, span: Span) void {
-        _ = self;
-        if (is_copy) return;
+    /// Every consuming position the pass tracks — a `let`/`var` initializer (Bug 115),
+    /// the right side of `=` (Bug 135), a `return` — moves the non-Copy owned variable
+    /// it names through this one function.
+    fn moveValue(value_state: ?*VariableState, span: Span) void {
         if (value_state) |vs| {
             if (!vs.is_copy and vs.state == .owned) {
                 vs.markMoved(span);
@@ -256,31 +279,55 @@ pub const OwnershipChecker = struct {
     }
 
     fn analyzeAssignment(self: *OwnershipChecker, assign: *ast.Assignment) !void {
-        // Check the target
-        const target_state = try self.analyzeExpr(assign.target);
+        try self.analyzeAssign(assign.target, assign.op, assign.value, assign.span);
+    }
 
-        // Check if target is borrowed
+    /// `target = value` and the compound forms, whether the parser gave an assignment
+    /// statement or a `binary` with an assignment op (Bug 135). Plain `=` moves a
+    /// variable named on the right and makes a variable target owned again, so a moved
+    /// name can be reassigned and then used (Bug 132's `p2 = advance(p2)`).
+    fn analyzeAssign(self: *OwnershipChecker, target: ast.Expr, op: ast.BinaryOp, value: ast.Expr, span: Span) !void {
+        const value_state = try self.analyzeExpr(value);
+
+        // Writing a whole variable reads nothing from it, so a moved one may be assigned.
+        const target_state = if (op == .assign and target == .identifier)
+            self.current_scope.lookup(target.identifier.name)
+        else
+            try self.analyzeExpr(target);
+
         if (target_state) |ts| {
             if (ts.state == .borrowed or ts.state == .borrowed_mut) {
-                self.addError(.assign_to_borrowed, assign.span, "cannot assign to borrowed variable '{s}'", .{ts.name});
+                self.addError(.assign_to_borrowed, span, "cannot assign to borrowed variable '{s}'", .{ts.name});
             }
         }
 
-        // Analyze the value being assigned
-        _ = try self.analyzeExpr(assign.value);
+        if (op != .assign) return;
+        if (value_state != target_state) moveValue(value_state, span);
+        if (target == .identifier) {
+            if (target_state) |ts| {
+                if (ts.state == .moved) {
+                    ts.state = .owned;
+                    ts.move_span = null;
+                }
+            }
+        }
     }
 
     fn analyzeWhile(self: *OwnershipChecker, while_stmt: *ast.WhileLoop) !void {
         _ = try self.analyzeExpr(while_stmt.condition);
 
+        // The body may run zero times, so a `return` in it does not end the path.
+        const outer_returned = self.returned;
         try self.pushScope(.loop);
         try self.analyzeBlock(while_stmt.body);
         self.popScope();
+        self.returned = outer_returned;
     }
 
     fn analyzeFor(self: *OwnershipChecker, for_stmt: *ast.ForLoop) !void {
         _ = try self.analyzeExpr(for_stmt.iterable);
 
+        const outer_returned = self.returned;
         try self.pushScope(.loop);
 
         // Define loop variable based on pattern
@@ -291,12 +338,16 @@ pub const OwnershipChecker = struct {
 
         try self.analyzeBlock(for_stmt.body);
         self.popScope();
+        self.returned = outer_returned;
     }
 
     fn analyzeLoop(self: *OwnershipChecker, loop_stmt: *ast.LoopStmt) !void {
+        // A `break` leaves a `loop`, so a `return` in its body does not end the path.
+        const outer_returned = self.returned;
         try self.pushScope(.loop);
         try self.analyzeBlock(loop_stmt.body);
         self.popScope();
+        self.returned = outer_returned;
     }
 
     fn analyzeReturn(self: *OwnershipChecker, return_stmt: *ast.ReturnStmt) !void {
@@ -304,12 +355,9 @@ pub const OwnershipChecker = struct {
             const value_state = try self.analyzeExpr(value);
 
             // If returning a variable, it's being moved out
-            if (value_state) |vs| {
-                if (!vs.is_copy and vs.state == .owned) {
-                    vs.markMoved(return_stmt.span);
-                }
-            }
+            moveValue(value_state, return_stmt.span);
         }
+        self.returned = true;
     }
 
     fn analyzeBlock(self: *OwnershipChecker, block: *ast.Block) error{OutOfMemory}!void {
@@ -411,6 +459,13 @@ pub const OwnershipChecker = struct {
     }
 
     fn analyzeBinary(self: *OwnershipChecker, binary: *ast.Binary) !?*VariableState {
+        switch (binary.op) {
+            .assign, .add_assign, .sub_assign, .mul_assign, .div_assign, .mod_assign => {
+                try self.analyzeAssign(binary.left, binary.op, binary.right, binary.span);
+                return null;
+            },
+            else => {},
+        }
         _ = try self.analyzeExpr(binary.left);
         _ = try self.analyzeExpr(binary.right);
         return null;
@@ -498,10 +553,16 @@ pub const OwnershipChecker = struct {
     fn analyzeIfStmt(self: *OwnershipChecker, if_stmt: *ast.IfStmt) !void {
         _ = try self.analyzeExpr(if_stmt.condition);
 
+        var merge = try self.beginBranches();
+        defer merge.deinit(self.allocator);
+
+        try self.startBranch(&merge);
         try self.pushScope(.conditional);
         try self.analyzeBlock(if_stmt.then_branch);
         self.popScope();
+        try self.endBranch(&merge);
 
+        try self.startBranch(&merge);
         if (if_stmt.else_branch) |else_branch| {
             try self.pushScope(.conditional);
             switch (else_branch.*) {
@@ -510,16 +571,99 @@ pub const OwnershipChecker = struct {
             }
             self.popScope();
         }
+        // With no `else`, this empty branch is the path that skips the `if`.
+        try self.endBranch(&merge);
+
+        self.finishBranches(&merge);
     }
 
     fn analyzeMatchStmt(self: *OwnershipChecker, match_stmt: *ast.MatchStmt) !void {
         _ = try self.analyzeExpr(match_stmt.subject);
 
+        var merge = try self.beginBranches();
+        defer merge.deinit(self.allocator);
+
         for (match_stmt.arms) |arm| {
+            try self.startBranch(&merge);
             try self.pushScope(.conditional);
             try self.analyzeBlock(arm.body);
             self.popScope();
+            try self.endBranch(&merge);
         }
+
+        self.finishBranches(&merge);
+    }
+
+    // ========================================================================
+    // Branch Merging (Bug 132)
+    // ========================================================================
+
+    /// The move states of every variable in scope when a set of branches begins, and
+    /// the merged result over the branches that fall through to the code after them.
+    const BranchMerge = struct {
+        saved: std.ArrayListUnmanaged(SavedState),
+        merged: std.ArrayListUnmanaged(SavedState),
+        fallthrough: usize,
+        outer_returned: bool,
+
+        fn deinit(self: *BranchMerge, allocator: Allocator) void {
+            self.saved.deinit(allocator);
+            self.merged.deinit(allocator);
+        }
+    };
+
+    fn beginBranches(self: *OwnershipChecker) !BranchMerge {
+        var merge = BranchMerge{
+            .saved = .empty,
+            .merged = .empty,
+            .fallthrough = 0,
+            .outer_returned = self.returned,
+        };
+        var scope: ?*OwnershipScope = self.current_scope;
+        while (scope) |s| : (scope = s.parent) {
+            if (s.variables.capacity() == 0) continue;
+            var it = s.variables.valueIterator();
+            while (it.next()) |vs| {
+                try merge.saved.append(self.allocator, .{ .vs = vs, .state = vs.state, .move_span = vs.move_span });
+            }
+        }
+        try merge.merged.appendSlice(self.allocator, merge.saved.items);
+        return merge;
+    }
+
+    /// Each branch starts from the states the branches began with.
+    fn startBranch(self: *OwnershipChecker, merge: *BranchMerge) !void {
+        for (merge.saved.items) |s| {
+            s.vs.state = s.state;
+            s.vs.move_span = s.move_span;
+        }
+        self.returned = false;
+    }
+
+    /// A branch that ended in `return` never reaches the code after the branches, so its
+    /// moves are dropped. A variable moved at the end of any branch that falls through is
+    /// moved afterwards; one every such branch left owned (reassigned) is owned.
+    fn endBranch(self: *OwnershipChecker, merge: *BranchMerge) !void {
+        if (self.returned) return;
+        const first = merge.fallthrough == 0;
+        merge.fallthrough += 1;
+        for (merge.merged.items) |*m| {
+            if (first or m.vs.state == .moved) {
+                m.state = m.vs.state;
+                m.move_span = m.vs.move_span;
+            }
+        }
+    }
+
+    /// When no branch falls through, the code after them is unreachable, and the states
+    /// stay as they began.
+    fn finishBranches(self: *OwnershipChecker, merge: *BranchMerge) void {
+        const result = if (merge.fallthrough == 0) merge.saved.items else merge.merged.items;
+        for (result) |s| {
+            s.vs.state = s.state;
+            s.vs.move_span = s.move_span;
+        }
+        self.returned = merge.outer_returned or merge.fallthrough == 0;
     }
 
     fn analyzeBlockExpr(self: *OwnershipChecker, block: *ast.Block) !?*VariableState {
@@ -528,12 +672,15 @@ pub const OwnershipChecker = struct {
     }
 
     fn analyzeClosure(self: *OwnershipChecker, closure: *ast.Closure) !?*VariableState {
+        // A `return` in the closure ends the closure, not the enclosing path.
+        const outer_returned = self.returned;
         try self.pushScope(.function);
         for (closure.params) |param| {
             try self.defineVariable(param.name, .unknown, param.span, true);
         }
         _ = try self.analyzeExpr(closure.body);
         self.popScope();
+        self.returned = outer_returned;
         return null;
     }
 

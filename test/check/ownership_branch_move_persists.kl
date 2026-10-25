@@ -1,0 +1,14 @@
+// Expected: check-error use_after_move
+// Bug 132's merge keeps real moves: a move in a branch that falls through (here, an
+// `if` with no `else`) still makes a later read a use after move.
+
+fn main() -> i32 {
+    let a: String = String.from("abc")
+    let flag: bool = true
+    if flag {
+        let b: String = a
+        println(b.as_str())
+    }
+    println(a.as_str())
+    return 0
+}

@@ -1,0 +1,24 @@
+// Expected: check-pass
+// Bug 132: a `match` arm that moves and returns keeps its move to itself, so the read
+// after the `match` is not a use after move.
+
+fn pick(n: i32) -> String {
+    let s: String = String.from("abc")
+    match n {
+        0 => {
+            let kept: String = s
+            return kept
+        }
+        _ => {
+            println("other")
+        }
+    }
+    println(s.as_str())
+    return s
+}
+
+fn main() -> i32 {
+    let r: String = pick(1)
+    println(r.as_str())
+    return 0
+}

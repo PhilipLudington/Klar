@@ -1,0 +1,13 @@
+// Expected: check-pass
+// Bug 137: a type alias of a Copy type is Copy, so a `let` initializer copies it and
+// the source stays usable.
+
+type Id = i32
+
+fn main() -> i32 {
+    let a: Id = 1
+    let b: Id = a
+    println(a.to_string())
+    println(b.to_string())
+    return 0
+}

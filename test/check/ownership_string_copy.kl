@@ -1,0 +1,11 @@
+// Expected: check-pass
+// `string` is Copy (docs/design/explicit-move-clone.md § 8 Q1): the ownership pass
+// takes Copy from the resolved type, so a `let` initializer copies a `string`.
+
+fn main() -> i32 {
+    let s1: string = "hello"
+    let s2: string = s1
+    println(s1)
+    println(s2)
+    return 0
+}

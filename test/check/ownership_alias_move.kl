@@ -1,0 +1,13 @@
+// Expected: check-error use_after_move
+// Bug 137: a type alias of a non-Copy type is not Copy, so a `let` initializer still
+// moves it.
+
+type Name = String
+
+fn main() -> i32 {
+    let a: Name = String.from("abc")
+    let b: Name = a
+    println(b.as_str())
+    println(a.as_str())
+    return 0
+}

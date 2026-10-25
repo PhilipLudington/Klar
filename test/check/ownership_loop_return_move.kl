@@ -1,0 +1,23 @@
+// Expected: check-pass
+// Bug 132: `return cur` inside a loop's `if` ends that path, so the reassignment and
+// read of `cur` after the `if` are not uses after move.
+
+fn find(n: i32) -> String {
+    var cur: String = String.from("start")
+    var i: i32 = 0
+    while i < n {
+        if i == 3 {
+            return cur
+        }
+        println(cur.as_str())
+        cur = String.from("next")
+        i = i + 1
+    }
+    return cur
+}
+
+fn main() -> i32 {
+    let r: String = find(5)
+    println(r.as_str())
+    return 0
+}

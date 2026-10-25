@@ -4038,9 +4038,9 @@ exit-status half was fixed.
 
 ---
 
-## [ ] Bug 132: The ownership checker reports use-after-move after an early return and after a loop reassignment
+## [x] Bug 132: The ownership checker reports use-after-move after an early return and after a loop reassignment
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** ownership move tracking — `src/ownership/checker.zig`
 
@@ -4066,6 +4066,20 @@ Bug 49's fix (exit 0, unseen, before it).
 
 **Found by:** Builder on fix/bug-49-exit-status, 2026-10-23 — the selfhost suite went red
 once `klar check` exited 1 on ownership errors.
+
+**Fix:** branch states merge in `src/ownership/checker.zig` (`beginBranches`,
+`startBranch`, `endBranch`, `finishBranches`). Every in-scope variable's state is saved
+at an `if` or `match`, and each branch starts from it. A branch that ends in `return`
+drops its moves, and a variable moved at the end of any branch that falls through is
+moved afterwards. A `return` in a loop or closure body does not end the enclosing path.
+The loop shape had the same cause (`return p2` inside the loop's `if`), plus Bug 135's
+re-own on `p2 = advance(p2)`. All 21 selfhost files pass `klar check`, and the selfhost
+suite's `OWNERSHIP_XFAIL` list is empty.
+
+**Test:** `test/check/ownership_early_return_move.kl`, `ownership_loop_return_move.kl`,
+`ownership_match_return_move.kl`, `ownership_else_branch_fresh.kl`;
+`ownership_branch_move_persists.kl` pins that a move in a branch that falls through still
+counts.
 
 ---
 
@@ -4122,9 +4136,9 @@ reviewer's evidence, not re-read.
 
 ---
 
-## [ ] Bug 135: A plain `b = a` assignment never moves `a`, so the moved-from name stays usable
+## [x] Bug 135: A plain `b = a` assignment never moves `a`, so the moved-from name stays usable
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** ownership move tracking — `src/ownership/checker.zig`
 
@@ -4148,6 +4162,13 @@ again, which is Bug 132's loop-reassignment shape.
 
 **Found by:** the Bug 115 fix's probe of the remaining copies, 2026-10-23.
 
+**Fix:** `analyzeAssign` in `src/ownership/checker.zig` serves both the assignment
+statement and a `binary` with an assignment op. Plain `=` moves a bare non-Copy value
+through `moveValue`, the path that `let`, `var` and `return` use, and makes a variable
+target owned again, so assigning to a moved name is no error.
+
+**Test:** `test/check/ownership_assign_moves.kl`, `test/check/ownership_assign_reowns.kl`.
+
 ---
 
 ## [ ] Bug 136: An argument to a by-value parameter never moves, so the moved-from name stays usable
@@ -4155,6 +4176,14 @@ again, which is Bug 132's loop-reassignment shape.
 **Status:** Open
 
 **System:** ownership move tracking — `src/ownership/checker.zig`
+
+**Deferred:** after the move/clone design's § 7 step 2½ (`impl X: Copy`) and a selfhost
+migration to `ref` parameters — moving arguments alone made 10 selfhost files fail
+`klar check` with 253 `use_after_move` errors, each correct under the approved rules
+(Philip, 2026-10-24; `docs/decisions/2026-10-24-bug136-argument-half-deferred.md`). The
+receiver half waits for step 2¾. Reference implementation of the argument half: the
+`analyzeCall`/`analyzeMethodCall` moves in `fix/ownership-move-tracking`'s prototype,
+described in that decision record.
 
 **Description:** `analyzeCall` and `analyzeMethodCall` analyze every argument and mark
 none moved, so passing a non-Copy local to a by-value parameter leaves it owned. Klar's
@@ -4180,9 +4209,9 @@ would make every `s.clone()` a move.
 
 ---
 
-## [ ] Bug 137: A variable of a type alias of a Copy type is treated as moved, so a later read is a false `use_after_move`
+## [x] Bug 137: A variable of a type alias of a Copy type is treated as moved, so a later read is a false `use_after_move`
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** ownership move tracking — `src/ownership/checker.zig`
 
@@ -4202,3 +4231,75 @@ the alias to `i32`, which is Copy.
 macOS arm64, `main` at `21a75b1`).
 
 **Found by:** writing the explicit move/clone design, 2026-10-24.
+
+**Fix:** the ownership pass takes Copy from the resolved type. `isCopyFromTypeExpr`
+resolves a name that is neither a primitive nor a known builtin through
+`OwnershipChecker.type_lookup`, which `main.zig`'s `ownershipTypeLookup` answers from the
+type checker, and asks `Type.isCopyType()`. Primitives come from `Primitive.fromName`, so
+`string` is Copy too (design § 8 Q1).
+
+**Test:** `test/check/ownership_alias_copy.kl`, `ownership_string_copy.kl`;
+`ownership_alias_move.kl` pins that an alias of `String` still moves.
+
+---
+
+## [ ] Bug 138: A parameter is always treated as Copy, so moving one and then using it passes `klar check`
+
+**Status:** Open
+
+**System:** ownership move tracking — `src/ownership/checker.zig`
+
+**Deferred:** with Bug 136's argument half — tracking parameters by their type moves
+every non-Copy parameter the selfhost passes on by value, the same spread that deferred
+136 (`docs/decisions/2026-10-24-bug136-argument-half-deferred.md`).
+
+**Description:** `analyzeFunction`, `analyzeFunctionValue` and `analyzeClosure` define
+every parameter with `is_copy = true`, whatever its declared type, so `moveValue` never
+marks one moved. A `String` parameter handed to a `let` initializer, a `=` or a `return`
+stays usable afterwards. Klar's ownership docs (`docs/memory/ownership.md`) make no
+exception for parameters.
+
+**Steps to reproduce:**
+1. `fn f(s: String) -> i32 { let t: String = s`, `println(t.as_str())`,
+   `println(s.as_str())`, `return 0 }` and `fn main() -> i32 { return
+   f(String.from("abc")) }`.
+2. `klar check` it.
+
+**Expected:** `use_after_move` at the `s.as_str()` line.
+
+**Actual:** `All checks passed` (2026-10-24, macOS arm64, `main` at `9fb2889`).
+
+**Found by:** the ownership move tracking branch (Bugs 132, 135, 137), 2026-10-24.
+
+---
+
+## [ ] Bug 139: A move before `break` or `continue` leaks into the rest of the loop body, a false `use_after_move`
+
+**Status:** Open
+
+**System:** ownership move tracking — `src/ownership/checker.zig`
+
+**Deferred:** after the explicit move/clone rollout's step 1 — it rejects correct code only
+when a branch that moves ends in `break` or `continue`, and no selfhost file or test hits it.
+
+**Description:** `analyzeStmt` treats `.break_stmt` and `.continue_stmt` as no-ops, so they
+do not end a branch's path the way `return` does since Bug 132's fix. A move inside an
+`if` branch that ends in `continue` (or `break`) is merged into the state after the `if`,
+and a later read of the moved-from name in the same loop body is reported as
+`use_after_move` although that read never follows the move. The fix direction: set
+`returned` (or a sibling flag scoped to the loop) on `break`/`continue`.
+
+**Steps to reproduce:**
+1. `fn main() -> i32 { let a: String = String.from("x")`, `var i: i32 = 0`,
+   `while i < 3 { if i == 1 { let b: String = a`, `println(b.as_str())`, `continue }`,
+   `println(a.as_str())`, `i = i + 1 }`, `return 0 }`.
+2. `klar check` it.
+
+**Expected:** `All checks passed` (the read of `a` on the fall-through path never follows the
+move; a second iteration reaching the move again is a separate loop-carried question).
+
+**Actual:** `10:17 use_after_move 'a'` (2026-10-24, macOS arm64, branch at `14125e4`). It
+leaked before this branch too.
+
+**Found by:** /qa-review on fix/ownership-move-tracking, 2026-10-24 — code-reviewer probe
+`scratch/gr/d.kl`; reviewer's evidence, not re-read.

@@ -214,6 +214,10 @@ needs the checker to reject a use after `move`. Open at 2026-10-24:
 One PR per step, in order. Each step leaves `./run-tests.sh` green.
 
 1. **The prerequisite bugs** of § 6, Bug 136's receiver half excepted (step 2¾).
+   Bug 136's argument half is excepted too: it alone made 10 selfhost files fail
+   `klar check`, so it lands after step 2½ and a selfhost migration to `ref`
+   parameters, its exact slot not yet set
+   (`docs/decisions/2026-10-24-bug136-argument-half-deferred.md`).
 2. **Accept both markers, optional.** Lexer, both parsers, `dump-ast`, typed AST, the
    type checker (`move` on a place, `clone` needs `Clone`), the ownership pass (a `move`
    node marks its place moved), and the three backends. A bare use still compiles. The

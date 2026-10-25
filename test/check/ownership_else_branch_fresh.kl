@@ -1,0 +1,15 @@
+// Expected: check-pass
+// Bug 132: each branch of an `if` starts from the states before it, so a move in the
+// `then` branch does not make the `else` branch's read a use after move.
+
+fn main() -> i32 {
+    let a: String = String.from("abc")
+    let flag: bool = true
+    if flag {
+        let b: String = a
+        println(b.as_str())
+    } else {
+        println(a.as_str())
+    }
+    return 0
+}

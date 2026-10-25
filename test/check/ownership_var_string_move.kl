@@ -1,10 +1,10 @@
 // Expected: check-error use_after_move
-// Test that let-bound strings trigger move on reassignment (Bug 14 fix)
-// The drop inserter now correctly identifies string as non-Copy.
+// Test that let-bound Strings trigger move on reassignment (Bug 14 fix; `string` is
+// Copy since the design's § 8 Q1, so this uses `String`)
 
 fn main() -> i32 {
-    let a: string = "world"
-    let b: string = a
-    let c: string = a
+    let a: String = String.from("world")
+    let b: String = a
+    let c: String = a
     return 0
 }

@@ -4652,6 +4652,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
     // Ownership analysis
     var ownership_checker = ownership.OwnershipChecker.init(allocator);
     defer ownership_checker.deinit();
+    ownership_checker.type_lookup = .{ .ctx = &checker, .lookupFn = ownershipTypeLookup };
 
     ownership_checker.analyze(module) catch |err| {
         const msg = std.fmt.bufPrint(&buf, "Ownership analysis error: {}\n", .{err}) catch "Ownership analysis error\n";
@@ -4704,6 +4705,15 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
     }
 
     if (ownership_checker.hasErrors()) return error.CommandFailed;
+}
+
+/// Gives the ownership pass the type checker's resolved type for a type name, so an
+/// alias or a struct is judged Copy as the type checker judges it (Bug 137).
+fn ownershipTypeLookup(ctx: *anyopaque, name: []const u8) ?types.Type {
+    const tc: *TypeChecker = @ptrCast(@alignCast(ctx));
+    const sym = tc.lookupSymbolAcrossModules(name) orelse return null;
+    if (sym.kind != .type_) return null;
+    return sym.type_;
 }
 
 fn bindRuntimeImportsForModule(
