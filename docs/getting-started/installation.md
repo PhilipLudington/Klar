@@ -137,7 +137,7 @@ Check that the compiler is working:
 
 ```bash
 ./zig-out/bin/klar --version
-# Klar 0.4.0
+# Klar 0.6.0
 
 ./zig-out/bin/klar --help
 # Shows usage information
@@ -165,7 +165,7 @@ After adding to PATH:
 
 ```bash
 klar --version
-# Klar 0.4.0
+# Klar 0.6.0
 ```
 
 ## Running Tests

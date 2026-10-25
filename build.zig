@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const zon = @import("build.zig.zon");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -16,6 +17,8 @@ pub fn build(b: *std.Build) void {
     // Build options module (pass has_llvm to source code)
     const build_options = b.addOptions();
     build_options.addOption(bool, "has_llvm", has_llvm);
+    // `build.zig.zon` is the one place the version is written; `src/version.zig` reads it here.
+    build_options.addOption([]const u8, "version", zon.version);
 
     // Create the main module
     const main_mod = b.createModule(.{

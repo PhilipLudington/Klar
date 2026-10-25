@@ -383,8 +383,10 @@ other (`build.zig.zon` says 0.4.0, `src/version.zig` says 0.5.0).
 - [ ] Land the cut set through the normal Next Up flow; the cut is the first `main`
       commit after the last of them where `./run-tests.sh` is green and the nightly CI
       run is green.
-- [ ] Make the version agree: `build.zig.zon` and `src/version.zig` at 0.6.0, and
-      `klar --version`, the REPL banner and the LLVM producer string all print it.
+- [x] Make the version agree: `build.zig.zon` at 0.6.0, and `klar --version`, the REPL
+      banner, the LLVM producer string and the LSP `serverInfo` all print it (departed:
+      `src/version.zig` reads the version from `build.zig.zon` through `build_options`
+      instead of keeping its own copy) (completed 2026-10-24)
 - [ ] Write the v0.6.0 `CHANGELOG.md` entry from `v0.5.0..<cut>`. In the same commit,
       delete the stray first line of `CHANGELOG.md` ("Now I have enough context. Let me
       compose the changelog.") and correct the v0.5.0 date (entry says 2026-01-28, tag is
