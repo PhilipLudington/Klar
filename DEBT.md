@@ -1506,3 +1506,31 @@ version bump can leave them stale with every gate green.
 
 **Found by:** /qa-review on chore/version-0.6.0, 2026-10-24 — test-checker; reviewer's
 reading, not re-verified.
+
+---
+
+## [ ] Debt 71: Windows `process_run` quoting lets `%NAME:old=new%` expand an environment variable
+
+**Status:** Open
+**Kind:** latent-defect
+**Where:** `src/codegen/emit.zig` `getOrDeclareProcRunQuoteArg` (Windows arm, the caret and
+`strpbrk` sets)
+**Due when:** touching `getOrDeclareProcRunQuoteArg` · the nightly Windows job runs a test with
+a `%` argument that holds a `:`
+
+**Description:** Bug 44's Windows arm writes `%` as `^%` so `%VAR%` becomes `%VAR^%`, an
+undefined name. cmd.exe's substitution forms `%NAME:old=new%` and `%NAME:~a,b%` end the name
+at the `:`, so the caret lands in the replacement text instead: `%OS:#=#%` is passed as
+`^%OS:#=#^%`, which cmd.exe expands to the value of `OS`. A caller-supplied argument can
+disclose any environment variable of the Klar process, and an expanded value holding `&` or
+`|` would run after the quoting. Windows only; POSIX quoting is not affected. Related: on
+Windows, an argument with a space now reaches cmd's `echo` as `"a b"` (quotes printed), and
+nothing pins Windows stdout for a quoted argument.
+
+**Payment:** Add `:` to both the caret set and the `strpbrk` pass-through set (the `memchr`
+length becomes 10), so the name always ends in `^`. The repro still needed: push
+`"%OS:#=#%"` in `test/native/process_run_args.kl` and run it on Windows (predicted exit 3,
+stdout showing `Windows_NT`).
+
+**Found by:** /qa-review on fix/bug-44-process-run-argv, 2026-10-26 — security-checker;
+reviewer's reading, not re-verified.
