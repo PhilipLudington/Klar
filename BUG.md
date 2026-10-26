@@ -1194,9 +1194,8 @@ HIGH `[resources]`; verified by reading at both commits. Fix: `createGC`.
 ## [ ] Bug 44: `process_run` space-joins `cmd` and `args` into one `popen` shell string — argument boundaries are lost and metacharacters execute
 
 **Status:** Open
-**Deferred:** after v0.6.0 — wrong argument boundaries, no crash or measured data loss;
-Phase 1's Known issues lists it (the trial does process I/O); re-triaged out of Next Up
-2026-10-24
+
+**System:** native process_run — `emitProcessRun` in `src/codegen/emit.zig`
 
 **Description:** `emitProcessRun` (`src/codegen/emit.zig:27215`, `popen` at `:27365` at HEAD;
 `:24928`/`:25065` at `e7b54e7`) builds `"<cmd> <arg1> <arg2>…"` and hands it to `popen`,
@@ -1387,8 +1386,8 @@ process exit status on both paths.
 ## [ ] Bug 51: A parse error in an *imported* module is swallowed by `catch continue`, and the build reports success
 
 **Status:** Open
-**Deferred:** after v0.6.0 — the parse error is printed, so nothing is silent; Phase 1's
-Known issues lists it; re-triaged out of Next Up 2026-10-24
+
+**System:** module discovery — the `parseModuleSource` discovery loops in `src/main.zig`
 
 **Description:** `parseModuleSource(…) catch continue` skips the module in the discovery
 loop of `run --interpret`, `build`, `check` and `--vm` (`src/main.zig:1198`, `:3086`,
@@ -1514,8 +1513,8 @@ or real_path[root.len] == sep`; deny absolute reads with no root.
 ## [ ] Bug 56: `klar run` writes its temporary binary to the predictable `/tmp/klar-run-<unix-seconds>` without `O_EXCL`
 
 **Status:** Open
-**Deferred:** after v0.6.0 — needs a hostile local user, no crash or data loss in ordinary
-use; re-triaged out of Next Up 2026-10-24
+
+**System:** klar run temp binary — `runNativeFileWithOptions` in `src/main.zig`
 
 **Description:** `runNativeFileWithOptions` formats `/tmp/klar-run-{timestamp}`
 (`src/main.zig:3774` at HEAD, `:3121` at `e7b54e7`; the Windows arm the same) and the linker
