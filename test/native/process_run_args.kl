@@ -1,0 +1,58 @@
+// Bug 44: every element of process_run's `args` reaches the command as exactly one
+// argument, byte for byte, and shell metacharacters in it never execute.
+// `cmd` stays a shell command line; only the arguments are quoted.
+fn main() -> i32 {
+    // A command that prints each argument it receives on its own line.
+    let os_env: ?string = env_get("OS")
+    var cmd: string = ""
+    if os_env.is_some() and (os_env ?? "") == "Windows_NT" {
+        cmd = "python -c \"import sys; print(chr(10).join(sys.argv[1:]))\""
+    } else {
+        cmd = "printf '%s\\n'"
+    }
+
+    var args: List#[string] = List.new#[string]()
+    args.push("a b")
+    args.push("; echo INJECTED")
+    args.push("$(echo X)")
+    args.push("`echo Y`")
+    args.push("it's")
+    args.push("")
+    args.push("\"q\"")
+    args.push("back\\slash\\")
+    args.push("100% & | < > ^ ( ) !")
+    args.push("%OS%")
+    args.push("*")
+
+    let result: Result#[ProcessOutput, IoError] = process_run(cmd, args)
+    if not result.is_ok() {
+        return 1
+    }
+    let output: ProcessOutput = result!
+    if output.exit_code != 0 {
+        return 2
+    }
+
+    var expected: string = ""
+    for i: i32 in 0..args.len() {
+        expected = expected + args[i] + "\n"
+    }
+    if output.stdout != expected {
+        println("process_run_args: stdout was:")
+        print(output.stdout)
+        return 3
+    }
+
+    // No arguments at all: the command still runs and receives none.
+    var none: List#[string] = List.new#[string]()
+    let result2: Result#[ProcessOutput, IoError] = process_run("exit 7", none)
+    if not result2.is_ok() {
+        return 4
+    }
+    let output2: ProcessOutput = result2!
+    if output2.exit_code != 7 {
+        return 5
+    }
+
+    return 0
+}

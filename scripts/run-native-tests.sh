@@ -186,6 +186,7 @@ get_expected() {
         env_get_set) echo 42 ;;
         fs_stat) echo 42 ;;
         process_run) echo 42 ;;
+        process_run_args) echo 0 ;;  # each arg reaches the command whole, no shell (Bug 44)
         timestamp_now) echo 42 ;;
         result_tuple_string_helper) echo 42 ;;
         int_literal_bases) echo 0 ;;
