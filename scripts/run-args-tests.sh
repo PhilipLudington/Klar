@@ -919,6 +919,56 @@ else
 fi
 rm -f "$definition_fixture"
 
+# Version: build.zig.zon is the one place it is written; everything that prints or
+# declares a version must agree with it.
+echo ""
+echo "--- Test: version agrees with build.zig.zon ---"
+zon_version=$(sed -n 's/^ *\.version = "\(.*\)",$/\1/p' "$SCRIPT_DIR/build.zig.zon")
+if [ -z "$zon_version" ]; then
+    fail "version: no .version line in build.zig.zon"
+fi
+
+version_output=$($KLAR --version 2>&1)
+if [ "$version_output" = "Klar $zon_version" ]; then
+    pass "version: klar --version prints Klar $zon_version"
+else
+    fail "version: klar --version printed '$version_output', expected 'Klar $zon_version'"
+fi
+
+repl_banner=$(printf ':quit\n' | $KLAR repl 2>&1 | head -1)
+if [ "$repl_banner" = "Klar REPL v$zon_version" ]; then
+    pass "version: REPL banner is Klar REPL v$zon_version"
+else
+    fail "version: REPL banner was '$repl_banner', expected 'Klar REPL v$zon_version'"
+fi
+
+version_dir="$SCRIPT_DIR/build/klar_version_$$"
+mkdir -p "$version_dir"
+( cd "$version_dir" && $KLAR build "$SCRIPT_DIR/test/native/hello.kl" -c -g -o "$version_dir/hello.o" --emit-llvm >/dev/null 2>&1 )
+if grep -q "producer: \"Klar Compiler $zon_version\"" "$version_dir/hello.ll" 2>/dev/null; then
+    pass "version: debug info producer is Klar Compiler $zon_version"
+else
+    fail "version: debug info producer is not 'Klar Compiler $zon_version'"
+fi
+rm -rf "$version_dir"
+
+version_lsp_output=$(
+    {
+        printf 'Content-Length: %d\r\n\r\n%s' "${#init_payload}" "$init_payload"
+    } | $KLAR lsp 2>&1
+)
+if echo "$version_lsp_output" | grep -q "\"serverInfo\":{\"name\":\"klar-lsp\",\"version\":\"Klar $zon_version\"}"; then
+    pass "version: LSP serverInfo reports Klar $zon_version"
+else
+    fail "version: LSP serverInfo does not report Klar $zon_version"
+fi
+
+if grep -q "^Current version: \*\*$zon_version\*\*$" "$SCRIPT_DIR/docs/README.md"; then
+    pass "version: docs/README.md names $zon_version"
+else
+    fail "version: docs/README.md does not name $zon_version"
+fi
+
 # Write results JSON
 TOTAL=$((PASSED + FAILED))
 cat > "$RESULTS_FILE" << EOF

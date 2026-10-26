@@ -100,6 +100,8 @@ an entry block before the fix).
 ## [ ] Bug 6: x86_64 macOS — `stat` / `readdir` are declared with the unversioned symbols while the field offsets come from the `$INODE64` layout
 
 **Status:** Open
+**Deferred:** after v0.6.0 — wrong field values on x86_64 macOS only, which no v0.6.0
+binary targets; re-triaged out of Next Up 2026-10-24
 
 **Description:** `getOrDeclareStat` (`src/codegen/emit.zig:31636` at HEAD) declares the
 C symbol `stat` on every non-Windows target, and the `readdir` declaration likewise. The
@@ -137,6 +139,8 @@ Zig-compiled runtime shim so the C header does the mapping.
 ## [ ] Bug 7: Native test runner never enforces the exit code of `process_spawn` and `tcp_basic`
 
 **Status:** Open
+**Deferred:** Phase 0 — "Run the Bug 7/9/10/11/12 repros from their entries; close or open
+each"; re-triaged out of Next Up 2026-10-24
 
 **Description:** `scripts/run-native-tests.sh` decides pass/fail with `get_expected`
 (`:80-130` at HEAD `09b3b9b`), a hand-maintained `case` that falls through to
@@ -220,6 +224,8 @@ UDP `sendto` in the Phase 9 builtins needs the same check.
 ## [ ] Bug 9: `process_read_stdout` lacks the `max_bytes > 0` guard that `tcp_read` has
 
 **Status:** Investigating
+**Deferred:** Phase 0 — "Run the Bug 7/9/10/11/12 repros from their entries; close or open
+each"; re-triaged out of Next Up 2026-10-24
 
 **Description:** `emitTcpRead` rejects `max_bytes <= 0` with `Err` before allocating
 (`src/codegen/emit.zig:29656-29668` at HEAD, the Phase 6 L7 hardening) and `udp_recv`
@@ -253,6 +259,8 @@ Fix if confirmed: copy the `tcpr.max_ok` guard.
 ## [ ] Bug 10: `process_wait` closes the fds of a by-value `ProcessHandle` that nothing marks consumed — a second wait closes recycled descriptors
 
 **Status:** Investigating
+**Deferred:** Phase 0 — "Run the Bug 7/9/10/11/12 repros from their entries; close or open
+each"; re-triaged out of Next Up 2026-10-24
 
 **Description:** `ProcessHandle { pid, stdout_fd, stderr_fd }` is a Copy struct
 (`is_copy = true` in the checker). `emitProcessWait` closes `stdout_fd` and `stderr_fd`
@@ -286,6 +294,8 @@ closing and guard every close/read on `fd >= 0`.
 ## [ ] Bug 11: `stdlib/string.kl` declares `parse_int` as `Result#[i64, ParseError]` while the checker's builtin is `?i64`
 
 **Status:** Investigating
+**Deferred:** Phase 0 — "Run the Bug 7/9/10/11/12 repros from their entries; close or open
+each"; re-triaged out of Next Up 2026-10-24
 
 **Description:** `stdlib/string.kl:33` at HEAD declares
 `pub fn parse_int(s: string) -> Result#[i64, ParseError]` with an empty "built-in
@@ -315,6 +325,8 @@ not. Fix if confirmed: make the stdlib declaration match the builtin (`?i64`) or
 ## [ ] Bug 12: `fs_read_to_string` uses `ftell`'s result unchecked — a directory path makes it `malloc(0)` and `fread` `(size_t)-1` bytes
 
 **Status:** Investigating
+**Deferred:** Phase 0 — "Run the Bug 7/9/10/11/12 repros from their entries; close or open
+each"; re-triaged out of Next Up 2026-10-24
 
 **Description:** `emitFsReadToString` (`src/codegen/emit.zig:~24597-24606` at HEAD)
 does `fseek(f, 0, SEEK_END)`, `ftell(f)`, `fseek(f, 0, SEEK_SET)`, then
@@ -344,6 +356,8 @@ not. Fix if confirmed: branch to `Err` when `ftell < 0` and when `malloc` return
 ## [ ] Bug 13: `fcntl` is declared non-variadic — on arm64 macOS the flags argument is read from the wrong place, so `FD_CLOEXEC` and `O_NONBLOCK` are silently not set
 
 **Status:** Open
+**Deferred:** after v0.6.0 — networking, which Philip left out of the v0.6.0 cut set
+(2026-10-17), and no hang has been measured; re-triaged out of Next Up 2026-10-24
 
 **Description:** `getOrDeclareFcntl` (`src/codegen/emit.zig:29236-29239` at HEAD;
 `:27249-27252` in `20a5a3e`) declares `int fcntl(int, int, ...)` as a fixed three-argument
@@ -383,6 +397,8 @@ declarations, and add a native test that sets `O_NONBLOCK` and reads an idle soc
 ## [ ] Bug 14: `src/codegen/builtins.zig` is dead code — nothing imports it, and the builtin name list now exists in four places
 
 **Status:** Open
+**Deferred:** after v0.6.0 — dead code, no wrong behavior; rides Bug 35's shared builtin
+table; re-triaged out of Next Up 2026-10-24
 
 **Description:** Every `@import("builtins.zig")` in the tree resolves to
 `src/checker/builtins.zig` (`src/checker/checker.zig:22`, `src/checker/mod.zig:32`);
@@ -614,6 +630,8 @@ CRITICAL `[correctness]`; verified by reading at both commits. Fix: `@addWithOve
 ## [ ] Bug 22: Checker — `checkTypeCast` accepts any primitive-to-primitive `.as#[T]`, including `string` ↔ numeric and narrowing casts
 
 **Status:** Open
+**Deferred:** after v0.6.0 — the checker accepts a program that then fails with a runtime
+error, not a crash; re-triaged out of Next Up 2026-10-24
 
 **Description:** `checkTypeCast` (`src/checker/expressions.zig:861-880` at HEAD, `:815-835`
 at `e7b54e7`) allows every numeric→numeric pair and then every primitive→primitive pair.
@@ -640,6 +658,8 @@ pairs the backends implement, and route narrowing to `.to#`/`.trunc#`.
 ## [ ] Bug 23: Checker — match arms bind their patterns into the enclosing scope
 
 **Status:** Open
+**Deferred:** after v0.6.0 — checker correctness, no crash or data loss; re-triaged out of
+Next Up 2026-10-24
 
 **Description:** `checkMatchStmt` (`src/checker/statements.zig:53` at HEAD, `:53-62` at
 `e7b54e7`) calls `checkPattern` per arm without pushing a scope; `checkFor` (`:244`) pushes
@@ -664,6 +684,8 @@ around pattern + guard + body.
 ## [ ] Bug 24: Checker — `impl` blocks are registered in pass 3 beside function bodies, so a body declared above its `impl` cannot see the methods
 
 **Status:** Open
+**Deferred:** after v0.6.0 — a valid program is refused with a clear error; re-triaged out
+of Next Up 2026-10-24
 
 **Description:** `checkModule` registers types in pass 1 and function signatures in pass 2,
 then dispatches `.impl_decl => self.checkDecl(decl)` in pass 3 interleaved with function
@@ -690,6 +712,8 @@ signatures in pass 2.
 ## [ ] Bug 25: Checker — `appendTypeName` mangles lists, maps, sets, results, functions and more as `"unknown"`, so distinct instantiations share one mangled name
 
 **Status:** Open
+**Deferred:** after v0.6.0 — checker correctness, no crash measured; Phase 1's Known issues
+lists it; re-triaged out of Next Up 2026-10-24
 
 **Description:** `appendTypeName` (`src/checker/checker.zig:2838` at HEAD, `:2281` at
 `e7b54e7`) has cases for primitives, optional, array, slice, rc, tuple and
@@ -714,6 +738,8 @@ tag distinctly.
 ## [ ] Bug 26: Checker — compound assignment checks only "both numeric", never that the operand types match
 
 **Status:** Open
+**Deferred:** after v0.6.0 — the checker accepts a program that then fails at runtime or in
+LLVM, not a crash; re-triaged out of Next Up 2026-10-24
 
 **Description:** `.add_assign` and friends in `checkBinary` (`src/checker/expressions.zig:406`
 at HEAD, `:355` at `e7b54e7`) and the statement form (`statements.zig:95` / `:88`) test
@@ -737,6 +763,8 @@ hint; the interpreter returns `TypeError`, native emits `add` on mismatched type
 ## [ ] Bug 27: Checker — `verifyMethodSignature` checks `Self`/`&Self` parameters only at index 0
 
 **Status:** Open
+**Deferred:** after v0.6.0 — checker correctness, no crash or data loss; re-triaged out of
+Next Up 2026-10-24
 
 **Description:** In `src/checker/methods.zig` (`:180` and `:198` at HEAD, `:198` at
 `e7b54e7`) every Self and reference-to-Self check sits inside `if (idx == 0)`, followed by
@@ -759,6 +787,8 @@ hint; the interpreter returns `TypeError`, native emits `add` on mismatched type
 ## [ ] Bug 28: Checker — bitwise operators never compare their operand types
 
 **Status:** Open
+**Deferred:** after v0.6.0 — checker correctness, no crash or data loss; re-triaged out of
+Next Up 2026-10-24
 
 **Description:** The `.bit_and, .bit_or, .bit_xor, .shl, .shr` arm
 (`src/checker/expressions.zig:476` at HEAD, `:430` at `e7b54e7`) requires each side to be
@@ -781,6 +811,8 @@ must match exactly (no implicit conversions)".
 ## [ ] Bug 29: Checker — trait completeness is checked against the union of every `impl` block for the type
 
 **Status:** Open
+**Deferred:** after v0.6.0 — checker correctness, no crash or data loss; re-triaged out of
+Next Up 2026-10-24
 
 **Description:** `checkImpl` reads `tc.struct_methods.get(struct_name)`
 (`src/checker/declarations.zig:887` at HEAD, `:830` at `e7b54e7`) — the accumulated
@@ -804,6 +836,8 @@ registered by this `impl_decl`.
 ## [ ] Bug 30: Checker — `.default()` is intercepted for any identifier receiver, and a *variable* of struct type passes as the type
 
 **Status:** Open
+**Deferred:** after v0.6.0 — checker correctness, no crash or data loss; re-triaged out of
+Next Up 2026-10-24
 
 **Description:** `checkStaticConstructor` intercepts every `.default()` call
 (`src/checker/method_calls.zig:69` at HEAD, `:68` at `e7b54e7`) and `checkDefaultConstructor`
@@ -849,6 +883,8 @@ round the total to the alignment; size `i128` as 16.
 ## [ ] Bug 32: Checker — literal patterns are always typed `i32`/`f64`, ignoring the expected type
 
 **Status:** Open
+**Deferred:** after v0.6.0 — a valid program is refused with a clear error; re-triaged out
+of Next Up 2026-10-24
 
 **Description:** `checkLiteralPattern` (`src/checker/patterns.zig:222` at HEAD, `:220` at
 `e7b54e7`) returns `i32Type()` for every int literal and `f64Type()` for every float,
@@ -870,6 +906,8 @@ for expressions.
 ## [ ] Bug 33: Checker — no match-exhaustiveness check exists; the `exhaustiveness` error kind is declared and never raised
 
 **Status:** Open
+**Deferred:** after v0.6.0 — a missed arm fails with a runtime `PatternMatchFailed`, not a
+crash, and whether the check is planned is still open; re-triaged out of Next Up 2026-10-24
 
 **Description:** `checker.zig:89` (HEAD; `:88` at `e7b54e7`) declares an `exhaustiveness`
 error kind; no site raises it, and `checkMatchStmt` walks the arms without comparing them
@@ -939,6 +977,8 @@ and the runner's `enum_payload_offsets` IR check on the same file.
 ## [ ] Bug 35: Checker registers fifteen builtins that neither the VM nor the interpreter implements — `fs_exists` type-checks and dies with `UndefinedVariable` on the default backend
 
 **Status:** Open
+**Deferred:** after v0.6.0 — a clear runtime error, and only off the native backend (the
+default since); re-triaged out of Next Up 2026-10-24
 
 **Description:** `initBuiltins` registers `dbg` (`src/checker/checker.zig:933` at HEAD),
 `type_name` (`:954`), `stdout`/`stderr`/`stdin`, and all ten `fs_*` functions (`:1837`
@@ -988,6 +1028,8 @@ HIGH `[error-handling]`; verified by reading at both commits. Fix: reject builti
 ## [ ] Bug 37: Codegen — `typeToLLVM` lowers `usize`/`isize` and slice lengths to `i64` unconditionally while its siblings use pointer width (wasm32)
 
 **Status:** Open
+**Deferred:** after v0.6.0 — wasm32 only, which the v0.6.0 trial does not target;
+re-triaged out of Next Up 2026-10-24
 
 **Description:** `typeToLLVM` maps `.isize_, .usize_` to `int64` (`src/codegen/emit.zig:37806`
 at HEAD, `:31032` at `e7b54e7`) and the slice struct to `{ptr, i64}`, while
@@ -1011,6 +1053,8 @@ HIGH `[correctness]`; verified by reading at both commits. Fix: route every site
 ## [ ] Bug 38: Codegen — `emitWasmUnsupportedTrap` emits `unreachable` and returns with the builder still in that block, so the caller appends after a terminator
 
 **Status:** Open
+**Deferred:** after v0.6.0 — wasm32 only, and a build-time verifier error rather than a
+running program's crash; re-triaged out of Next Up 2026-10-24
 
 **Description:** `emitWasmUnsupportedTrap` (`src/codegen/emit.zig:887-899` at HEAD,
 `:698-711` at `e7b54e7`) calls `puts`, `buildUnreachable()`, and returns a dummy `i32 0`
@@ -1034,6 +1078,8 @@ block after the `unreachable`.
 ## [ ] Bug 39: Codegen — `fs_read_string` truncates the `ftell` size to `i32` for `String.len` with no range check
 
 **Status:** Open
+**Deferred:** after v0.6.0 — needs a file over 2 GB, and no crash has been measured;
+Phase 1's Known issues lists it; re-triaged out of Next Up 2026-10-24
 
 **Description:** `emitFsReadString` (`src/codegen/emit.zig:26301` at HEAD, `:24198` at
 `e7b54e7`) stores `LLVMBuildTrunc(file_size, i32)` as the length and `+1` as the capacity.
@@ -1125,6 +1171,8 @@ HIGH `[correctness]`; verified by reading at both commits. Fix: pick one form fo
 ## [ ] Bug 43: VM — `readline`, `type_of` and `debug` build their result with the non-GC `ObjString.create`, so the strings leak
 
 **Status:** Open
+**Deferred:** after v0.6.0 — a VM leak, no crash or data loss; re-triaged out of Next Up
+2026-10-24
 
 **Description:** `src/vm_builtins.zig:163` (`readline`), `:342` (`type_of`) and `:398`
 (`debug`) at HEAD (`:149`, `:328`, `:384` at `e7b54e7`) call `ObjString.create(allocator, …)`
@@ -1146,6 +1194,9 @@ HIGH `[resources]`; verified by reading at both commits. Fix: `createGC`.
 ## [ ] Bug 44: `process_run` space-joins `cmd` and `args` into one `popen` shell string — argument boundaries are lost and metacharacters execute
 
 **Status:** Open
+**Deferred:** after v0.6.0 — wrong argument boundaries, no crash or measured data loss;
+Phase 1's Known issues lists it (the trial does process I/O); re-triaged out of Next Up
+2026-10-24
 
 **Description:** `emitProcessRun` (`src/codegen/emit.zig:27215`, `popen` at `:27365` at HEAD;
 `:24928`/`:25065` at `e7b54e7`) builds `"<cmd> <arg1> <arg2>…"` and hands it to `popen`,
@@ -1219,6 +1270,8 @@ disassembler) account for the descriptors.
 ## [ ] Bug 47: `substring(start, end)` returns `""` whenever `end` exceeds the codepoint count — in both the VM and the interpreter
 
 **Status:** Open
+**Deferred:** after v0.6.0 — a wrong result off the native backend only; re-triaged out of
+Next Up 2026-10-24
 
 **Description:** The codepoint walk breaks when `cp_idx == char_end`; if `end` is past the
 string, `byte_end` stays 0 and the guard `byte_start >= byte_end` returns the empty string
@@ -1310,6 +1363,8 @@ failures in `scripts/run-selfhost-tests.sh` until Bug 132 is fixed
 ## [ ] Bug 50: `klar run --interpret` and `--vm` discard `main`'s return value, so the exit code is always 0
 
 **Status:** Open
+**Deferred:** after v0.6.0 — a wrong exit code off the native backend only; re-triaged out
+of Next Up 2026-10-24
 
 **Description:** `_ = interp.callFunction(…)` (`src/main.zig:1087`, `:1099` at HEAD;
 `:848`/`:860` at `e7b54e7`) and `_ = vm.callMain(…)` (`:6149` / `:5478`) throw the `i32`
@@ -1332,6 +1387,8 @@ process exit status on both paths.
 ## [ ] Bug 51: A parse error in an *imported* module is swallowed by `catch continue`, and the build reports success
 
 **Status:** Open
+**Deferred:** after v0.6.0 — the parse error is printed, so nothing is silent; Phase 1's
+Known issues lists it; re-triaged out of Next Up 2026-10-24
 
 **Description:** `parseModuleSource(…) catch continue` skips the module in the discovery
 loop of `run --interpret`, `build`, `check` and `--vm` (`src/main.zig:1198`, `:3086`,
@@ -1387,6 +1444,8 @@ every module in every pipeline.
 ## [ ] Bug 53: `klar test --include-source` never emits the `source` field — `findFunctionSource` skips `test_decl`
 
 **Status:** Open
+**Deferred:** after v0.6.0 — a missing optional output field; re-triaged out of Next Up
+2026-10-24
 
 **Description:** `findFunctionSource` (`src/main.zig:436` at HEAD, `:308` at `e7b54e7`)
 iterates declarations and `continue`s on anything that is not `.function`; both callers
@@ -1430,6 +1489,8 @@ replace atomically.
 ## [ ] Bug 55: LSP — workspace containment is a bare `startsWith`, and absent when the client sent no `rootUri`
 
 **Status:** Open
+**Deferred:** after v0.6.0 — the LSP reads a file outside the workspace, no crash or data
+loss; re-triaged out of Next Up 2026-10-24
 
 **Description:** `readSourceFile` (`src/lsp.zig:426`, check at `:434` at HEAD; `:415` at
 `e7b54e7`) tests `std.mem.startsWith(real_path, root)` with no separator boundary, so
@@ -1453,6 +1514,8 @@ or real_path[root.len] == sep`; deny absolute reads with no root.
 ## [ ] Bug 56: `klar run` writes its temporary binary to the predictable `/tmp/klar-run-<unix-seconds>` without `O_EXCL`
 
 **Status:** Open
+**Deferred:** after v0.6.0 — needs a hostile local user, no crash or data loss in ordinary
+use; re-triaged out of Next Up 2026-10-24
 
 **Description:** `runNativeFileWithOptions` formats `/tmp/klar-run-{timestamp}`
 (`src/main.zig:3774` at HEAD, `:3121` at `e7b54e7`; the Windows arm the same) and the linker
@@ -1496,6 +1559,8 @@ exposes `isGit()`. A git dependency produces no message and the build later fail
 ## [ ] Bug 58: `--emit-ir` lowers only the entry module
 
 **Status:** Open
+**Deferred:** after v0.6.0 — a debug output that is incomplete; re-triaged out of Next Up
+2026-10-24
 
 **Description:** The Klar-IR path lowers `modules_to_emit.items[0]` (`src/main.zig:3221` at
 HEAD; `lowerModule(module)` at `:2670` at `e7b54e7`) while codegen loops over every module,
@@ -1516,6 +1581,8 @@ so the `.ir` file silently omits imported functions.
 ## [ ] Bug 59: `klar build` and `klar run` silently ignore unknown `-` flags; `check` and `test` reject them
 
 **Status:** Open
+**Deferred:** after v0.6.0 — an ignored flag, no crash or data loss; re-triaged out of Next
+Up 2026-10-24
 
 **Description:** The `build` and `run` argument loops (`src/main.zig:648` region at HEAD,
 `:486-530` at `e7b54e7`) have no unknown-option branch; `check` (`:913` at HEAD) and `test`
@@ -1654,6 +1721,8 @@ the checker first, `check`, `build`, `run` and `run --interpret` all stop with t
 ## [ ] Bug 64: HTTP stdlib computes `Content-Length` and body bounds from codepoint `len()`, not bytes — any non-ASCII body is sent short and parsed truncated
 
 **Status:** Open
+**Deferred:** after v0.6.0 — networking, which Philip left out of the v0.6.0 cut set
+(2026-10-17); re-triaged out of Next Up 2026-10-24
 
 **System:** HTTP stdlib message framing — `Content-Length` and body bounds in `stdlib/http_client.kl` (`http_request`, `parse_http_response`) and `stdlib/http_server.kl`
 
@@ -1696,7 +1765,8 @@ would have caught all of them.
 
 **System:** HTTP stdlib message framing — `Content-Length` and body bounds in `stdlib/http_client.kl` (`http_request`, `parse_http_response`) and `stdlib/http_server.kl`
 
-**Deferred:** rides the Bug 64 Next Up line, which `/continue-plan` rule 4 collects by System — alone it is none of the three Next Up kinds (no crash, no Phase 0 deliverable waits on it)
+**Deferred:** after v0.6.0 — rides Bug 64 (same System), which is deferred with networking
+out of the cut set; re-triaged 2026-10-24
 
 **Description:** `http_request` (`stdlib/http_client.kl`) returns
 `parse_http_response(response_data)` on three paths without comparing the body it has to the
@@ -3735,6 +3805,8 @@ reviewer's probe, not re-run.
 ## [ ] Bug 122: Native `bool.to_string()` returns `"1"` / `"0"` instead of `"true"` / `"false"`
 
 **Status:** Open
+**Deferred:** after v0.6.0 — wrong text, no crash, and not in the cut set Philip approved
+(2026-10-17); Phase 1's Known issues lists it; re-triaged out of Next Up 2026-10-24
 
 **System:** `to_string()` lowering — `emitMethodCall` (`src/codegen/emit.zig`) and
 `VM.invokeMethod` (`src/vm.zig`)

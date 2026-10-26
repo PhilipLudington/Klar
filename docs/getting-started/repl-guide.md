@@ -11,7 +11,7 @@ klar repl
 You'll see a prompt:
 
 ```
-Klar REPL v0.4.0
+Klar REPL v0.6.0
 Type :help for available commands
 
 klar>

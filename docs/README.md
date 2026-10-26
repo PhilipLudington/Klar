@@ -154,7 +154,7 @@ fn main() -> i32 {
 
 ## Version
 
-Current version: **0.4.0**
+Current version: **0.6.0**
 
 ## License
 

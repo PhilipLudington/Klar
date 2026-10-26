@@ -12,7 +12,9 @@ fixture runs and Bugs 15–59 from the `/qa-audit --calibrate klar-e7b54e7` run
 
 Current status: Next Up queue populated (2026-09-04); Phase 0 not started; Phase 1
 (stable v0.6.0 for an external performance trial) added 2026-10-17, cut set
-chosen 2026-10-17 (the "v0.6.0 cut set" group at the top of Next Up).
+chosen 2026-10-17 (the "v0.6.0 cut set" group at the top of Next Up). Next Up
+re-triaged 2026-10-24 to the three kinds (`plan-format.md` § Next Up): 36 lines moved to
+`BUG.md` Deferred entries, Phase 0 and `DEBT.md`; Phase 3 (Hardening & Debt) drains them.
 
 ## Next Up
 
@@ -262,120 +264,54 @@ in user programs first, then checker/contract correctness, then tooling, then de
       runs live in the unit tests (`src/vm_gc_test.zig`); the runner flag stays the Phase 0 task
       (departed: collect at safe points, not temp-root each caller). (qa-audit 2026-09-04)
       (completed 2026-09-26)
-- [ ] Bug 122 — native `true.to_string()` is `"1"` and `false.to_string()` is `"0"`: an `i1`
-      receiver takes the integer arm of `emitMethodCall` (`src/codegen/emit.zig`, the
-      `LLVMIntegerTypeKind` fallback) and is formatted as a number. (found:
-      fix/bug-118-string-to-string, 2026-10-20)
 - [ ] Bug 18 — VM carries no integer width: i128 arithmetic + no-op `.trunc#` (`src/vm.zig:1292`,
-      `:1381`); carry the declared width in the value or opcode. (qa-audit 2026-09-04)
+      `:1381`); carry the declared width in the value or opcode. (blocks Phase 0: the
+      three-backend parity test, seeded with this trigger) (qa-audit 2026-09-04)
 - [ ] Bugs 19 + 20 — interpreter `%` is Euclidean (`src/interpreter.zig:749,769`) and `len`
-      is tagged `usize` (`:2818`, `:1177`). One branch. (qa-audit 2026-09-04)
+      is tagged `usize` (`:2818`, `:1177`). One branch. (blocks Phase 0: the three-backend
+      parity test, seeded with these triggers) (qa-audit 2026-09-04)
 - [ ] Bug 21 — interpreter `checkedAdd/Sub/Mul` overflow i128 before their own check
-      (`src/interpreter.zig:786`); `@addWithOverflow`. (qa-audit 2026-09-04)
+      (`src/interpreter.zig:786`); `@addWithOverflow`. (crash: the interpreter panics)
+      (qa-audit 2026-09-04)
 - [ ] Bugs 60 + 61 + 62 — VM pattern matching is unimplemented but runs: `op_match_variant`
       always pushes true (`src/vm.zig:966`), `op_is_type` emitted with no operand while the VM
       reads two bytes (`src/compiler.zig:966`, `src/vm.zig:882`), or-pattern success jump never
       patched (`src/compiler.zig:1503`). One branch: implement variant/type matching in the VM
-      or refuse them at compile time; patch every `end` jump. (qa-audit 2026-09-05)
-- [ ] Bug 64 — HTTP stdlib uses codepoint `len()` where bytes are meant: `Content-Length`
-      (`stdlib/http_client.kl:196`, `http_server.kl:281`), `slice(…, data.len())` body bounds, and
-      `find_str_in`'s search limit. `byte_len()` at each site; a module test with a non-ASCII body
-      first. (qa-review calibration 2026-09-06)
+      or refuse them at compile time; patch every `end` jump. (crash: Bug 62 runs the VM off
+      the chunk) (qa-audit 2026-09-05)
 - [ ] Bug 48 — REPL resets the AST arena every line while function bodies point into it
-      (`src/repl.zig:228`); declarations get a non-reset arena. (qa-audit 2026-09-04)
-- [ ] Bug 47 — `substring` returns `""` when `end` exceeds the count, both runtimes
-      (`src/vm.zig:1601`, `src/interpreter.zig:1347`); clamp. (qa-audit 2026-09-04)
-- [ ] Bug 6 — x86_64 macOS `stat`/`readdir` declared unversioned while offsets are the
-      `$INODE64` layout. (qa-review 2026-09-03)
-- [ ] Bug 13 — `fcntl` declared non-variadic; `FD_CLOEXEC`/`O_NONBLOCK` silently not set on
-      arm64 macOS (`emit.zig:29236`); declare variadic + native test. (qa-review 2026-09-03)
-- [ ] Bug 8 — `tcp_write` to a closed peer kills the process with SIGPIPE. (qa-review 2026-09-03)
+      (`src/repl.zig:228`); declarations get a non-reset arena. (crash: use-after-free)
+      (qa-audit 2026-09-04)
+- [ ] Bug 8 — `tcp_write` to a closed peer kills the process with SIGPIPE. (crash)
+      (qa-review 2026-09-03)
 
 **Checker correctness (programs the checker should refuse or type differently)**
-- [ ] Bug 22 — `checkTypeCast` accepts string ↔ numeric and narrowing under `.as#`
-      (`src/checker/expressions.zig:861`). (qa-audit 2026-09-04)
-- [ ] Bug 23 — match arms bind into the enclosing scope (`src/checker/statements.zig:53`);
-      push a scope per arm. (qa-audit 2026-09-04)
-- [ ] Bug 24 — `impl` blocks checked in pass 3, methods invisible to bodies declared above
-      them (`src/checker/checker.zig:5791`); register signatures in pass 2. (qa-audit 2026-09-04)
-- [ ] Bug 25 — `appendTypeName` mangles most types as `"unknown"`, instantiations collide
-      (`src/checker/checker.zig:2838`). (qa-audit 2026-09-04)
-- [ ] Bugs 26 + 28 — compound assignment and bitwise ops never compare operand types
-      (`src/checker/expressions.zig:406`, `:476`; `statements.zig:95`). One branch. (qa-audit 2026-09-04)
-- [ ] Bugs 27 + 29 + 30 — trait machinery: `Self` checked only at index 0 (`methods.zig:198`),
-      completeness against the union of impl blocks (`declarations.zig:887`), `.default()` on a
-      variable (`method_calls.zig:69,157`). One branch. (qa-audit 2026-09-04)
-- [ ] Bug 32 — literal patterns always `i32`/`f64` (`src/checker/patterns.zig:222`); pass the
-      expected type. (qa-audit 2026-09-04)
-- [ ] Bug 31 — `@sizeOf` no padding, `i128` = 8 (`src/checker/builtins_check.zig:675`). (qa-audit 2026-09-04)
-- [ ] Bug 33 — no match-exhaustiveness pass; decide whether it is planned or a regression,
-      then implement or record the decision on the bug. (qa-audit 2026-09-04)
+- [ ] Bug 31 — `@sizeOf` no padding, `i128` = 8 (`src/checker/builtins_check.zig:675`).
+      (crash: a write sized by it overruns) (qa-audit 2026-09-04)
 - [ ] Bug 36 — `@fn_ptr(builtin)` yields a null pointer (`builtins_check.zig:523`,
-      `emit.zig:14456`); reject in the checker. (qa-audit 2026-09-04)
+      `emit.zig:14456`); reject in the checker. (crash: the C side calls NULL)
+      (qa-audit 2026-09-04)
 
 **Three-backend contract**
-- [ ] Bugs 35 + 14 — the checker registers fifteen builtins no runtime backend implements,
-      and the builtin name list lives in four places with a dead fifth
-      (`src/checker/checker.zig:933`, `src/codegen/builtins.zig`); one shared table that
-      every backend reads, stub or reject per backend. (qa-audit 2026-09-04)
 - [ ] Bugs 41 + 42 — `parse_int`/`parse_float` grammar and `debug` float form differ per
-      backend (`emit.zig:17432`, `vm_builtins.zig:427`). One branch, one grammar. (qa-audit 2026-09-04)
+      backend (`emit.zig:17432`, `vm_builtins.zig:427`). One branch, one grammar. (blocks
+      Phase 0: the three-backend parity test, seeded with these triggers) (qa-audit 2026-09-04)
 - [ ] Bug 40 — native `debug` primitive: truncating 64-byte buffer, dangling alloca pointer,
-      sign-extended unsigned (`src/codegen/emit.zig:15398`). (qa-audit 2026-09-04)
-- [ ] Bug 43 — VM `readline`/`type_of`/`debug` strings allocated outside the GC
-      (`src/vm_builtins.zig:163,342,398`); `createGC`. (qa-audit 2026-09-04)
-- [ ] Bug 44 — `process_run` shell-joins its args through `popen` (`emit.zig:27365`); real
-      argv via the Phase 6 spawn path. (qa-audit 2026-09-04)
-- [ ] Bugs 7 + 9 + 10 + 11 + 12 — the Fixture 4 `Investigating` set: native runner never
-      enforces two exit codes, `process_read_stdout` guard, `process_wait` double-close,
-      `parse_int` stdlib vs checker declaration, `fs_read_to_string` unchecked `ftell`. Run each
-      repro, close or fix. (qa-review 2026-09-03)
+      sign-extended unsigned (`src/codegen/emit.zig:15398`). (crash: the dangling pointer)
+      (qa-audit 2026-09-04)
 - [ ] Bug 45 — `env_get` `strdup` into a Copy `string` (`emit.zig:26961`); first check whether
-      the HEAD return type is owned, then fix or close. (qa-audit 2026-09-04)
-- [ ] Bugs 37 + 38 — wasm32: `usize` lowered as `i64` (`emit.zig:37806`), unsupported-builtin
-      trap leaves the builder after a terminator (`:887`). One branch. (qa-audit 2026-09-04)
-- [ ] Bug 39 — `fs_read_string` truncates the size to `i32` unchecked (`emit.zig:26301`). (qa-audit 2026-09-04)
+      the HEAD return type is owned, then fix or close. (Philip, 2026-10-24: keeps its line,
+      a move/clone § 6 prerequisite) (qa-audit 2026-09-04)
 - [ ] Bug 46 — `operandBytes(.op_closure)` ignores upvalue descriptors; `disasm` desyncs
-      (`src/bytecode.zig:491`). (qa-audit 2026-09-04)
+      (`src/bytecode.zig:491`). (crash: `klar disasm` can panic) (qa-audit 2026-09-04)
 
 **CLI, driver and LSP**
-- [ ] Bug 50 — `run --interpret`/`--vm` discard `main`'s return (`src/main.zig:1087`, `:6149`). (qa-audit 2026-09-04)
-- [ ] Bug 51 — imported-module parse failure `catch continue`, four pipelines
-      (`src/main.zig:1198,3086,4460,6009`); fatal, as the test runner does. (qa-audit 2026-09-04)
 - [ ] Bug 52 — ownership analysis only in `check`, entry module only (`src/main.zig:4645`);
-      run it in every pipeline over every module. (qa-audit 2026-09-04)
-- [ ] Bug 55 — LSP workspace containment is a bare `startsWith`, absent without `rootUri`
-      (`src/lsp.zig:434`). (qa-audit 2026-09-04)
-- [ ] Bug 56 — predictable `/tmp/klar-run-<seconds>` temp binary (`src/main.zig:3774`);
-      unique 0700 directory. (qa-audit 2026-09-04)
-- [ ] Bug 59 — `build`/`run` ignore unknown flags (`src/main.zig:648` region); same error
-      branch as `check`/`test`. (qa-audit 2026-09-04)
+      run it in every pipeline over every module. (Philip, 2026-10-24: keeps its line, a
+      move/clone § 6 prerequisite) (qa-audit 2026-09-04)
 - [ ] Bugs 54 + 57 — `klar update` deletes `klar.lock` first (`src/main.zig:6464`); git
-      dependencies silently skipped (`:6375`). One branch. (qa-audit 2026-09-04)
-- [ ] Bug 58 — `--emit-ir` lowers only the entry module (`src/main.zig:3221`). (qa-audit 2026-09-04)
-- [ ] Bug 53 — `--include-source` never emits for `test_decl` (`src/main.zig:436`). (qa-audit 2026-09-04)
-
-**Debt — File Growth (Limit band at `949fc4c`, measured by qa-audit 2026-09-04; seam TBD for all)**
-- [ ] Extract `src/codegen/emit.zig` (27,265 code / 38,876 raw, 27× the Limit) — the builtin
-      emitters (`emitFs*`, `emitProcess*`, `emitEnv*`, `emitTcp*`, `emitHttp*`), the
-      `getOrDeclare*` libc bindings (88+), and the `debug`/`typeToLLVM` families are three
-      natural files; start with the libc bindings. (ledger 2026-09-04)
-- [ ] Extract `src/main.zig` (6,390 code) — one file per subcommand pipeline
-      (`build`, `run`, `check`, `test`, `pkg`). (ledger 2026-09-04)
-- [ ] Extract `src/checker/checker.zig` (4,548 code) — `initBuiltins` (1,300+ lines) to its own
-      file, which is also where Bugs 35 + 14's shared table would live. (ledger 2026-09-04)
-- [ ] Extract `src/parser.zig` (3,593 code) — declarations vs expressions vs types. (ledger 2026-09-04)
-- [ ] Extract `src/interpreter.zig` (2,644 code) — builtins and `evalMethodCall` out. (ledger 2026-09-04)
-- [ ] Extract `src/checker/method_calls.zig` (2,219 code) — `checkBuiltinMethod` (2,170 lines)
-      by receiver family. (ledger 2026-09-04)
-- [ ] Extract `src/formatter.zig` (1,798 code). (ledger 2026-09-04)
-- [ ] Extract `src/vm.zig` (1,684 code) — `run` (749 lines) and the string/array method
-      dispatch. (ledger 2026-09-04)
-- [ ] Extract `stdlib/yaml.kl` (1,499 code) and `stdlib/toml.kl` (1,353 code). (ledger 2026-09-04)
-- [ ] Extract `src/ast_from_json.zig` (1,330), `src/compiler.zig` (1,220),
-      `src/interop/kira_manifest.zig` (1,212), `src/lsp.zig` (1,193), `src/types.zig` (1,131),
-      `src/meta_query.zig` (1,084), `src/ast.zig` (1,018) — all just over the Limit; take each
-      when a bug branch touches it. (ledger 2026-09-04)
+      dependencies silently skipped (`:6375`). One branch. (data loss: the user's lock file)
+      (qa-audit 2026-09-04)
 
 ## Phase 0: Regression floor for the backlog
 
@@ -447,8 +383,10 @@ other (`build.zig.zon` says 0.4.0, `src/version.zig` says 0.5.0).
 - [ ] Land the cut set through the normal Next Up flow; the cut is the first `main`
       commit after the last of them where `./run-tests.sh` is green and the nightly CI
       run is green.
-- [ ] Make the version agree: `build.zig.zon` and `src/version.zig` at 0.6.0, and
-      `klar --version`, the REPL banner and the LLVM producer string all print it.
+- [x] Make the version agree: `build.zig.zon` at 0.6.0, and `klar --version`, the REPL
+      banner, the LLVM producer string and the LSP `serverInfo` all print it (departed:
+      `src/version.zig` reads the version from `build.zig.zon` through `build_options`
+      instead of keeping its own copy) (completed 2026-10-24)
 - [ ] Write the v0.6.0 `CHANGELOG.md` entry from `v0.5.0..<cut>`. In the same commit,
       delete the stray first line of `CHANGELOG.md` ("Now I have enough context. Let me
       compose the changelog.") and correct the v0.5.0 date (entry says 2026-01-28, tag is
@@ -557,6 +495,26 @@ shows every number in the method, including the ones where Klar loses.
 
 ---
 
+## Phase 3: Hardening & Debt
+
+**Goal:** Drain the two ledgers: every `BUG.md` entry marked Deferred fixed, every open
+`DEBT.md` entry paid.
+**Estimated Effort:** open-ended; sized by the ledgers when the phase starts
+
+### Deliverables
+- No `BUG.md` entry carrying `**Deferred:**`.
+- No open `DEBT.md` entry.
+
+### Tasks
+- [ ] Fix every `BUG.md` entry marked Deferred.
+- [ ] Pay every open `DEBT.md` entry.
+
+### Testing Strategy
+Each fix follows `bug-format.md`'s two commits and each payment its entry's `Payment:`;
+`./run-tests.sh` green after each.
+
+---
+
 ## Risk Register
 
 | Risk | Impact | Likelihood | Mitigation |
@@ -572,3 +530,4 @@ because its two suites are what those branches' failing tests plug into. Phase 1
 starts once its cut set is chosen; until the tag it takes priority over the rest of
 Next Up, which resumes on `main` after the tag. Phase 2 (AI-use comparison) starts after
 the tag; its method document comes first, since every later task depends on it.
+Phase 3 (Hardening & Debt) is last: it drains the Deferred bugs and the open debt.
