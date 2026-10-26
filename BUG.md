@@ -4385,3 +4385,33 @@ leaked before this branch too.
 
 **Found by:** /qa-review on fix/ownership-move-tracking, 2026-10-24 — code-reviewer probe
 `scratch/gr/d.kl`; reviewer's evidence, not re-read.
+
+---
+
+## [ ] Bug 140: Windows `process_spawn` quotes an argument only when it holds a space, so an argument with `"` or a trailing `\` loses its boundaries
+
+**Status:** Open
+**Deferred:** after v0.6.0 — Windows only, no shell reads the command line so nothing
+executes, and only arguments holding `"` or ending in `\` are affected
+
+**System:** native process_spawn Windows — `emitProcessSpawnWindows` in `src/codegen/emit.zig`
+
+**Description:** `emitProcessSpawnWindows` builds the `CreateProcessA` command line as
+`cmd` plus ` "arg"` when the argument contains a space and ` arg` otherwise, with no
+escaping. The child's MSVCRT argv parser then splits `a"b c` or `dir\ x\` differently from
+the list the program passed. `process_run` had the same shape (Bug 44) and now quotes
+through `klar_procrun_quote_arg`; this arm needs the MSVCRT half of those rules without
+the cmd.exe carets. The arm is chosen by `comptime builtin.os.tag == .windows`, the host
+the compiler runs on, not the target, so a macOS or Linux build cannot compile or
+cross-check it.
+
+**Steps to reproduce:**
+1. On Windows, `process_spawn("python -c \"import sys; print(sys.argv[1:])\"", ["a\"b c"])`,
+   then read its stdout.
+
+**Expected:** `['a"b c']`.
+
+**Actual:** The argument splits at the embedded quote (by reading; not run).
+
+**Found by:** Builder on fix/bug-44-process-run-argv, 2026-10-26 — rule 4's copy search for
+Bug 44; by reading, not run.
