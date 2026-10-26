@@ -27089,15 +27089,231 @@ pub const Emitter = struct {
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
+    /// Upper bound on the bytes `klar_procrun_quote_arg` writes for an argument of
+    /// `arg_len` bytes: at most 4 per byte (POSIX `'` → `'\''`; Windows `"` → `\^"`
+    /// plus its doubled backslashes) and 4 for the surrounding quotes.
+    fn procRunQuotedBound(self: *Emitter, arg_len: llvm.ValueRef) llvm.ValueRef {
+        const times4 = llvm.c.LLVMBuildMul(self.builder.ref, arg_len, llvm.Const.int64(self.ctx, 4), "procrun.q4");
+        return llvm.c.LLVMBuildAdd(self.builder.ref, times4, llvm.Const.int64(self.ctx, 4), "procrun.qbound");
+    }
+
+    /// Store `byte` at dst[*o_alloca] and advance the offset by one.
+    fn procRunPutByte(self: *Emitter, dst: llvm.ValueRef, o_alloca: llvm.ValueRef, byte: llvm.ValueRef) void {
+        const i64_type = llvm.Types.int64(self.ctx);
+        const o = self.builder.buildLoad(i64_type, o_alloca, "q.o");
+        var idx = [_]llvm.ValueRef{o};
+        const p = llvm.c.LLVMBuildGEP2(self.builder.ref, llvm.Types.int8(self.ctx), dst, &idx, 1, "q.p");
+        _ = self.builder.buildStore(byte, p);
+        _ = self.builder.buildStore(llvm.c.LLVMBuildAdd(self.builder.ref, o, llvm.Const.int64(self.ctx, 1), "q.o1"), o_alloca);
+    }
+
+    /// Store `count` copies of `byte` at dst[*o_alloca] and advance the offset by `count`.
+    fn procRunPutRun(self: *Emitter, dst: llvm.ValueRef, o_alloca: llvm.ValueRef, byte: u8, count: llvm.ValueRef) void {
+        const i64_type = llvm.Types.int64(self.ctx);
+        const memset_fn = self.getOrDeclareMemset();
+        const o = self.builder.buildLoad(i64_type, o_alloca, "q.o");
+        var idx = [_]llvm.ValueRef{o};
+        const p = llvm.c.LLVMBuildGEP2(self.builder.ref, llvm.Types.int8(self.ctx), dst, &idx, 1, "q.p");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &[_]llvm.ValueRef{ p, llvm.Const.int32(self.ctx, byte), count }, "");
+        _ = self.builder.buildStore(llvm.c.LLVMBuildAdd(self.builder.ref, o, count, "q.on"), o_alloca);
+    }
+
+    /// Declare or get klar_procrun_quote_arg(dst, src) -> i64. It writes `src` into `dst`
+    /// quoted so that the shell `popen` starts hands it to the command as exactly one
+    /// argument with every byte literal, and returns the bytes written (no terminator).
+    /// `dst` must hold `procRunQuotedBound(strlen(src))` bytes.
+    /// - POSIX (`/bin/sh -c`): always `'src'`, each `'` written as `'\''`.
+    /// - Windows (`cmd.exe /c`, then the program's MSVCRT argv parser): `src` unchanged
+    ///   when it is non-empty and holds no space, tab, newline, `"` or cmd.exe
+    ///   metacharacter, so cmd builtins such as `echo` see no quotes. Otherwise `^"src^"`:
+    ///   backslashes before a `"` or the end are doubled, `"` becomes `\^"`, and each of
+    ///   `( ) % ! ^ < > & |` gets a `^`. The outer quotes are `^"` so cmd.exe never enters
+    ///   its quoted mode and strips every caret.
+    fn getOrDeclareProcRunQuoteArg(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_procrun_quote_arg";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, ptr_type };
+        const fn_type = llvm.c.LLVMFunctionType(i64_type, &param_types, 2, 0);
+        const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+        llvm.c.LLVMSetLinkage(func, llvm.c.LLVMInternalLinkage);
+
+        const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        const saved_func = self.current_function;
+        self.current_function = func;
+
+        const dst = llvm.c.LLVMGetParam(func, 0);
+        const src = llvm.c.LLVMGetParam(func, 1);
+        const zero64 = llvm.Const.int64(self.ctx, 0);
+        const one64 = llvm.Const.int64(self.ctx, 1);
+
+        const entry_bb = llvm.appendBasicBlock(self.ctx, func, "entry");
+        self.builder.positionAtEnd(entry_bb);
+        const o_alloca = self.builder.buildAlloca(i64_type, "q.o_slot");
+        const i_alloca = self.builder.buildAlloca(i64_type, "q.i_slot");
+        const bs_alloca = self.builder.buildAlloca(i64_type, "q.bs_slot");
+        _ = self.builder.buildStore(zero64, o_alloca);
+        _ = self.builder.buildStore(zero64, i_alloca);
+        _ = self.builder.buildStore(zero64, bs_alloca);
+
+        const loop_bb = llvm.appendBasicBlock(self.ctx, func, "loop");
+        const body_bb = llvm.appendBasicBlock(self.ctx, func, "body");
+        const next_bb = llvm.appendBasicBlock(self.ctx, func, "next");
+        const end_bb = llvm.appendBasicBlock(self.ctx, func, "end");
+
+        if (self.platform.os == .windows) {
+            // Pass through unchanged when nothing in it needs quoting.
+            const strpbrk_fn = blk: {
+                if (llvm.c.LLVMGetNamedFunction(self.module.ref, "strpbrk")) |f| break :blk f;
+                var sp_params = [_]llvm.TypeRef{ ptr_type, ptr_type };
+                const sp_type = llvm.c.LLVMFunctionType(ptr_type, &sp_params, 2, 0);
+                break :blk llvm.c.LLVMAddFunction(self.module.ref, "strpbrk", sp_type);
+            };
+            const special = self.builder.buildGlobalStringPtr(" \t\n\x0b\"()%!^<>&|", "q.special");
+            const found = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strpbrk_fn), strpbrk_fn, &[_]llvm.ValueRef{ src, special }, "q.found");
+            const has_special = self.builder.buildICmp(llvm.c.LLVMIntNE, found, llvm.c.LLVMConstNull(ptr_type), "q.has_special");
+            const first = self.builder.buildLoad(i8_type, src, "q.first");
+            const is_empty = self.builder.buildICmp(llvm.c.LLVMIntEQ, first, llvm.Const.int8(self.ctx, 0), "q.is_empty");
+            const needs_quote = llvm.c.LLVMBuildOr(self.builder.ref, has_special, is_empty, "q.needs");
+            const plain_bb = llvm.appendBasicBlock(self.ctx, func, "plain");
+            const quoted_bb = llvm.appendBasicBlock(self.ctx, func, "quoted");
+            _ = self.builder.buildCondBr(needs_quote, quoted_bb, plain_bb);
+
+            self.builder.positionAtEnd(plain_bb);
+            const strlen_fn = self.getOrDeclareStrlen();
+            const memcpy_fn = self.getOrDeclareMemcpy();
+            const n = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &[_]llvm.ValueRef{src}, "q.n");
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &[_]llvm.ValueRef{ dst, src, n }, "");
+            _ = llvm.c.LLVMBuildRet(self.builder.ref, n);
+
+            self.builder.positionAtEnd(quoted_bb);
+            self.procRunPutByte(dst, o_alloca, llvm.Const.int8(self.ctx, '^'));
+            self.procRunPutByte(dst, o_alloca, llvm.Const.int8(self.ctx, '"'));
+            _ = self.builder.buildBr(loop_bb);
+
+            self.builder.positionAtEnd(loop_bb);
+            const i = self.builder.buildLoad(i64_type, i_alloca, "q.i");
+            var c_idx = [_]llvm.ValueRef{i};
+            const c_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, src, &c_idx, 1, "q.c_ptr");
+            const c = self.builder.buildLoad(i8_type, c_ptr, "q.c");
+            const at_end = self.builder.buildICmp(llvm.c.LLVMIntEQ, c, llvm.Const.int8(self.ctx, 0), "q.at_end");
+            _ = self.builder.buildCondBr(at_end, end_bb, body_bb);
+
+            // A backslash is only counted: how it is written depends on what follows.
+            self.builder.positionAtEnd(body_bb);
+            const is_bs = self.builder.buildICmp(llvm.c.LLVMIntEQ, c, llvm.Const.int8(self.ctx, '\\'), "q.is_bs");
+            const bs_bb = llvm.appendBasicBlock(self.ctx, func, "backslash");
+            const not_bs_bb = llvm.appendBasicBlock(self.ctx, func, "not_backslash");
+            _ = self.builder.buildCondBr(is_bs, bs_bb, not_bs_bb);
+
+            self.builder.positionAtEnd(bs_bb);
+            const bs_cur = self.builder.buildLoad(i64_type, bs_alloca, "q.bs");
+            _ = self.builder.buildStore(llvm.c.LLVMBuildAdd(self.builder.ref, bs_cur, one64, "q.bs1"), bs_alloca);
+            _ = self.builder.buildBr(next_bb);
+
+            self.builder.positionAtEnd(not_bs_bb);
+            const is_dq = self.builder.buildICmp(llvm.c.LLVMIntEQ, c, llvm.Const.int8(self.ctx, '"'), "q.is_dq");
+            const dq_bb = llvm.appendBasicBlock(self.ctx, func, "dquote");
+            const other_bb = llvm.appendBasicBlock(self.ctx, func, "other");
+            _ = self.builder.buildCondBr(is_dq, dq_bb, other_bb);
+
+            // `"`: 2n+1 backslashes, then `^"`.
+            self.builder.positionAtEnd(dq_bb);
+            const bs_dq = self.builder.buildLoad(i64_type, bs_alloca, "q.bs_dq");
+            const bs_dq2 = llvm.c.LLVMBuildAdd(self.builder.ref, llvm.c.LLVMBuildAdd(self.builder.ref, bs_dq, bs_dq, "q.bs2"), one64, "q.bs2p1");
+            self.procRunPutRun(dst, o_alloca, '\\', bs_dq2);
+            self.procRunPutByte(dst, o_alloca, llvm.Const.int8(self.ctx, '^'));
+            self.procRunPutByte(dst, o_alloca, llvm.Const.int8(self.ctx, '"'));
+            _ = self.builder.buildStore(zero64, bs_alloca);
+            _ = self.builder.buildBr(next_bb);
+
+            // Anything else: the pending backslashes as they are, a caret before a
+            // cmd.exe metacharacter, then the byte.
+            self.builder.positionAtEnd(other_bb);
+            const bs_other = self.builder.buildLoad(i64_type, bs_alloca, "q.bs_other");
+            self.procRunPutRun(dst, o_alloca, '\\', bs_other);
+            _ = self.builder.buildStore(zero64, bs_alloca);
+            const memchr_fn = self.getOrDeclareMemchr();
+            const meta = self.builder.buildGlobalStringPtr("()%!^<>&|", "q.meta");
+            const c32 = llvm.c.LLVMBuildZExt(self.builder.ref, c, i32_type, "q.c32");
+            const meta_hit = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memchr_fn), memchr_fn, &[_]llvm.ValueRef{ meta, c32, llvm.Const.int64(self.ctx, 9) }, "q.meta_hit");
+            const is_meta = self.builder.buildICmp(llvm.c.LLVMIntNE, meta_hit, llvm.c.LLVMConstNull(ptr_type), "q.is_meta");
+            const caret_bb = llvm.appendBasicBlock(self.ctx, func, "caret");
+            const byte_bb = llvm.appendBasicBlock(self.ctx, func, "byte");
+            _ = self.builder.buildCondBr(is_meta, caret_bb, byte_bb);
+
+            self.builder.positionAtEnd(caret_bb);
+            self.procRunPutByte(dst, o_alloca, llvm.Const.int8(self.ctx, '^'));
+            _ = self.builder.buildBr(byte_bb);
+
+            self.builder.positionAtEnd(byte_bb);
+            self.procRunPutByte(dst, o_alloca, c);
+            _ = self.builder.buildBr(next_bb);
+
+            // End: trailing backslashes doubled, so the closing quote stays a quote.
+            self.builder.positionAtEnd(end_bb);
+            const bs_end = self.builder.buildLoad(i64_type, bs_alloca, "q.bs_end");
+            self.procRunPutRun(dst, o_alloca, '\\', llvm.c.LLVMBuildAdd(self.builder.ref, bs_end, bs_end, "q.bs_end2"));
+            self.procRunPutByte(dst, o_alloca, llvm.Const.int8(self.ctx, '^'));
+            self.procRunPutByte(dst, o_alloca, llvm.Const.int8(self.ctx, '"'));
+        } else {
+            self.procRunPutByte(dst, o_alloca, llvm.Const.int8(self.ctx, '\''));
+            _ = self.builder.buildBr(loop_bb);
+
+            self.builder.positionAtEnd(loop_bb);
+            const i = self.builder.buildLoad(i64_type, i_alloca, "q.i");
+            var c_idx = [_]llvm.ValueRef{i};
+            const c_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, src, &c_idx, 1, "q.c_ptr");
+            const c = self.builder.buildLoad(i8_type, c_ptr, "q.c");
+            const at_end = self.builder.buildICmp(llvm.c.LLVMIntEQ, c, llvm.Const.int8(self.ctx, 0), "q.at_end");
+            _ = self.builder.buildCondBr(at_end, end_bb, body_bb);
+
+            // Inside single quotes only `'` is special: close, escaped quote, reopen.
+            self.builder.positionAtEnd(body_bb);
+            const is_sq = self.builder.buildICmp(llvm.c.LLVMIntEQ, c, llvm.Const.int8(self.ctx, '\''), "q.is_sq");
+            const sq_bb = llvm.appendBasicBlock(self.ctx, func, "squote");
+            const byte_bb = llvm.appendBasicBlock(self.ctx, func, "byte");
+            _ = self.builder.buildCondBr(is_sq, sq_bb, byte_bb);
+
+            self.builder.positionAtEnd(sq_bb);
+            for ("'\\''") |b| self.procRunPutByte(dst, o_alloca, llvm.Const.int8(self.ctx, @intCast(b)));
+            _ = self.builder.buildBr(next_bb);
+
+            self.builder.positionAtEnd(byte_bb);
+            self.procRunPutByte(dst, o_alloca, c);
+            _ = self.builder.buildBr(next_bb);
+
+            self.builder.positionAtEnd(end_bb);
+            self.procRunPutByte(dst, o_alloca, llvm.Const.int8(self.ctx, '\''));
+        }
+        const written = self.builder.buildLoad(i64_type, o_alloca, "q.written");
+        _ = llvm.c.LLVMBuildRet(self.builder.ref, written);
+
+        self.builder.positionAtEnd(next_bb);
+        const i_next = self.builder.buildLoad(i64_type, i_alloca, "q.i_cur");
+        _ = self.builder.buildStore(llvm.c.LLVMBuildAdd(self.builder.ref, i_next, one64, "q.i1"), i_alloca);
+        _ = self.builder.buildBr(loop_bb);
+
+        if (saved_bb) |bb| {
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+        }
+        self.current_function = saved_func;
+        return func;
+    }
+
     /// Emit process_run(cmd: string, args: List#[string]) -> Result#[ProcessOutput, IoError]
-    /// Builds a shell command string, uses popen() to capture stdout, pclose() for exit code.
+    /// Builds a shell command line, uses popen() to capture stdout, pclose() for exit code.
     /// Stderr is not captured separately (returns empty string).
     ///
-    /// SECURITY: Arguments are joined with spaces and passed to /bin/sh via popen().
-    /// This means shell metacharacters in arguments (;, |, $(), `, &&, etc.) WILL be
-    /// interpreted by the shell. Only pass trusted, literal string arguments.
-    /// Do NOT pass user-supplied or external input without sanitization.
-    /// A future version should use posix_spawn/execvp to bypass the shell entirely.
+    /// `cmd` is a shell command line and is passed as written (`"exit 1"`, `"klar dump-ast"`).
+    /// Each element of `args` is appended quoted by `klar_procrun_quote_arg`, so it reaches
+    /// the command as exactly one argument and the shell interprets none of its bytes.
     fn emitProcessRun(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: process_run is not supported on WebAssembly targets");
         if (call.args.len != 2) return EmitError.InvalidAST;
@@ -27114,13 +27330,12 @@ pub const Emitter = struct {
         const func = self.current_function orelse return EmitError.InvalidAST;
         const cont_bb = llvm.appendBasicBlock(self.ctx, func, "procrun.cont");
 
-        // Build command string: concat cmd + " " + each arg with spaces
-        // Start with cmd, then append " arg1 arg2 ..."
+        // Build command string: cmd, then " <quoted arg>" for each arg
         const strlen_fn = self.getOrDeclareStrlen();
         const malloc_fn = self.getOrDeclareMalloc();
         const memcpy_fn = self.getOrDeclareMemcpy();
 
-        // First pass: compute total length = strlen(cmd) + sum(1 + strlen(arg_i))
+        // First pass: compute total length = strlen(cmd) + sum(1 + quoted bound of arg_i)
         const cmd_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &[_]llvm.ValueRef{cmd_val}, "procrun.cmd_len");
 
         // Extract list ptr and len via header indirection
@@ -27135,7 +27350,7 @@ pub const Emitter = struct {
         const list_len = self.builder.buildLoad(i32_type, proc_hdr_len_f, "procrun.list_len_val");
 
         // Two-pass approach: first sum actual argument lengths, then allocate exact buffer.
-        // Pass 1: total_args_len = sum of (1 + strlen(args[i])) for each arg (1 for space separator)
+        // Pass 1: total_args_len = sum of (1 + procRunQuotedBound(strlen(args[i]))) (1 for the space)
         const total_args_alloca = self.buildEntryBlockAlloca(i64_type, "procrun.total_args");
         _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), total_args_alloca);
         const len_idx_alloca = self.buildEntryBlockAlloca(i32_type, "procrun.len_idx");
@@ -27152,14 +27367,15 @@ pub const Emitter = struct {
         const len_cond = self.builder.buildICmp(llvm.c.LLVMIntSLT, len_cur_idx, list_len, "procrun.len_cond");
         _ = self.builder.buildCondBr(len_cond, len_body_bb, len_after_bb);
 
-        // Length loop body: total_args_len += 1 + strlen(args[i])
+        // Length loop body: total_args_len += 1 + quoted bound of args[i]
         self.builder.positionAtEnd(len_body_bb);
         // Use typed GEP with pointer element type — LLVM computes stride automatically
         var len_elem_gep = [_]llvm.ValueRef{len_cur_idx};
         const len_elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, ptr_type, list_ptr, &len_elem_gep, 1, "procrun.len_elem_ptr");
         const len_arg_str = self.builder.buildLoad(ptr_type, len_elem_ptr, "procrun.len_arg");
         const len_arg_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &[_]llvm.ValueRef{len_arg_str}, "procrun.len_arg_len");
-        const len_plus_space = llvm.c.LLVMBuildAdd(self.builder.ref, len_arg_len, llvm.Const.int64(self.ctx, 1), "procrun.len_plus_space");
+        const len_quoted = self.procRunQuotedBound(len_arg_len);
+        const len_plus_space = llvm.c.LLVMBuildAdd(self.builder.ref, len_quoted, llvm.Const.int64(self.ctx, 1), "procrun.len_plus_space");
         const len_cur_total = self.builder.buildLoad(i64_type, total_args_alloca, "procrun.len_cur_total");
         const len_new_total = llvm.c.LLVMBuildAdd(self.builder.ref, len_cur_total, len_plus_space, "procrun.len_new_total");
         _ = self.builder.buildStore(len_new_total, total_args_alloca);
@@ -27211,7 +27427,7 @@ pub const Emitter = struct {
         const loop_cond = self.builder.buildICmp(llvm.c.LLVMIntSLT, cur_idx, list_len, "procrun.cond");
         _ = self.builder.buildCondBr(loop_cond, body_bb, after_bb);
 
-        // Loop body: append " " + arg[i]
+        // Loop body: append " " + quoted arg[i]
         self.builder.positionAtEnd(body_bb);
         const cur_offset = self.builder.buildLoad(i64_type, offset_alloca, "procrun.off");
 
@@ -27226,13 +27442,13 @@ pub const Emitter = struct {
         const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, ptr_type, list_ptr, &elem_gep, 1, "procrun.elem_ptr");
         const arg_str = self.builder.buildLoad(ptr_type, elem_ptr, "procrun.arg");
 
-        // Copy arg to buffer at new_offset1
-        const arg_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &[_]llvm.ValueRef{arg_str}, "procrun.arg_len");
+        // Write the quoted arg to buffer at new_offset1
         var dst_gep = [_]llvm.ValueRef{new_offset1};
         const dst_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, llvm.Types.int8(self.ctx), cmd_buf, &dst_gep, 1, "procrun.dst");
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &[_]llvm.ValueRef{ dst_ptr, arg_str, arg_len }, "");
+        const quote_fn = self.getOrDeclareProcRunQuoteArg();
+        const quoted_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(quote_fn), quote_fn, &[_]llvm.ValueRef{ dst_ptr, arg_str }, "procrun.quoted_len");
 
-        const new_offset2 = llvm.c.LLVMBuildAdd(self.builder.ref, new_offset1, arg_len, "procrun.off2");
+        const new_offset2 = llvm.c.LLVMBuildAdd(self.builder.ref, new_offset1, quoted_len, "procrun.off2");
         _ = self.builder.buildStore(new_offset2, offset_alloca);
 
         // Increment index

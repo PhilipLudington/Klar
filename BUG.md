@@ -1191,9 +1191,9 @@ HIGH `[resources]`; verified by reading at both commits. Fix: `createGC`.
 
 ---
 
-## [ ] Bug 44: `process_run` space-joins `cmd` and `args` into one `popen` shell string — argument boundaries are lost and metacharacters execute
+## [x] Bug 44: `process_run` space-joins `cmd` and `args` into one `popen` shell string — argument boundaries are lost and metacharacters execute
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** native process_run — `emitProcessRun` in `src/codegen/emit.zig`
 
@@ -1212,6 +1212,17 @@ Raised by every `/qa-review` run over this commit since 2026-09-01; never filed.
 **Found by:** `/qa-audit --calibrate klar-e7b54e7`, 2026-09-04 — backend-parity contract,
 HIGH `[security]`; verified by reading at both commits. Fix: `posix_spawn`/`execvp` with a
 real argv (the Phase 6 `process_spawn` path may already be the model).
+
+**Fix:** `emitProcessRun` appends each argument through `klar_procrun_quote_arg`
+(`getOrDeclareProcRunQuoteArg`, `src/codegen/emit.zig`), which quotes it for the shell
+`popen` starts: `'…'` with `'` as `'\''` on POSIX; on Windows, unchanged when nothing in it
+needs quoting, else `^"…^"` with MSVCRT backslash rules and a `^` before each cmd.exe
+metacharacter. `cmd` stays a shell command line, passed as written: the existing callers
+(`"exit 1"`, `awk '…'`, `selfhost/main.kl`'s `klar_bin + " dump-ast"`) rely on that, so the
+suggested `execvp` with a real argv was not taken. The Windows arm is checked only by a
+cross-compile here; the nightly Windows job runs the test.
+
+**Test:** `test/native/process_run_args.kl`
 
 ---
 

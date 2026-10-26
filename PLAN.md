@@ -165,9 +165,11 @@ in user programs first, then checker/contract correctness, then tooling, then de
       the measurement; if it passes at HEAD, keep it as the regression test and close the
       bug. (qa-audit 2026-09-04) (completed 2026-10-23, with Bug 77: every failure path of
       `build` and `check` returns `error.CommandFailed`, which `main` turns into exit 1)
-- [ ] Bug 44 — `process_run` space-joins `args` into one `popen` shell string, so argument
+- [x] Bug 44 — `process_run` space-joins `args` into one `popen` shell string, so argument
       boundaries are lost and metacharacters execute (`src/codegen/emit.zig`
       `emitProcessRun`). (Philip, 2026-10-25: before v0.6.0) (qa-audit 2026-09-04)
+      (completed 2026-10-26: every argument is quoted for the shell by
+      `klar_procrun_quote_arg`; `cmd` stays a shell command line)
 - [ ] Bug 56 — `klar run` writes its binary to the predictable `/tmp/klar-run-<seconds>`
       without `O_EXCL` (`src/main.zig` `runNativeFileWithOptions`); a unique 0700 temp
       directory. (Philip, 2026-10-25: before v0.6.0) (qa-audit 2026-09-04)
