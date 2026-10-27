@@ -3765,25 +3765,38 @@ fn runNativeFile(allocator: std.mem.Allocator, path: []const u8, program_args: [
 }
 
 fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, program_args: []const []const u8, search_paths: []const []const u8, run_ast_input_path: ?[]const u8, run_typed_ast_input_path: ?[]const u8) !void {
-    // Generate a unique temp path for the executable (cross-platform)
-    const timestamp = compat.timestamp();
+    // Build into a fresh directory of our own (Bug 56): a predictable path in a shared
+    // temp directory could be planted or clobbered by another process. The directory
+    // and everything in it is removed on every path out of this function.
     const exe_ext = comptime if (builtin.os.tag == .windows) ".exe" else "";
-    var temp_path_buf: [512]u8 = undefined;
-    const temp_path = if (builtin.os.tag == .windows) blk: {
+    const env_temp = if (builtin.os.tag == .windows)
         // On Windows, use %TEMP% or %TMP% or fall back to C:\Temp
-        const temp_dir = compat.getEnvVarOwned(allocator, "TEMP") catch
+        compat.getEnvVarOwned(allocator, "TEMP") catch
             compat.getEnvVarOwned(allocator, "TMP") catch
-            null;
-        defer if (temp_dir) |d| allocator.free(d);
-        const dir = temp_dir orelse "C:\\Temp";
-        break :blk std.fmt.bufPrint(&temp_path_buf, "{s}\\klar-run-{d}{s}", .{ dir, timestamp, exe_ext }) catch {
-            try getStdErr().writeAll("Failed to create temp path\n");
-            return;
-        };
-    } else std.fmt.bufPrint(&temp_path_buf, "/tmp/klar-run-{d}{s}", .{ timestamp, exe_ext }) catch {
-        try getStdErr().writeAll("Failed to create temp path\n");
-        return;
+            null
+    else
+        // On POSIX, use $TMPDIR when set and non-empty, else /tmp
+        compat.getEnvVarOwned(allocator, "TMPDIR") catch null;
+    defer if (env_temp) |d| allocator.free(d);
+    const default_temp = if (builtin.os.tag == .windows) "C:\\Temp" else "/tmp";
+    var parent: []const u8 = if (env_temp) |d| (if (d.len > 0) d else default_temp) else default_temp;
+    while (parent.len > 1 and (parent[parent.len - 1] == '/' or parent[parent.len - 1] == '\\')) {
+        parent = parent[0 .. parent.len - 1];
+    }
+    const run_dir = compat.makeTempDir(allocator, parent, "klar-run-") catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Failed to create temp directory in {s}: {s}\n", .{ parent, @errorName(err) }) catch "Failed to create temp directory\n";
+        try getStdErr().writeAll(msg);
+        return error.CommandFailed;
     };
+    defer allocator.free(run_dir);
+    const sep = if (builtin.os.tag == .windows) "\\" else "/";
+    const temp_path = std.fmt.allocPrint(allocator, "{s}{s}klar-run{s}", .{ run_dir, sep, exe_ext }) catch {
+        compat.cwd().deleteTree(run_dir) catch {};
+        try getStdErr().writeAll("Out of memory\n");
+        return error.CommandFailed;
+    };
+    defer allocator.free(temp_path);
 
     // Build to temp path quietly
     const options = codegen.CompileOptions{
@@ -3795,7 +3808,10 @@ fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, prog
 
     // Build the executable
     // Errors are printed by buildNative; error.CommandFailed makes `main` exit 1.
-    try buildNative(allocator, path, options, run_ast_input_path, run_typed_ast_input_path);
+    buildNative(allocator, path, options, run_ast_input_path, run_typed_ast_input_path) catch |err| {
+        compat.cwd().deleteTree(run_dir) catch {};
+        return err;
+    };
 
     // Execute the compiled binary with args.
     // On POSIX, we use fork/exec to set argv[0] to the source path while
@@ -3808,13 +3824,13 @@ fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, prog
 
         child_argv.append(allocator, temp_path) catch {
             try getStdErr().writeAll("Failed to allocate argv\n");
-            compat.cwd().deleteFile(temp_path) catch {};
+            compat.cwd().deleteTree(run_dir) catch {};
             return;
         };
         for (program_args) |arg| {
             child_argv.append(allocator, arg) catch {
                 try getStdErr().writeAll("Failed to allocate argv\n");
-                compat.cwd().deleteFile(temp_path) catch {};
+                compat.cwd().deleteTree(run_dir) catch {};
                 return;
             };
         }
@@ -3824,12 +3840,12 @@ fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, prog
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Failed to execute: {s}\n", .{@errorName(err)}) catch "Failed to execute\n";
             getStdErr().writeAll(msg) catch {};
-            compat.cwd().deleteFile(temp_path) catch {};
+            compat.cwd().deleteTree(run_dir) catch {};
             return;
         };
 
         // Clean up temp file
-        compat.cwd().deleteFile(temp_path) catch {};
+        compat.cwd().deleteTree(run_dir) catch {};
 
         switch (term) {
             .Exited => |code| compat.exit(@truncate(code)),
@@ -3849,13 +3865,13 @@ fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, prog
         // Convert source path to null-terminated
         const path_z = allocator.dupeZ(u8, path) catch {
             try getStdErr().writeAll("Failed to allocate argv\n");
-            compat.cwd().deleteFile(temp_path) catch {};
+            compat.cwd().deleteTree(run_dir) catch {};
             return;
         };
         defer allocator.free(path_z);
         argv_list.append(allocator, path_z) catch {
             try getStdErr().writeAll("Failed to allocate argv\n");
-            compat.cwd().deleteFile(temp_path) catch {};
+            compat.cwd().deleteTree(run_dir) catch {};
             return;
         };
 
@@ -3868,32 +3884,32 @@ fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, prog
         for (program_args) |arg| {
             const arg_z = allocator.dupeZ(u8, arg) catch {
                 try getStdErr().writeAll("Failed to allocate argv\n");
-                compat.cwd().deleteFile(temp_path) catch {};
+                compat.cwd().deleteTree(run_dir) catch {};
                 return;
             };
             arg_bufs.append(allocator, arg_z) catch {
                 allocator.free(arg_z);
                 try getStdErr().writeAll("Failed to allocate argv\n");
-                compat.cwd().deleteFile(temp_path) catch {};
+                compat.cwd().deleteTree(run_dir) catch {};
                 return;
             };
             argv_list.append(allocator, arg_z) catch {
                 try getStdErr().writeAll("Failed to allocate argv\n");
-                compat.cwd().deleteFile(temp_path) catch {};
+                compat.cwd().deleteTree(run_dir) catch {};
                 return;
             };
         }
         // Null terminator for argv array
         argv_list.append(allocator, null) catch {
             try getStdErr().writeAll("Failed to allocate argv\n");
-            compat.cwd().deleteFile(temp_path) catch {};
+            compat.cwd().deleteTree(run_dir) catch {};
             return;
         };
 
         // Convert temp_path to null-terminated for execve
         const temp_path_z = allocator.dupeZ(u8, temp_path) catch {
             try getStdErr().writeAll("Failed to allocate temp path\n");
-            compat.cwd().deleteFile(temp_path) catch {};
+            compat.cwd().deleteTree(run_dir) catch {};
             return;
         };
         defer allocator.free(temp_path_z);
@@ -3903,7 +3919,7 @@ fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, prog
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Failed to fork: {s}\n", .{@errorName(err)}) catch "Failed to fork\n";
             try getStdErr().writeAll(msg);
-            compat.cwd().deleteFile(temp_path) catch {};
+            compat.cwd().deleteTree(run_dir) catch {};
             return;
         };
 
@@ -3919,7 +3935,7 @@ fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, prog
         const status = compat.posixWaitpid(pid);
 
         // Clean up temp file
-        compat.cwd().deleteFile(temp_path) catch {};
+        compat.cwd().deleteTree(run_dir) catch {};
 
         // Decode the wait status using POSIX macros
         // WIFEXITED: (status & 0x7F) == 0

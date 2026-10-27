@@ -170,7 +170,7 @@ in user programs first, then checker/contract correctness, then tooling, then de
       `emitProcessRun`). (Philip, 2026-10-25: before v0.6.0) (qa-audit 2026-09-04)
       (completed 2026-10-26: every argument is quoted for the shell by
       `klar_procrun_quote_arg`; `cmd` stays a shell command line)
-- [ ] Bug 56 — `klar run` writes its binary to the predictable `/tmp/klar-run-<seconds>`
+- [x] Bug 56 — `klar run` writes its binary to the predictable `/tmp/klar-run-<seconds>`
       without `O_EXCL` (`src/main.zig` `runNativeFileWithOptions`); a unique 0700 temp
       directory. (Philip, 2026-10-25: before v0.6.0) (qa-audit 2026-09-04)
       The binary keeps its `klar-run` name, inside the new directory (code:
@@ -184,6 +184,8 @@ in user programs first, then checker/contract correctness, then tooling, then de
       `docs/decisions/2026-10-27-klar-run-temp-dir.md`). On Windows a uniquely named
       directory under `%TEMP%` is enough; no owner-only permission list of its own
       (Philip, 2026-10-27; same record).
+      (completed 2026-10-27: `klar run` builds into a fresh `klar-run-*` directory made by
+      `mkdtemp`, 0700, under `$TMPDIR` or `/tmp`; on Windows under `%TEMP%`)
       Reviewed: 2026-10-27 fa6a00c0 (gaps 7, Philip 2)
 - [ ] Bug 51 — a parse error in an imported module is swallowed by `catch continue` and the
       build reports success (`src/main.zig`, four discovery loops); make it fatal, as the

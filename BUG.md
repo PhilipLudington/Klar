@@ -1521,9 +1521,9 @@ or real_path[root.len] == sep`; deny absolute reads with no root.
 
 ---
 
-## [ ] Bug 56: `klar run` writes its temporary binary to the predictable `/tmp/klar-run-<unix-seconds>` without `O_EXCL`
+## [x] Bug 56: `klar run` writes its temporary binary to the predictable `/tmp/klar-run-<unix-seconds>` without `O_EXCL`
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** klar run temp binary — `runNativeFileWithOptions` in `src/main.zig`
 
@@ -1541,6 +1541,20 @@ second clobber and delete each other's binary.
 
 **Found by:** `/qa-audit --calibrate klar-e7b54e7`, 2026-09-04 — driver territory, HIGH
 `[security]`; verified by reading at both commits. Fix: a unique 0700 temp directory.
+
+**Fix:** `runNativeFileWithOptions` (`src/main.zig`) builds into a fresh directory made
+by `compat.makeTempDir` (`src/compat.zig`): `mkdtemp(3)` on POSIX, so a random
+`klar-run-XXXXXX` name with mode 0700, under `$TMPDIR` when set and non-empty, else
+`/tmp`; on Windows a timestamped `klar-run-<hex>` under `%TEMP%` made by an exclusive
+create and retried on a clash. The binary is `klar-run` inside it. Every path that used
+to delete the binary removes the directory, a failed build removes it before returning,
+and a directory that cannot be made fails the run with exit 1
+(`docs/decisions/2026-10-27-klar-run-temp-dir.md`).
+
+**Test:** `scripts/run-args-tests.sh` § "klar run builds into its own temp directory
+(Bug 56)" with `test/args/run_temp_dir.kl` (POSIX only). Before the fix the binary was the
+0755 file `/tmp/klar-run-<seconds>`, `$TMPDIR` was ignored, and an unusable `$TMPDIR`
+did not stop the run (it exited 42).
 
 ---
 
