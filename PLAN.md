@@ -179,28 +179,22 @@ in user programs first, then checker/contract correctness, then tooling, then de
       `src/main.zig:3798-3830`). A temp directory that cannot be made fails the run with
       exit 1, as the link into an unusable `/tmp` fails it today (code:
       `src/main.zig:3797`; rule: `docs/decisions/2026-10-23-ownership-errors-exit-1.md`).
-      Open question 1 (plan review 2026-10-27): on macOS and Linux, should the new directory
-      go under `$TMPDIR` when it is set (on macOS that is already a private per-user
-      folder), falling back to `/tmp`, or always under `/tmp` as today? WAITING ON PHILIP
-      (asked 2026-10-27)
-      Open question 2 (plan review 2026-10-27): Windows has no 0700 mode. Is a uniquely
-      named directory under `%TEMP%` (which sits in the user's own profile, so other users
-      cannot read it by default) enough there, or must the directory get an owner-only
-      permission list of its own? WAITING ON PHILIP (asked 2026-10-27)
+      On macOS and Linux the directory goes under `$TMPDIR` when it is set and non-empty,
+      falling back to `/tmp` (Philip, 2026-10-27; decision:
+      `docs/decisions/2026-10-27-klar-run-temp-dir.md`). On Windows a uniquely named
+      directory under `%TEMP%` is enough; no owner-only permission list of its own
+      (Philip, 2026-10-27; same record).
 - [ ] Bug 51 — a parse error in an imported module is swallowed by `catch continue` and the
       build reports success (`src/main.zig`, four discovery loops); make it fatal, as the
       test runner does. (Philip, 2026-10-25: before v0.6.0) (qa-audit 2026-09-04)
       Under `check --partial` an imported module's parse error is a diagnostic like the
       entry file's: it sets `had_parse_errors`, discovery and the queries carry on, and the
       run exits 1 at the end (code: `src/main.zig:4371-4372`, `:4642-4646`).
-      Open question 3 (build 2026-10-27, missed hole): at a08a66d the bug no longer
-      reproduces as filed. A broken imported module still prints "Parse error in …", but
-      the type checker then reports "module '<name>' not found" and `check`, `build` and
-      `run` (native, `--vm`, `--interpret`, `--partial`) all exit 1, since Bug 49's fix
-      made type errors fail the command. Close Bug 51 as fixed by Bug 49 and keep a
-      regression test, or still make discovery stop at the parse error so the misleading
-      "module not found" line goes away? Recommended: still make it stop, as the line
-      says. WAITING ON PHILIP (asked 2026-10-27)
+      At a08a66d the command already exits 1 (Bug 49 made the follow-on "module '<name>'
+      not found" type error fatal), but discovery still swallows the parse error. Still
+      make discovery stop at the parse error, so the only error printed is the parse
+      error and the misleading "module not found" line goes away (Philip, 2026-10-27;
+      decision: `docs/decisions/2026-10-27-import-parse-error-stops-discovery.md`).
 
 **Move checking and explicit move/clone (Philip, 2026-10-18; not in the v0.6.0 cut set)**
 - [x] Ownership move tracking — Bug 115: `var b: String = a` never marks `a` moved
