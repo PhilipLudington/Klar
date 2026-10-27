@@ -184,6 +184,7 @@ in user programs first, then checker/contract correctness, then tooling, then de
       `docs/decisions/2026-10-27-klar-run-temp-dir.md`). On Windows a uniquely named
       directory under `%TEMP%` is enough; no owner-only permission list of its own
       (Philip, 2026-10-27; same record).
+      Reviewed: 2026-10-27 fa6a00c0 (gaps 7, Philip 2)
 - [ ] Bug 51 — a parse error in an imported module is swallowed by `catch continue` and the
       build reports success (`src/main.zig`, four discovery loops); make it fatal, as the
       test runner does. (Philip, 2026-10-25: before v0.6.0) (qa-audit 2026-09-04)
@@ -195,6 +196,7 @@ in user programs first, then checker/contract correctness, then tooling, then de
       make discovery stop at the parse error, so the only error printed is the parse
       error and the misleading "module not found" line goes away (Philip, 2026-10-27;
       decision: `docs/decisions/2026-10-27-import-parse-error-stops-discovery.md`).
+      Reviewed: 2026-10-27 e723e687 (gaps 1, Philip 0)
 
 **Move checking and explicit move/clone (Philip, 2026-10-18; not in the v0.6.0 cut set)**
 - [x] Ownership move tracking — Bug 115: `var b: String = a` never marks `a` moved
