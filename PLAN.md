@@ -165,6 +165,17 @@ in user programs first, then checker/contract correctness, then tooling, then de
       the measurement; if it passes at HEAD, keep it as the regression test and close the
       bug. (qa-audit 2026-09-04) (completed 2026-10-23, with Bug 77: every failure path of
       `build` and `check` returns `error.CommandFailed`, which `main` turns into exit 1)
+- [x] Bug 44 — `process_run` space-joins `args` into one `popen` shell string, so argument
+      boundaries are lost and metacharacters execute (`src/codegen/emit.zig`
+      `emitProcessRun`). (Philip, 2026-10-25: before v0.6.0) (qa-audit 2026-09-04)
+      (completed 2026-10-26: every argument is quoted for the shell by
+      `klar_procrun_quote_arg`; `cmd` stays a shell command line)
+- [ ] Bug 56 — `klar run` writes its binary to the predictable `/tmp/klar-run-<seconds>`
+      without `O_EXCL` (`src/main.zig` `runNativeFileWithOptions`); a unique 0700 temp
+      directory. (Philip, 2026-10-25: before v0.6.0) (qa-audit 2026-09-04)
+- [ ] Bug 51 — a parse error in an imported module is swallowed by `catch continue` and the
+      build reports success (`src/main.zig`, four discovery loops); make it fatal, as the
+      test runner does. (Philip, 2026-10-25: before v0.6.0) (qa-audit 2026-09-04)
 
 **Move checking and explicit move/clone (Philip, 2026-10-18; not in the v0.6.0 cut set)**
 - [x] Ownership move tracking — Bug 115: `var b: String = a` never marks `a` moved
@@ -378,7 +389,7 @@ other (`build.zig.zon` says 0.4.0, `src/version.zig` says 0.5.0).
       collections, strings, file and process I/O — can hit the bug. Lines that fail the
       test stay after the tag and go in Known issues. Philip approves the set. (completed
       2026-10-17: Bugs 99, 106, 107, 108 with Bug 7, 34, 5, 63, 49 — the "v0.6.0 cut set"
-      group at the top of Next Up; Bug 111 added 2026-10-17 by Philip; Bug 113 added 2026-10-17 by Philip; Bug 114 added 2026-10-17 by Philip. Networking Bugs 8, 13, 64 left out, since the trial
+      group at the top of Next Up; Bug 111 added 2026-10-17 by Philip; Bug 113 added 2026-10-17 by Philip; Bug 114 added 2026-10-17 by Philip; Bugs 44, 56 and 51 added 2026-10-25 by Philip. Networking Bugs 8, 13, 64 left out, since the trial
       project does no networking for now; add them if that changes.)
 - [ ] Land the cut set through the normal Next Up flow; the cut is the first `main`
       commit after the last of them where `./run-tests.sh` is green and the nightly CI

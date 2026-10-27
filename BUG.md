@@ -1191,12 +1191,11 @@ HIGH `[resources]`; verified by reading at both commits. Fix: `createGC`.
 
 ---
 
-## [ ] Bug 44: `process_run` space-joins `cmd` and `args` into one `popen` shell string — argument boundaries are lost and metacharacters execute
+## [x] Bug 44: `process_run` space-joins `cmd` and `args` into one `popen` shell string — argument boundaries are lost and metacharacters execute
 
-**Status:** Open
-**Deferred:** after v0.6.0 — wrong argument boundaries, no crash or measured data loss;
-Phase 1's Known issues lists it (the trial does process I/O); re-triaged out of Next Up
-2026-10-24
+**Status:** Fixed
+
+**System:** native process_run — `emitProcessRun` in `src/codegen/emit.zig`
 
 **Description:** `emitProcessRun` (`src/codegen/emit.zig:27215`, `popen` at `:27365` at HEAD;
 `:24928`/`:25065` at `e7b54e7`) builds `"<cmd> <arg1> <arg2>…"` and hands it to `popen`,
@@ -1213,6 +1212,17 @@ Raised by every `/qa-review` run over this commit since 2026-09-01; never filed.
 **Found by:** `/qa-audit --calibrate klar-e7b54e7`, 2026-09-04 — backend-parity contract,
 HIGH `[security]`; verified by reading at both commits. Fix: `posix_spawn`/`execvp` with a
 real argv (the Phase 6 `process_spawn` path may already be the model).
+
+**Fix:** `emitProcessRun` appends each argument through `klar_procrun_quote_arg`
+(`getOrDeclareProcRunQuoteArg`, `src/codegen/emit.zig`), which quotes it for the shell
+`popen` starts: `'…'` with `'` as `'\''` on POSIX; on Windows, unchanged when nothing in it
+needs quoting, else `^"…^"` with MSVCRT backslash rules and a `^` before each cmd.exe
+metacharacter. `cmd` stays a shell command line, passed as written: the existing callers
+(`"exit 1"`, `awk '…'`, `selfhost/main.kl`'s `klar_bin + " dump-ast"`) rely on that, so the
+suggested `execvp` with a real argv was not taken. The Windows arm is checked only by a
+cross-compile here; the nightly Windows job runs the test.
+
+**Test:** `test/native/process_run_args.kl`
 
 ---
 
@@ -1387,8 +1397,8 @@ process exit status on both paths.
 ## [ ] Bug 51: A parse error in an *imported* module is swallowed by `catch continue`, and the build reports success
 
 **Status:** Open
-**Deferred:** after v0.6.0 — the parse error is printed, so nothing is silent; Phase 1's
-Known issues lists it; re-triaged out of Next Up 2026-10-24
+
+**System:** module discovery — the `parseModuleSource` discovery loops in `src/main.zig`
 
 **Description:** `parseModuleSource(…) catch continue` skips the module in the discovery
 loop of `run --interpret`, `build`, `check` and `--vm` (`src/main.zig:1198`, `:3086`,
@@ -1514,8 +1524,8 @@ or real_path[root.len] == sep`; deny absolute reads with no root.
 ## [ ] Bug 56: `klar run` writes its temporary binary to the predictable `/tmp/klar-run-<unix-seconds>` without `O_EXCL`
 
 **Status:** Open
-**Deferred:** after v0.6.0 — needs a hostile local user, no crash or data loss in ordinary
-use; re-triaged out of Next Up 2026-10-24
+
+**System:** klar run temp binary — `runNativeFileWithOptions` in `src/main.zig`
 
 **Description:** `runNativeFileWithOptions` formats `/tmp/klar-run-{timestamp}`
 (`src/main.zig:3774` at HEAD, `:3121` at `e7b54e7`; the Windows arm the same) and the linker
@@ -4375,3 +4385,33 @@ leaked before this branch too.
 
 **Found by:** /qa-review on fix/ownership-move-tracking, 2026-10-24 — code-reviewer probe
 `scratch/gr/d.kl`; reviewer's evidence, not re-read.
+
+---
+
+## [ ] Bug 140: Windows `process_spawn` quotes an argument only when it holds a space, so an argument with `"` or a trailing `\` loses its boundaries
+
+**Status:** Open
+**Deferred:** after v0.6.0 — Windows only, no shell reads the command line so nothing
+executes, and only arguments holding `"` or ending in `\` are affected
+
+**System:** native process_spawn Windows — `emitProcessSpawnWindows` in `src/codegen/emit.zig`
+
+**Description:** `emitProcessSpawnWindows` builds the `CreateProcessA` command line as
+`cmd` plus ` "arg"` when the argument contains a space and ` arg` otherwise, with no
+escaping. The child's MSVCRT argv parser then splits `a"b c` or `dir\ x\` differently from
+the list the program passed. `process_run` had the same shape (Bug 44) and now quotes
+through `klar_procrun_quote_arg`; this arm needs the MSVCRT half of those rules without
+the cmd.exe carets. The arm is chosen by `comptime builtin.os.tag == .windows`, the host
+the compiler runs on, not the target, so a macOS or Linux build cannot compile or
+cross-check it.
+
+**Steps to reproduce:**
+1. On Windows, `process_spawn("python -c \"import sys; print(sys.argv[1:])\"", ["a\"b c"])`,
+   then read its stdout.
+
+**Expected:** `['a"b c']`.
+
+**Actual:** The argument splits at the embedded quote (by reading; not run).
+
+**Found by:** Builder on fix/bug-44-process-run-argv, 2026-10-26 — rule 4's copy search for
+Bug 44; by reading, not run.
