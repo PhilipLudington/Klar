@@ -1,0 +1,19 @@
+// Bug 56: `klar run` builds into its own klar-run-* directory under the temp
+// directory, not a predictable file. Lists the klar-run-* entries in args[1] and the
+// contents of each, so the caller can check the directory, its mode and the binary.
+fn main(args: [String]) -> i32 {
+    if args.len() < 2 {
+        println("usage: run_temp_dir <temp dir>")
+        return 2
+    }
+    let dir: string = args[1].as_str()
+    let cmd: string = "ls -ld " + dir + "/klar-run-* && ls -A " + dir + "/klar-run-*/"
+    var none: List#[string] = List.new#[string]()
+    let result: Result#[ProcessOutput, IoError] = process_run(cmd, none)
+    if not result.is_ok() {
+        return 3
+    }
+    let output: ProcessOutput = result!
+    print(output.stdout)
+    return 0
+}

@@ -1534,3 +1534,48 @@ stdout showing `Windows_NT`).
 
 **Found by:** /qa-review on fix/bug-44-process-run-argv, 2026-10-26 — security-checker;
 reviewer's reading, not re-verified.
+
+---
+
+## [ ] Debt 72: `klar run`'s exit paths skip the frees their `defer`s promise
+
+**Status:** Open
+**Kind:** latent-defect
+**Where:** `src/main.zig` `runNativeFileWithOptions` (the `compat.exit` calls after the
+program's `waitpid`, around `src/main.zig:3926-3931`)
+**Due when:** touching `src/main.zig` `runNativeFileWithOptions` · `klar run` gains a
+leak-checking allocator on its exit path
+
+**Description:** `compat.exit` ends the process directly, so the `defer allocator.free(...)`
+calls for `run_dir` and `temp_path` never run. Nothing reports it today: termination goes
+through `std.c.exit`, which has no GPA leak check. A later change that returns instead of
+exiting, or checks for leaks at exit, would see the frees missing. `src/main.zig`
+`[correctness]` WATCH items came up on three branches.
+
+**Payment:** Free `run_dir` and `temp_path` (or move them to an arena) before each
+`compat.exit`, or return the status to `main` and exit there. The repro still needed: run
+`klar run` under a leak-checking allocator and see the two buffers reported.
+
+**Found by:** /qa-review on fix/bug-56-run-temp-dir, 2026-10-27 — code-reviewer (WATCH, also
+seen on fix-bug-49-exit-status and fix-ownership-move-tracking); reviewer's reading, not
+re-verified.
+
+---
+
+## [ ] Debt 73: `scripts/run-args-tests.sh` grows by one block per args test
+
+**Status:** Open
+**Kind:** extraction
+**Where:** `scripts/run-args-tests.sh` (1058 raw lines after Bug 56)
+**Due when:** touching `scripts/run-args-tests.sh` · the file passes 1600 raw lines
+
+**Description:** Every args test adds a section to one script. It is still under the
+1600-line note line, but `[file-growth]` WATCH items on it came up on three branches
+(chore-version-0.6.0, fix-bug-118-string-to-string, fix/bug-56-run-temp-dir).
+
+**Payment:** Split the script by section into `scripts/args-tests/<topic>.sh` files sourced
+by `run-args-tests.sh`, with its shared helpers (`KLAR`, `TEST_DIR`, the pass/fail
+counters) in one common file.
+
+**Found by:** /qa-review on fix/bug-56-run-temp-dir, 2026-10-27 — file-size-checker (WATCH,
+seen in 3 branches); reviewer's reading, not re-verified.

@@ -958,6 +958,34 @@ pub fn cwd() Dir {
     return Dir{ .handle = AT_FDCWD };
 }
 
+extern "c" fn mkdtemp(template: [*:0]u8) ?[*:0]u8;
+
+/// Makes a new directory `<parent>/<prefix><unique>` that did not exist before, so no
+/// other process can have planted it or anything in it (Bug 56). On POSIX it is
+/// `mkdtemp(3)`: a random suffix, mode 0700. On Windows it is a timestamped name made by
+/// an exclusive create, retried on a clash; it inherits the parent's permissions.
+/// Returns the directory's path, which the caller frees.
+pub fn makeTempDir(allocator: std.mem.Allocator, parent: []const u8, prefix: []const u8) ![]u8 {
+    if (comptime is_windows) {
+        var attempt: u32 = 0;
+        while (attempt < 100) : (attempt += 1) {
+            const dir_path = try std.fmt.allocPrint(allocator, "{s}\\{s}{x}", .{ parent, prefix, nanoTimestamp() + attempt });
+            cwd().makeDir(dir_path) catch |err| {
+                allocator.free(dir_path);
+                if (err == error.PathAlreadyExists) continue;
+                return err;
+            };
+            return dir_path;
+        }
+        return error.PathAlreadyExists;
+    }
+    var buf: [4096]u8 = undefined;
+    const template = std.fmt.bufPrint(&buf, "{s}/{s}XXXXXX\x00", .{ parent, prefix }) catch return error.NameTooLong;
+    const template_z: [:0]u8 = template[0 .. template.len - 1 :0];
+    if (mkdtemp(template_z.ptr) == null) return error.AccessDenied;
+    return allocator.dupe(u8, template_z);
+}
+
 pub fn accessAbsolute(absolute_path: []const u8, options: AccessOptions) AccessError!void {
     if (comptime is_windows) return win.accessAbsolute(absolute_path);
     _ = options;
