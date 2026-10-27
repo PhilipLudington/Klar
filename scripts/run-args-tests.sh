@@ -600,6 +600,76 @@ expect_status "run --interpret exit status: type error exits 1" one \
 rm -rf "$EXIT_TMP"
 
 echo ""
+echo "--- Test: klar run builds into its own temp directory (Bug 56) ---"
+
+# POSIX only: the checks read `ls -ld` modes and TMPDIR, which Windows does not have.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        echo "(skipped on Windows)"
+        ;;
+    *)
+        RUN_TMP="$SCRIPT_DIR/build/run_temp_dir"
+        rm -rf "$RUN_TMP"
+        mkdir -p "$RUN_TMP/tmpdir" "$RUN_TMP/fail"
+
+        # Under $TMPDIR: exactly one klar-run-* entry, a 0700 directory holding the binary.
+        TMPDIR="$RUN_TMP/tmpdir" $KLAR run "$TEST_DIR/run_temp_dir.kl" "$RUN_TMP/tmpdir" >"$RUN_TMP/out.txt" 2>&1
+        status=$?
+        dir_lines=$(grep -c "^drwx------ .* $RUN_TMP/tmpdir/klar-run-[^/]*$" "$RUN_TMP/out.txt")
+        entry_lines=$(grep -c " $RUN_TMP/tmpdir/klar-run-" "$RUN_TMP/out.txt")
+        if [ $status -eq 0 ] && [ "$dir_lines" -eq 1 ] && [ "$entry_lines" -eq 1 ] && grep -q "^klar-run$" "$RUN_TMP/out.txt"; then
+            pass "run temp dir: binary klar-run inside one 0700 klar-run-* directory under \$TMPDIR"
+        else
+            fail "run temp dir: expected one 0700 klar-run-* directory holding klar-run under \$TMPDIR (exit $status)"
+            head -5 "$RUN_TMP/out.txt" | sed 's/^/  /'
+        fi
+
+        # The directory is gone once the program has run.
+        if [ -z "$(ls -A "$RUN_TMP/tmpdir")" ]; then
+            pass "run temp dir: removed after the program exits"
+        else
+            fail "run temp dir: left behind after the program exits: $(ls -A "$RUN_TMP/tmpdir")"
+        fi
+
+        # A failed build removes the directory too, and still exits 1.
+        TMPDIR="$RUN_TMP/fail" $KLAR run "$TEST_DIR/exit_status_type_error.kl" >"$RUN_TMP/out.txt" 2>&1
+        status=$?
+        if [ $status -eq 1 ] && [ -z "$(ls -A "$RUN_TMP/fail")" ]; then
+            pass "run temp dir: removed after a failed build"
+        else
+            fail "run temp dir: failed build exits $status and leaves: $(ls -A "$RUN_TMP/fail")"
+        fi
+
+        # TMPDIR unset or empty falls back to /tmp.
+        for tmpdir_case in unset empty; do
+            if [ "$tmpdir_case" = "unset" ]; then
+                env -u TMPDIR $KLAR run "$TEST_DIR/run_temp_dir.kl" /tmp >"$RUN_TMP/out.txt" 2>&1
+            else
+                TMPDIR= $KLAR run "$TEST_DIR/run_temp_dir.kl" /tmp >"$RUN_TMP/out.txt" 2>&1
+            fi
+            status=$?
+            if [ $status -eq 0 ] && grep -q "^drwx------ .* /tmp/klar-run-[^/]*$" "$RUN_TMP/out.txt"; then
+                pass "run temp dir: TMPDIR $tmpdir_case falls back to a 0700 directory in /tmp"
+            else
+                fail "run temp dir: TMPDIR $tmpdir_case did not use a 0700 directory in /tmp (exit $status)"
+                head -5 "$RUN_TMP/out.txt" | sed 's/^/  /'
+            fi
+        done
+
+        # A temp directory that cannot be made fails the run with exit 1.
+        TMPDIR="$RUN_TMP/missing" $KLAR run "$TEST_DIR/no_args.kl" >"$RUN_TMP/out.txt" 2>&1
+        status=$?
+        if [ $status -eq 1 ] && grep -q "Failed to create temp directory" "$RUN_TMP/out.txt"; then
+            pass "run temp dir: an unusable TMPDIR fails the run with exit 1"
+        else
+            fail "run temp dir: an unusable TMPDIR exits $status without the temp directory error"
+            head -3 "$RUN_TMP/out.txt" | sed 's/^/  /'
+        fi
+        rm -rf "$RUN_TMP"
+        ;;
+esac
+
+echo ""
 # Cross-platform temp directory for LSP test fixtures
 LSP_TMP="$SCRIPT_DIR/build/lsp_test"
 mkdir -p "$LSP_TMP"
