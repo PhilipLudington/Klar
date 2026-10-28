@@ -4429,3 +4429,35 @@ cross-check it.
 
 **Found by:** Builder on fix/bug-44-process-run-argv, 2026-10-26 — rule 4's copy search for
 Bug 44; by reading, not run.
+
+---
+
+## [ ] Bug 141: `klar run` writes its intermediate `.o` file to a predictable path in the current directory
+
+**Status:** Open
+**Deferred:** after v0.6.0 — needs a second local user racing the build in a shared
+directory such as `/tmp`, which no program the trial would write can trigger (Phase 1's
+cut-set test), so it stays out of the cut set
+
+**System:** klar run temp binary — `runNativeFileWithOptions` / `buildNative` in `src/main.zig`
+
+**Description:** Bug 56 builds the binary inside a private 0700 `klar-run-*` directory,
+but `buildNative` still writes the object file as `<source-stem>.o` relative to the
+current directory (`src/main.zig:3214`, `src/main.zig:3552`). Run from a shared
+directory such as `/tmp`, another local user can pre-create or swap `/tmp/<stem>.o`
+between compile and link, the same race Bug 56 closed for the binary. `klar build` goes
+through the same `buildNative` code, but its outputs sit next to the user's own file by
+design, so only the `klar run` path is the security issue.
+
+**Steps to reproduce:**
+1. `cd /tmp && klar run ~/x/hello.kl` while watching `/tmp`.
+2. A `hello.o` appears in `/tmp` during the build.
+
+**Expected:** the object file lives inside the run's private temp directory (as
+`<dir>/klar-run.o` or similar) and is removed with it.
+
+**Actual:** `<stem>.o` is written to the current directory.
+
+**Found by:** /qa-review on fix/bug-56-run-temp-dir, 2026-10-27 — security-checker
+(WATCH); scoped out in `docs/decisions/2026-10-27-klar-run-temp-dir.md`; Philip chose
+to file it, 2026-10-27.
