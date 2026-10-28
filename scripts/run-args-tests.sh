@@ -597,7 +597,126 @@ expect_status "run --vm exit status: type error exits 1" one \
     run "$TEST_DIR/exit_status_type_error.kl" --vm
 expect_status "run --interpret exit status: type error exits 1" one \
     run "$TEST_DIR/exit_status_type_error.kl" --interpret
+# check --partial: 1 with diagnostics, 0 when clean.
+expect_status "check --partial exit status: type error exits 1" one \
+    check "$TEST_DIR/exit_status_type_error.kl" --partial
+expect_status "check --partial exit status: clean file exits 0" zero \
+    check "$TEST_DIR/no_args.kl" --partial
+# A query answers for tooling even when the program has type errors.
+expect_status "check --expected-type-at exit status: type error still exits 0" zero \
+    check "$TEST_DIR/exit_status_type_error.kl" --expected-type-at 3:18
+# --scope-at on a file with no imports lists the scope and exits 0 (Bug 142: it panicked
+# with "Invalid free", exit 134).
+expect_status "check --scope-at exit status: file with no imports exits 0" zero \
+    check "$TEST_DIR/no_args.kl" --scope-at 2:5
+expect_status "check --scope-at exit status: type error still exits 0" zero \
+    check "$TEST_DIR/exit_status_type_error.kl" --scope-at 3:5
+# check argument errors.
+expect_status "check exit status: unknown option exits 1" one \
+    check "$TEST_DIR/no_args.kl" --bogus
+expect_status "check exit status: missing --scope-at value exits 1" one \
+    check "$TEST_DIR/no_args.kl" --scope-at
+expect_status "check exit status: invalid --scope-at value exits 1" one \
+    check "$TEST_DIR/no_args.kl" --scope-at abc
+expect_status "check exit status: both queries at once exits 1" one \
+    check "$TEST_DIR/no_args.kl" --scope-at 1:1 --expected-type-at 1:1
+expect_status "check exit status: no input file exits 1" one \
+    check
+expect_status "check exit status: query position out of range exits 1" one \
+    check "$TEST_DIR/no_args.kl" --scope-at 999:1
+# build: a malformed klar.json and a bogus target.
+mkdir -p "$EXIT_TMP/bad_manifest"
+printf '{ not json' >"$EXIT_TMP/bad_manifest/klar.json"
+(cd "$EXIT_TMP/bad_manifest" && $KLAR build >"$EXIT_TMP/out.txt" 2>&1)
+status=$?
+if [ $status -eq 1 ]; then
+    pass "build exit status: malformed klar.json exits 1"
+else
+    fail "build exit status: malformed klar.json (exit $status)"
+    head -3 "$EXIT_TMP/out.txt" | sed 's/^/  /'
+fi
+expect_status "build exit status: bogus --target exits 1" one \
+    build "$TEST_DIR/no_args.kl" --target not-a-triple -o "$EXIT_TMP/bogus_target"
 rm -rf "$EXIT_TMP"
+
+echo ""
+echo "--- Test: a parse error in an imported module stops discovery (Bug 51) ---"
+
+# The entry uses nothing from the broken module, so only discovery can see the error.
+# Each command exits 1 and prints the helper's parse error, and nothing after it:
+# no "module ... not found" type error and no type-check header.
+IMPORT_TMP="$SCRIPT_DIR/build/import_parse_error"
+mkdir -p "$IMPORT_TMP"
+expect_import_parse_error() {
+    local desc="$1"
+    shift
+    $KLAR "$@" >"$IMPORT_TMP/out.txt" 2>&1
+    local status=$?
+    if [ $status -eq 1 ] \
+        && grep -q "Parse error in '.*import_parse_error_helper.kl'" "$IMPORT_TMP/out.txt" \
+        && ! grep -q "not found" "$IMPORT_TMP/out.txt" \
+        && ! grep -q "Type check failed" "$IMPORT_TMP/out.txt"; then
+        pass "$desc"
+    else
+        fail "$desc (exit $status)"
+        head -5 "$IMPORT_TMP/out.txt" | sed 's/^/  /'
+    fi
+}
+expect_import_parse_error "import parse error: check stops at the parse error" \
+    check "$TEST_DIR/import_parse_error.kl"
+expect_import_parse_error "import parse error: build stops at the parse error" \
+    build "$TEST_DIR/import_parse_error.kl" -o "$IMPORT_TMP/bin"
+expect_import_parse_error "import parse error: run stops at the parse error" \
+    run "$TEST_DIR/import_parse_error.kl"
+expect_import_parse_error "import parse error: run --vm stops at the parse error" \
+    run "$TEST_DIR/import_parse_error.kl" --vm
+expect_import_parse_error "import parse error: run --interpret stops at the parse error" \
+    run "$TEST_DIR/import_parse_error.kl" --interpret
+if [ -e "$IMPORT_TMP/bin" ]; then
+    fail "import parse error: build wrote a binary"
+else
+    pass "import parse error: build writes no binary"
+fi
+
+# The test runner already stopped at it; it now goes through the same discovery.
+$KLAR test "$TEST_DIR/import_parse_error.kl" >"$IMPORT_TMP/out.txt" 2>&1
+status=$?
+if [ $status -ne 0 ] && grep -q "Parse error in '.*import_parse_error_helper.kl'" "$IMPORT_TMP/out.txt"; then
+    pass "import parse error: test fails at the parse error"
+else
+    fail "import parse error: test exits $status without the helper's parse error"
+    head -5 "$IMPORT_TMP/out.txt" | sed 's/^/  /'
+fi
+
+# Under check --partial the parse error is a diagnostic: the run goes on and exits 1.
+$KLAR check "$TEST_DIR/import_parse_error.kl" --partial >"$IMPORT_TMP/out.txt" 2>&1
+status=$?
+if [ $status -eq 1 ] && grep -q "Parse error in '.*import_parse_error_helper.kl'" "$IMPORT_TMP/out.txt" \
+    && ! grep -q "no diagnostics" "$IMPORT_TMP/out.txt"; then
+    pass "import parse error: check --partial reports it and exits 1"
+else
+    fail "import parse error: check --partial exits $status without reporting the parse error"
+    head -5 "$IMPORT_TMP/out.txt" | sed 's/^/  /'
+fi
+# A query under --partial still answers.
+$KLAR check "$TEST_DIR/import_parse_error.kl" --partial --scope-at 6:5 >"$IMPORT_TMP/out.txt" 2>&1
+if grep -q "Parse error in '.*import_parse_error_helper.kl'" "$IMPORT_TMP/out.txt" \
+    && grep -q "^Scope at 6:5" "$IMPORT_TMP/out.txt"; then
+    pass "import parse error: check --partial --scope-at still answers the query"
+else
+    fail "import parse error: check --partial --scope-at gave no scope after the parse error"
+    head -5 "$IMPORT_TMP/out.txt" | sed 's/^/  /'
+fi
+# A module two files import is parsed, and its parse error reported, once.
+$KLAR check "$TEST_DIR/import_parse_error_twice.kl" --partial >"$IMPORT_TMP/out.txt" 2>&1
+count=$(grep -c "Parse error in '.*import_parse_error_helper.kl'" "$IMPORT_TMP/out.txt")
+if [ "$count" -eq 1 ]; then
+    pass "import parse error: check --partial reports a twice-imported module's parse error once"
+else
+    fail "import parse error: check --partial reported the parse error $count times"
+    head -5 "$IMPORT_TMP/out.txt" | sed 's/^/  /'
+fi
+rm -rf "$IMPORT_TMP"
 
 echo ""
 echo "--- Test: klar run builds into its own temp directory (Bug 56) ---"

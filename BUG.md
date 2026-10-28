@@ -1394,9 +1394,9 @@ process exit status on both paths.
 
 ---
 
-## [ ] Bug 51: A parse error in an *imported* module is swallowed by `catch continue`, and the build reports success
+## [x] Bug 51: A parse error in an *imported* module is swallowed by `catch continue`, and the build reports success
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** module discovery — the `parseModuleSource` discovery loops in `src/main.zig`
 
@@ -1416,6 +1416,20 @@ prints "Parse error in …" and then succeeds. `runTestFile` alone treats it as 
 **Found by:** `/qa-audit --calibrate klar-e7b54e7`, 2026-09-04 — driver territory, HIGH
 `[error-handling]`; verified by reading at both commits. Fix: treat it as fatal, as the test
 runner does.
+
+**Fix:** every discovery loop (`run --interpret`, `build` and native `run`, `check`,
+`--vm`, and the test runner) now calls one function, `discoverModules` in
+`src/main.zig`, which stops at the first module that cannot be read or parsed; the
+command exits 1 with only that parse error printed, so the "module '<name>' not found"
+type error Bug 49 had made fatal no longer follows it. Under `check --partial` the
+module is skipped instead, discovery and the queries carry on, and the run exits 1 at
+the end (`docs/decisions/2026-10-27-import-parse-error-stops-discovery.md`).
+
+**Test:** `scripts/run-args-tests.sh` § "a parse error in an imported module stops
+discovery (Bug 51)" with `test/args/import_parse_error.kl` and
+`test/args/import_parse_error_helper.kl`. Before the fix each of check, build, run,
+run --vm and run --interpret printed the parse error and then "module
+'import_parse_error_helper' not found".
 
 ---
 
@@ -4461,3 +4475,73 @@ design, so only the `klar run` path is the security issue.
 **Found by:** /qa-review on fix/bug-56-run-temp-dir, 2026-10-27 — security-checker
 (WATCH); scoped out in `docs/decisions/2026-10-27-klar-run-temp-dir.md`; Philip chose
 to file it, 2026-10-27.
+
+---
+
+## [x] Bug 142: `klar check --scope-at` on a file with no imports panics with "Invalid free"
+
+**Status:** Fixed
+
+**System:** check scope query — `checkFile`'s `--scope-at` branch in `src/main.zig` and
+`extractScopeAtOffsetInScope` in `src/checker/checker.zig`
+
+**Description:** For a file with no imports, `checkFile` gives the `TypeChecker` an arena
+allocator (`checker_alloc`, `src/main.zig` ~4416-4420), and
+`extractScopeAtOffsetInScope` builds its result with `self.allocator`
+(`src/checker/checker.zig:3676`), so the slice lives in that arena. `checkFile` then
+frees it with the general-purpose allocator (`defer allocator.free(scope_entries)`,
+`src/main.zig:4567`), and the debug allocator panics after the bindings print. A file
+with imports uses the general-purpose allocator for the checker and does not crash.
+
+**Steps to reproduce:**
+1. `klar check test/args/no_args.kl --scope-at 2:5`
+
+**Expected:** the scope listing, then exit 0.
+
+**Actual:** the listing, then `panic: Invalid free` at `src/main.zig:4567` and exit 134.
+The same at `c64004f` (`main`).
+
+**Found by:** fix/bug-51-import-parse-error, 2026-10-27 — paying Debt 54's `--scope-at`
+exit-status case; reproduced on `main`.
+
+**Fix:** `checkFile` frees the scope slice with the checker's own allocator
+(`checker.allocator`), which owns it in both the arena and the general-purpose case
+(`src/main.zig`, the `--scope-at` branch).
+
+**Test:** `scripts/run-args-tests.sh` "check --scope-at exit status: file with no imports
+exits 0" and "… type error still exits 0" (red at 4dfa085, exit 134).
+
+---
+
+## [ ] Bug 143: `klar check --partial` still reports "module not found" and follow-on type errors for an imported module that failed to parse
+
+**Status:** Open
+
+**System:** module discovery — `discoverModules` and `checkFile`'s `--partial` path in
+`src/main.zig`
+
+**Deferred:** after v0.6.0 — `--partial` is the tooling mode (editor diagnostics), the
+real parse error is printed first and the exit status is right; which follow-on errors to
+suppress is a design question `docs/decisions/2026-10-27-import-parse-error-stops-discovery.md`
+leaves open.
+
+**Description:** Bug 51 made an imported module's parse error stop discovery, so the
+misleading "module '<name>' not found" line no longer prints. Under `check --partial`
+the module is skipped and checking carries on (`src/main.zig:4485-4488`), but the
+skipped module has no AST, so the type-check pass still reports `module '<name>' not
+found` for each importer, plus undefined-symbol and type-mismatch errors at every use of
+its symbols (`src/main.zig:4487-4560`). Unchanged from `main`.
+
+**Steps to reproduce:**
+1. `bad.kl` with a syntax error defining `helper`; `a.kl` imports `bad`; `m.kl` imports
+   `bad` and `a` and calls `helper()`.
+2. `klar check m.kl --partial`
+
+**Expected:** `bad.kl`'s parse error, and no errors that only restate it.
+
+**Actual:** the parse error, then "Type check failed with 5 error(s)": `module 'bad' not
+found` twice, `undefined variable 'helper'`, `cannot call non-function type`, `return
+type mismatch`.
+
+**Found by:** /qa-review on fix/bug-51-import-parse-error, 2026-10-27 — code-reviewer;
+reviewer's evidence (probe), not re-read.

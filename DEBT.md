@@ -1161,9 +1161,16 @@ Growth Ledger (Limit band); reviewer's reading, not re-verified.
 
 ---
 
-## [ ] Debt 54: Most of Bug 49's exit-status paths have no status test
+## [x] Debt 54: Most of Bug 49's exit-status paths have no status test
 
-**Status:** Open
+**Status:** Paid
+**Paid:** fix/bug-51-import-parse-error, 2026-10-27: `scripts/run-args-tests.sh` (Bug 49
+section) adds a status case for each path named below: `check --partial` (1 with a type
+error, 0 clean), `--expected-type-at` exiting 0 on a type error, an unknown `check`
+option, a missing and an invalid `--scope-at` value, both queries at once, no input file,
+a query position out of range, a malformed `klar.json` under `klar build`, and
+`build --target not-a-triple`. `--scope-at` exiting 0 on a type error is left out: on a
+file with no imports that query panics with exit 134, filed as Bug 142, whose fix will pin it.
 **Kind:** test-gap
 **Where:** `scripts/run-args-tests.sh` (Bug 49 section), `src/main.zig:866-934`, `src/main.zig:4538-4646`, `src/main.zig:748-780`
 **Due when:** touching `scripts/run-args-tests.sh` · touching `src/main.zig` exit paths

@@ -1,0 +1,4 @@
+// A syntax error, imported by import_parse_error.kl (Bug 51).
+pub fn helper( -> i32 {
+    return 1
+}
