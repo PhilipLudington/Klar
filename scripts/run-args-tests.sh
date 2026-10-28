@@ -597,6 +597,41 @@ expect_status "run --vm exit status: type error exits 1" one \
     run "$TEST_DIR/exit_status_type_error.kl" --vm
 expect_status "run --interpret exit status: type error exits 1" one \
     run "$TEST_DIR/exit_status_type_error.kl" --interpret
+# check --partial: 1 with diagnostics, 0 when clean.
+expect_status "check --partial exit status: type error exits 1" one \
+    check "$TEST_DIR/exit_status_type_error.kl" --partial
+expect_status "check --partial exit status: clean file exits 0" zero \
+    check "$TEST_DIR/no_args.kl" --partial
+# A query answers for tooling even when the program has type errors. (--scope-at on a
+# single-file program crashes today, Bug 142, so only --expected-type-at is pinned.)
+expect_status "check --expected-type-at exit status: type error still exits 0" zero \
+    check "$TEST_DIR/exit_status_type_error.kl" --expected-type-at 3:18
+# check argument errors.
+expect_status "check exit status: unknown option exits 1" one \
+    check "$TEST_DIR/no_args.kl" --bogus
+expect_status "check exit status: missing --scope-at value exits 1" one \
+    check "$TEST_DIR/no_args.kl" --scope-at
+expect_status "check exit status: invalid --scope-at value exits 1" one \
+    check "$TEST_DIR/no_args.kl" --scope-at abc
+expect_status "check exit status: both queries at once exits 1" one \
+    check "$TEST_DIR/no_args.kl" --scope-at 1:1 --expected-type-at 1:1
+expect_status "check exit status: no input file exits 1" one \
+    check
+expect_status "check exit status: query position out of range exits 1" one \
+    check "$TEST_DIR/no_args.kl" --scope-at 999:1
+# build: a malformed klar.json and a bogus target.
+mkdir -p "$EXIT_TMP/bad_manifest"
+printf '{ not json' >"$EXIT_TMP/bad_manifest/klar.json"
+(cd "$EXIT_TMP/bad_manifest" && $KLAR build >"$EXIT_TMP/out.txt" 2>&1)
+status=$?
+if [ $status -eq 1 ]; then
+    pass "build exit status: malformed klar.json exits 1"
+else
+    fail "build exit status: malformed klar.json (exit $status)"
+    head -3 "$EXIT_TMP/out.txt" | sed 's/^/  /'
+fi
+expect_status "build exit status: bogus --target exits 1" one \
+    build "$TEST_DIR/no_args.kl" --target not-a-triple -o "$EXIT_TMP/bogus_target"
 rm -rf "$EXIT_TMP"
 
 echo ""
