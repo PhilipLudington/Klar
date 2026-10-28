@@ -1394,9 +1394,9 @@ process exit status on both paths.
 
 ---
 
-## [ ] Bug 51: A parse error in an *imported* module is swallowed by `catch continue`, and the build reports success
+## [x] Bug 51: A parse error in an *imported* module is swallowed by `catch continue`, and the build reports success
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** module discovery — the `parseModuleSource` discovery loops in `src/main.zig`
 
@@ -1416,6 +1416,20 @@ prints "Parse error in …" and then succeeds. `runTestFile` alone treats it as 
 **Found by:** `/qa-audit --calibrate klar-e7b54e7`, 2026-09-04 — driver territory, HIGH
 `[error-handling]`; verified by reading at both commits. Fix: treat it as fatal, as the test
 runner does.
+
+**Fix:** every discovery loop (`run --interpret`, `build` and native `run`, `check`,
+`--vm`, and the test runner) now calls one function, `discoverModules` in
+`src/main.zig`, which stops at the first module that cannot be read or parsed; the
+command exits 1 with only that parse error printed, so the "module '<name>' not found"
+type error Bug 49 had made fatal no longer follows it. Under `check --partial` the
+module is skipped instead, discovery and the queries carry on, and the run exits 1 at
+the end (`docs/decisions/2026-10-27-import-parse-error-stops-discovery.md`).
+
+**Test:** `scripts/run-args-tests.sh` § "a parse error in an imported module stops
+discovery (Bug 51)" with `test/args/import_parse_error.kl` and
+`test/args/import_parse_error_helper.kl`. Before the fix each of check, build, run,
+run --vm and run --interpret printed the parse error and then "module
+'import_parse_error_helper' not found".
 
 ---
 

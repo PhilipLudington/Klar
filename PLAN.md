@@ -187,7 +187,7 @@ in user programs first, then checker/contract correctness, then tooling, then de
       (completed 2026-10-27: `klar run` builds into a fresh `klar-run-*` directory made by
       `mkdtemp`, 0700, under `$TMPDIR` or `/tmp`; on Windows under `%TEMP%`)
       Reviewed: 2026-10-27 fa6a00c0 (gaps 7, Philip 2)
-- [ ] Bug 51 — a parse error in an imported module is swallowed by `catch continue` and the
+- [x] Bug 51 — a parse error in an imported module is swallowed by `catch continue` and the
       build reports success (`src/main.zig`, four discovery loops); make it fatal, as the
       test runner does. (Philip, 2026-10-25: before v0.6.0) (qa-audit 2026-09-04)
       Under `check --partial` an imported module's parse error is a diagnostic like the
@@ -198,6 +198,8 @@ in user programs first, then checker/contract correctness, then tooling, then de
       make discovery stop at the parse error, so the only error printed is the parse
       error and the misleading "module not found" line goes away (Philip, 2026-10-27;
       decision: `docs/decisions/2026-10-27-import-parse-error-stops-discovery.md`).
+      (completed 2026-10-27: every discovery loop, the test runner's included, goes
+      through `discoverModules`, which stops at the first module that fails to parse)
       Reviewed: 2026-10-27 e723e687 (gaps 1, Philip 0)
 
 **Move checking and explicit move/clone (Philip, 2026-10-18; not in the v0.6.0 cut set)**
