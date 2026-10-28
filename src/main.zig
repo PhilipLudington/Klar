@@ -2886,6 +2886,11 @@ fn discoverModules(
     defer modules_to_process.deinit(allocator);
     try modules_to_process.append(allocator, entry);
 
+    // A module that failed stays `.discovered`; remember it so a second importer
+    // does not parse it again and print its error twice.
+    var failed = std.ArrayListUnmanaged(*ModuleInfo).empty;
+    defer failed.deinit(allocator);
+
     var first_failure: ?DiscoveryFailure = null;
     var processed_idx: usize = 0;
     while (processed_idx < modules_to_process.items.len) {
@@ -2894,10 +2899,12 @@ fn discoverModules(
 
         // Parse if not already parsed
         if (mod.state == .discovered) {
+            if (std.mem.indexOfScalar(*ModuleInfo, failed.items, mod) != null) continue;
             const src = parseModuleSource(allocator, arena, mod) catch |err| switch (err) {
                 error.FileNotFound, error.ParseError => {
                     if (first_failure == null) first_failure = .{ .module = mod, .err = err };
                     if (stop_at_parse_error) return first_failure;
+                    try failed.append(allocator, mod);
                     continue;
                 },
                 else => return err,
@@ -4564,7 +4571,8 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
             try stderr.writeAll("Error: failed to extract scope at cursor\n");
             return error.CommandFailed;
         };
-        defer allocator.free(scope_entries);
+        // The checker's allocator owns the slice (an arena for a file with no imports).
+        defer checker.allocator.free(scope_entries);
 
         if (options.scope_json) {
             try stdout.writeAll("{\"line\":");

@@ -4478,9 +4478,9 @@ to file it, 2026-10-27.
 
 ---
 
-## [ ] Bug 142: `klar check --scope-at` on a file with no imports panics with "Invalid free"
+## [x] Bug 142: `klar check --scope-at` on a file with no imports panics with "Invalid free"
 
-**Status:** Open
+**Status:** Fixed
 
 **System:** check scope query — `checkFile`'s `--scope-at` branch in `src/main.zig` and
 `extractScopeAtOffsetInScope` in `src/checker/checker.zig`
@@ -4503,6 +4503,13 @@ The same at `c64004f` (`main`).
 
 **Found by:** fix/bug-51-import-parse-error, 2026-10-27 — paying Debt 54's `--scope-at`
 exit-status case; reproduced on `main`.
+
+**Fix:** `checkFile` frees the scope slice with the checker's own allocator
+(`checker.allocator`), which owns it in both the arena and the general-purpose case
+(`src/main.zig`, the `--scope-at` branch).
+
+**Test:** `scripts/run-args-tests.sh` "check --scope-at exit status: file with no imports
+exits 0" and "… type error still exits 0" (red at 4dfa085, exit 134).
 
 ---
 
