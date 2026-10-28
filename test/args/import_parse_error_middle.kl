@@ -1,0 +1,6 @@
+// A second importer of the broken helper, imported by import_parse_error_twice.kl.
+import import_parse_error_helper.{ helper }
+
+pub fn middle() -> i32 {
+    return 2
+}

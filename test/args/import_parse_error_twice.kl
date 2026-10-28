@@ -1,0 +1,8 @@
+// The broken helper is imported here and again by import_parse_error_middle.kl.
+// check --partial must report its parse error once, not once per importer.
+import import_parse_error_helper.{ helper }
+import import_parse_error_middle.{ middle }
+
+fn main() -> i32 {
+    return 0
+}

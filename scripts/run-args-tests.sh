@@ -602,10 +602,15 @@ expect_status "check --partial exit status: type error exits 1" one \
     check "$TEST_DIR/exit_status_type_error.kl" --partial
 expect_status "check --partial exit status: clean file exits 0" zero \
     check "$TEST_DIR/no_args.kl" --partial
-# A query answers for tooling even when the program has type errors. (--scope-at on a
-# single-file program crashes today, Bug 142, so only --expected-type-at is pinned.)
+# A query answers for tooling even when the program has type errors.
 expect_status "check --expected-type-at exit status: type error still exits 0" zero \
     check "$TEST_DIR/exit_status_type_error.kl" --expected-type-at 3:18
+# --scope-at on a file with no imports lists the scope and exits 0 (Bug 142: it panicked
+# with "Invalid free", exit 134).
+expect_status "check --scope-at exit status: file with no imports exits 0" zero \
+    check "$TEST_DIR/no_args.kl" --scope-at 2:5
+expect_status "check --scope-at exit status: type error still exits 0" zero \
+    check "$TEST_DIR/exit_status_type_error.kl" --scope-at 3:5
 # check argument errors.
 expect_status "check exit status: unknown option exits 1" one \
     check "$TEST_DIR/no_args.kl" --bogus
@@ -700,6 +705,15 @@ if grep -q "Parse error in '.*import_parse_error_helper.kl'" "$IMPORT_TMP/out.tx
     pass "import parse error: check --partial --scope-at still answers the query"
 else
     fail "import parse error: check --partial --scope-at gave no scope after the parse error"
+    head -5 "$IMPORT_TMP/out.txt" | sed 's/^/  /'
+fi
+# A module two files import is parsed, and its parse error reported, once.
+$KLAR check "$TEST_DIR/import_parse_error_twice.kl" --partial >"$IMPORT_TMP/out.txt" 2>&1
+count=$(grep -c "Parse error in '.*import_parse_error_helper.kl'" "$IMPORT_TMP/out.txt")
+if [ "$count" -eq 1 ]; then
+    pass "import parse error: check --partial reports a twice-imported module's parse error once"
+else
+    fail "import parse error: check --partial reported the parse error $count times"
     head -5 "$IMPORT_TMP/out.txt" | sed 's/^/  /'
 fi
 rm -rf "$IMPORT_TMP"
