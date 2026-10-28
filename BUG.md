@@ -4503,3 +4503,38 @@ The same at `c64004f` (`main`).
 
 **Found by:** fix/bug-51-import-parse-error, 2026-10-27 — paying Debt 54's `--scope-at`
 exit-status case; reproduced on `main`.
+
+---
+
+## [ ] Bug 143: `klar check --partial` still reports "module not found" and follow-on type errors for an imported module that failed to parse
+
+**Status:** Open
+
+**System:** module discovery — `discoverModules` and `checkFile`'s `--partial` path in
+`src/main.zig`
+
+**Deferred:** after v0.6.0 — `--partial` is the tooling mode (editor diagnostics), the
+real parse error is printed first and the exit status is right; which follow-on errors to
+suppress is a design question `docs/decisions/2026-10-27-import-parse-error-stops-discovery.md`
+leaves open.
+
+**Description:** Bug 51 made an imported module's parse error stop discovery, so the
+misleading "module '<name>' not found" line no longer prints. Under `check --partial`
+the module is skipped and checking carries on (`src/main.zig:4485-4488`), but the
+skipped module has no AST, so the type-check pass still reports `module '<name>' not
+found` for each importer, plus undefined-symbol and type-mismatch errors at every use of
+its symbols (`src/main.zig:4487-4560`). Unchanged from `main`.
+
+**Steps to reproduce:**
+1. `bad.kl` with a syntax error defining `helper`; `a.kl` imports `bad`; `m.kl` imports
+   `bad` and `a` and calls `helper()`.
+2. `klar check m.kl --partial`
+
+**Expected:** `bad.kl`'s parse error, and no errors that only restate it.
+
+**Actual:** the parse error, then "Type check failed with 5 error(s)": `module 'bad' not
+found` twice, `undefined variable 'helper'`, `cannot call non-function type`, `return
+type mismatch`.
+
+**Found by:** /qa-review on fix/bug-51-import-parse-error, 2026-10-27 — code-reviewer;
+reviewer's evidence (probe), not re-read.
