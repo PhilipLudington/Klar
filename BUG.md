@@ -4475,3 +4475,31 @@ design, so only the `klar run` path is the security issue.
 **Found by:** /qa-review on fix/bug-56-run-temp-dir, 2026-10-27 — security-checker
 (WATCH); scoped out in `docs/decisions/2026-10-27-klar-run-temp-dir.md`; Philip chose
 to file it, 2026-10-27.
+
+---
+
+## [ ] Bug 142: `klar check --scope-at` on a file with no imports panics with "Invalid free"
+
+**Status:** Open
+
+**System:** check scope query — `checkFile`'s `--scope-at` branch in `src/main.zig` and
+`extractScopeAtOffsetInScope` in `src/checker/checker.zig`
+
+**Description:** For a file with no imports, `checkFile` gives the `TypeChecker` an arena
+allocator (`checker_alloc`, `src/main.zig` ~4416-4420), and
+`extractScopeAtOffsetInScope` builds its result with `self.allocator`
+(`src/checker/checker.zig:3676`), so the slice lives in that arena. `checkFile` then
+frees it with the general-purpose allocator (`defer allocator.free(scope_entries)`,
+`src/main.zig:4567`), and the debug allocator panics after the bindings print. A file
+with imports uses the general-purpose allocator for the checker and does not crash.
+
+**Steps to reproduce:**
+1. `klar check test/args/no_args.kl --scope-at 2:5`
+
+**Expected:** the scope listing, then exit 0.
+
+**Actual:** the listing, then `panic: Invalid free` at `src/main.zig:4567` and exit 134.
+The same at `c64004f` (`main`).
+
+**Found by:** fix/bug-51-import-parse-error, 2026-10-27 — paying Debt 54's `--scope-at`
+exit-status case; reproduced on `main`.

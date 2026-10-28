@@ -342,6 +342,10 @@ in user programs first, then checker/contract correctness, then tooling, then de
       (`src/bytecode.zig:491`). (crash: `klar disasm` can panic) (qa-audit 2026-09-04)
 
 **CLI, driver and LSP**
+- [ ] Bug 142 — `klar check --scope-at` on a file with no imports panics ("Invalid free",
+      exit 134): the scope slice comes from the checker's arena and `checkFile` frees it
+      with the general-purpose allocator (`src/main.zig:4567`). (crash)
+      (found: fix/bug-51-import-parse-error, 2026-10-27)
 - [ ] Bug 52 — ownership analysis only in `check`, entry module only (`src/main.zig:4645`);
       run it in every pipeline over every module. (Philip, 2026-10-24: keeps its line, a
       move/clone § 6 prerequisite) (qa-audit 2026-09-04)
