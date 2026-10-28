@@ -1,0 +1,7 @@
+// The imported module has a syntax error and this file uses none of its symbols.
+// check, build and run must stop at that parse error (Bug 51).
+import import_parse_error_helper.{ helper }
+
+fn main() -> i32 {
+    return 0
+}

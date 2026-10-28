@@ -600,6 +600,76 @@ expect_status "run --interpret exit status: type error exits 1" one \
 rm -rf "$EXIT_TMP"
 
 echo ""
+echo "--- Test: a parse error in an imported module stops discovery (Bug 51) ---"
+
+# The entry uses nothing from the broken module, so only discovery can see the error.
+# Each command exits 1 and prints the helper's parse error, and nothing after it:
+# no "module ... not found" type error and no type-check header.
+IMPORT_TMP="$SCRIPT_DIR/build/import_parse_error"
+mkdir -p "$IMPORT_TMP"
+expect_import_parse_error() {
+    local desc="$1"
+    shift
+    $KLAR "$@" >"$IMPORT_TMP/out.txt" 2>&1
+    local status=$?
+    if [ $status -eq 1 ] \
+        && grep -q "Parse error in '.*import_parse_error_helper.kl'" "$IMPORT_TMP/out.txt" \
+        && ! grep -q "not found" "$IMPORT_TMP/out.txt" \
+        && ! grep -q "Type check failed" "$IMPORT_TMP/out.txt"; then
+        pass "$desc"
+    else
+        fail "$desc (exit $status)"
+        head -5 "$IMPORT_TMP/out.txt" | sed 's/^/  /'
+    fi
+}
+expect_import_parse_error "import parse error: check stops at the parse error" \
+    check "$TEST_DIR/import_parse_error.kl"
+expect_import_parse_error "import parse error: build stops at the parse error" \
+    build "$TEST_DIR/import_parse_error.kl" -o "$IMPORT_TMP/bin"
+expect_import_parse_error "import parse error: run stops at the parse error" \
+    run "$TEST_DIR/import_parse_error.kl"
+expect_import_parse_error "import parse error: run --vm stops at the parse error" \
+    run "$TEST_DIR/import_parse_error.kl" --vm
+expect_import_parse_error "import parse error: run --interpret stops at the parse error" \
+    run "$TEST_DIR/import_parse_error.kl" --interpret
+if [ -e "$IMPORT_TMP/bin" ]; then
+    fail "import parse error: build wrote a binary"
+else
+    pass "import parse error: build writes no binary"
+fi
+
+# The test runner already stopped at it; it now goes through the same discovery.
+$KLAR test "$TEST_DIR/import_parse_error.kl" >"$IMPORT_TMP/out.txt" 2>&1
+status=$?
+if [ $status -ne 0 ] && grep -q "Parse error in '.*import_parse_error_helper.kl'" "$IMPORT_TMP/out.txt"; then
+    pass "import parse error: test fails at the parse error"
+else
+    fail "import parse error: test exits $status without the helper's parse error"
+    head -5 "$IMPORT_TMP/out.txt" | sed 's/^/  /'
+fi
+
+# Under check --partial the parse error is a diagnostic: the run goes on and exits 1.
+$KLAR check "$TEST_DIR/import_parse_error.kl" --partial >"$IMPORT_TMP/out.txt" 2>&1
+status=$?
+if [ $status -eq 1 ] && grep -q "Parse error in '.*import_parse_error_helper.kl'" "$IMPORT_TMP/out.txt" \
+    && ! grep -q "no diagnostics" "$IMPORT_TMP/out.txt"; then
+    pass "import parse error: check --partial reports it and exits 1"
+else
+    fail "import parse error: check --partial exits $status without reporting the parse error"
+    head -5 "$IMPORT_TMP/out.txt" | sed 's/^/  /'
+fi
+# A query under --partial still answers.
+$KLAR check "$TEST_DIR/import_parse_error.kl" --partial --scope-at 6:5 >"$IMPORT_TMP/out.txt" 2>&1
+if grep -q "Parse error in '.*import_parse_error_helper.kl'" "$IMPORT_TMP/out.txt" \
+    && grep -q "^Scope at 6:5" "$IMPORT_TMP/out.txt"; then
+    pass "import parse error: check --partial --scope-at still answers the query"
+else
+    fail "import parse error: check --partial --scope-at gave no scope after the parse error"
+    head -5 "$IMPORT_TMP/out.txt" | sed 's/^/  /'
+fi
+rm -rf "$IMPORT_TMP"
+
+echo ""
 echo "--- Test: klar run builds into its own temp directory (Bug 56) ---"
 
 # POSIX only: the checks read `ls -ld` modes and TMPDIR, which Windows does not have.
