@@ -512,6 +512,23 @@ application-language peers; C and Rust the performant ones. Decision record:
       language than of Klar, so
       Klar runs get `docs/AI-GUIDE.md` in context, and a second Klar arm without it shows
       how much the guide is doing.
+      Three more metrics (Workflow mail `ai-eval-error-kinds`, 2026-11-14; Philip chose
+      to file them, 2026-11-14): (1) each failed build's compiler errors sorted by kind,
+      per language: unknown name or import, missing method or field, type mismatch,
+      unsatisfied trait or interface, ownership or borrow, other; this separates "Klar is
+      hard to write" (a language-design fix) from "the model does not know Klar's API" (a
+      guide, tooling or error-message fix); (2) "compiled but failed hidden tests" as its
+      own bucket apart from build failures, since Klar's claim over Go and C# lives there;
+      (3) the ratio of reads and searches to edits in each run's tool calls, which should
+      drop for Klar if the `meta` layer works. Evidence: Stephen Toub, "Migrating the
+      GitHub Copilot runtime to Rust, using Copilot", GitHub Blog, 2026-09-16 (of 8,678
+      rustc errors: 37% name/import, 22% missing method/field, 14% type mismatch, 11%
+      trait bound, 1.7% ownership; agents read about 10× as often as they edited; his
+      caveat: a port from a garbage-collected language keeps ownership errors low, and
+      Bun's Zig-to-Rust port, https://bun.com/blog/bun-in-rust, shows the opposite).
+      While writing the method, check whether Klar has a debug-only construct that can
+      erase a side effect in release builds (Bun lost one inside `debug_assert!`); if it
+      does, that is a `BUG.md` entry, not part of this task.
 - [ ] Write the task set and its hidden tests; check each test set against a hand-written
       reference solution in at least one language before any agent sees the task.
 - [ ] Build `benchmarks/ai-eval/run.sh` and run one task × every language × one repeat
