@@ -44,3 +44,4 @@ benchmarks/runtime/results.json
 
 # Cross-session proposals (~/.claude/rules/inbox-format.md)
 .claude/inbox/
+/RESUME.md
