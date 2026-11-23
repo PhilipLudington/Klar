@@ -1189,31 +1189,9 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
         entry.module_ast = module;
         entry.state = .parsed;
 
-        // Discover all imported modules (breadth-first)
-        var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo).empty;
-        defer modules_to_process.deinit(allocator);
-        try modules_to_process.append(allocator, entry);
-
-        var processed_idx: usize = 0;
-        while (processed_idx < modules_to_process.items.len) {
-            const mod = modules_to_process.items[processed_idx];
-            processed_idx += 1;
-
-            // Parse if not already parsed
-            if (mod.state == .discovered) {
-                const src = parseModuleSource(allocator, arena.allocator(), mod) catch continue;
-                try module_sources.append(allocator, src);
-            }
-
-            // Discover imports
-            if (mod.module_ast) |mod_ast| {
-                for (mod_ast.imports) |import_decl| {
-                    const dep = resolver.resolve(import_decl.path, mod) catch continue;
-                    if (dep.state == .discovered) {
-                        try modules_to_process.append(allocator, dep);
-                    }
-                }
-            }
+        // Discover all imported modules (breadth-first); a parse error stops here
+        if (try discoverModules(allocator, arena.allocator(), &resolver, entry, &module_sources, true) != null) {
+            return error.CommandFailed;
         }
 
         // Check for resolution errors
@@ -2884,6 +2862,69 @@ fn parseModuleSource(
     return source;
 }
 
+/// The first module that `discoverModules` could not read or parse, and why.
+const DiscoveryFailure = struct {
+    module: *ModuleInfo,
+    err: anyerror,
+};
+
+/// Parse every module reachable from `entry`, breadth-first, appending each parsed
+/// module's source to `module_sources` (kept alive until after codegen).
+/// A module that cannot be read or parsed has its error printed by
+/// `parseModuleSource`. With `stop_at_parse_error`, discovery stops there; without
+/// it (`check --partial`), that module is skipped and discovery carries on.
+/// Returns the first such module, or null when every module parsed.
+fn discoverModules(
+    allocator: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    resolver: *ModuleResolver,
+    entry: *ModuleInfo,
+    module_sources: *std.ArrayListUnmanaged([]const u8),
+    stop_at_parse_error: bool,
+) !?DiscoveryFailure {
+    var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo).empty;
+    defer modules_to_process.deinit(allocator);
+    try modules_to_process.append(allocator, entry);
+
+    // A module that failed stays `.discovered`; remember it so a second importer
+    // does not parse it again and print its error twice.
+    var failed = std.ArrayListUnmanaged(*ModuleInfo).empty;
+    defer failed.deinit(allocator);
+
+    var first_failure: ?DiscoveryFailure = null;
+    var processed_idx: usize = 0;
+    while (processed_idx < modules_to_process.items.len) {
+        const mod = modules_to_process.items[processed_idx];
+        processed_idx += 1;
+
+        // Parse if not already parsed
+        if (mod.state == .discovered) {
+            if (std.mem.indexOfScalar(*ModuleInfo, failed.items, mod) != null) continue;
+            const src = parseModuleSource(allocator, arena, mod) catch |err| switch (err) {
+                error.FileNotFound, error.ParseError => {
+                    if (first_failure == null) first_failure = .{ .module = mod, .err = err };
+                    if (stop_at_parse_error) return first_failure;
+                    try failed.append(allocator, mod);
+                    continue;
+                },
+                else => return err,
+            };
+            try module_sources.append(allocator, src);
+        }
+
+        // Discover imports
+        if (mod.module_ast) |mod_ast| {
+            for (mod_ast.imports) |import_decl| {
+                const dep = resolver.resolve(import_decl.path, mod) catch continue;
+                if (dep.state == .discovered) {
+                    try modules_to_process.append(allocator, dep);
+                }
+            }
+        }
+    }
+    return first_failure;
+}
+
 /// Discover all modules imported by a module.
 fn discoverImports(
     resolver: *ModuleResolver,
@@ -3077,31 +3118,9 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             entry.module_ast = module;
             entry.state = .parsed;
 
-            // Discover all imported modules (breadth-first)
-            var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo).empty;
-            defer modules_to_process.deinit(allocator);
-            try modules_to_process.append(allocator, entry);
-
-            var processed_idx: usize = 0;
-            while (processed_idx < modules_to_process.items.len) {
-                const mod = modules_to_process.items[processed_idx];
-                processed_idx += 1;
-
-                // Parse if not already parsed
-                if (mod.state == .discovered) {
-                    const src = parseModuleSource(allocator, arena.allocator(), mod) catch continue;
-                    try module_sources.append(allocator, src);
-                }
-
-                // Discover imports
-                if (mod.module_ast) |mod_ast| {
-                    for (mod_ast.imports) |import_decl| {
-                        const dep = resolver.resolve(import_decl.path, mod) catch continue;
-                        if (dep.state == .discovered) {
-                            try modules_to_process.append(allocator, dep);
-                        }
-                    }
-                }
+            // Discover all imported modules (breadth-first); a parse error stops here
+            if (try discoverModules(allocator, arena.allocator(), &resolver, entry, &module_sources, true) != null) {
+                return error.CommandFailed;
             }
 
             // Check for resolution errors
@@ -4468,31 +4487,11 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
         entry.module_ast = module;
         entry.state = .parsed;
 
-        // Discover all imported modules (breadth-first)
-        var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo).empty;
-        defer modules_to_process.deinit(allocator);
-        try modules_to_process.append(allocator, entry);
-
-        var processed_idx: usize = 0;
-        while (processed_idx < modules_to_process.items.len) {
-            const mod = modules_to_process.items[processed_idx];
-            processed_idx += 1;
-
-            // Parse if not already parsed
-            if (mod.state == .discovered) {
-                const src = parseModuleSource(allocator, arena.allocator(), mod) catch continue;
-                try module_sources.append(allocator, src);
-            }
-
-            // Discover imports
-            if (mod.module_ast) |mod_ast| {
-                for (mod_ast.imports) |import_decl| {
-                    const dep = resolver.resolve(import_decl.path, mod) catch continue;
-                    if (dep.state == .discovered) {
-                        try modules_to_process.append(allocator, dep);
-                    }
-                }
-            }
+        // Discover all imported modules (breadth-first). A parse error stops here,
+        // except under --partial, where it is a diagnostic like the entry file's.
+        if (try discoverModules(allocator, arena.allocator(), &resolver, entry, &module_sources, !options.partial_mode) != null) {
+            if (!options.partial_mode) return error.CommandFailed;
+            had_parse_errors = true;
         }
 
         // Check for resolution errors
@@ -4572,7 +4571,8 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
             try stderr.writeAll("Error: failed to extract scope at cursor\n");
             return error.CommandFailed;
         };
-        defer allocator.free(scope_entries);
+        // The checker's allocator owns the slice (an arena for a file with no imports).
+        defer checker.allocator.free(scope_entries);
 
         if (options.scope_json) {
             try stdout.writeAll("{\"line\":");
@@ -5293,35 +5293,13 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
         entry.module_ast = module;
         entry.state = .parsed;
 
-        var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo).empty;
-        defer modules_to_process.deinit(allocator);
-        try modules_to_process.append(allocator, entry);
-
-        var processed_idx: usize = 0;
-        while (processed_idx < modules_to_process.items.len) {
-            const mod = modules_to_process.items[processed_idx];
-            processed_idx += 1;
-
-            if (mod.state == .discovered) {
-                const src = parseModuleSource(allocator, arena.allocator(), mod) catch |err| {
-                    if (options.json_output) {
-                        var msg_buf: [256]u8 = undefined;
-                        const msg = std.fmt.bufPrint(&msg_buf, "failed to parse module '{s}': {s}", .{ mod.file_path, @errorName(err) }) catch "failed to parse module";
-                        return makeSingleCompileErrorResult(allocator, "module_parse", msg, null, null);
-                    }
-                    return error.TestsFailed;
-                };
-                try module_sources.append(allocator, src);
+        if (try discoverModules(allocator, arena.allocator(), &resolver, entry, &module_sources, true)) |failure| {
+            if (options.json_output) {
+                var msg_buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&msg_buf, "failed to parse module '{s}': {s}", .{ failure.module.file_path, @errorName(failure.err) }) catch "failed to parse module";
+                return makeSingleCompileErrorResult(allocator, "module_parse", msg, null, null);
             }
-
-            if (mod.module_ast) |mod_ast| {
-                for (mod_ast.imports) |import_decl| {
-                    const dep = resolver.resolve(import_decl.path, mod) catch continue;
-                    if (dep.state == .discovered) {
-                        try modules_to_process.append(allocator, dep);
-                    }
-                }
-            }
+            return error.TestsFailed;
         }
 
         if (resolver.hasErrors()) {
@@ -6030,31 +6008,9 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
         entry.module_ast = module;
         entry.state = .parsed;
 
-        // Discover all imported modules (breadth-first)
-        var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo).empty;
-        defer modules_to_process.deinit(allocator);
-        try modules_to_process.append(allocator, entry);
-
-        var processed_idx: usize = 0;
-        while (processed_idx < modules_to_process.items.len) {
-            const mod = modules_to_process.items[processed_idx];
-            processed_idx += 1;
-
-            // Parse if not already parsed
-            if (mod.state == .discovered) {
-                const src = parseModuleSource(allocator, arena.allocator(), mod) catch continue;
-                try module_sources.append(allocator, src);
-            }
-
-            // Discover imports
-            if (mod.module_ast) |mod_ast| {
-                for (mod_ast.imports) |import_decl| {
-                    const dep = resolver.resolve(import_decl.path, mod) catch continue;
-                    if (dep.state == .discovered) {
-                        try modules_to_process.append(allocator, dep);
-                    }
-                }
-            }
+        // Discover all imported modules (breadth-first); a parse error stops here
+        if (try discoverModules(allocator, arena.allocator(), &resolver, entry, &module_sources, true) != null) {
+            return error.CommandFailed;
         }
 
         // Check for resolution errors

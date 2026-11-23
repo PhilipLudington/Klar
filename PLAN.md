@@ -187,7 +187,7 @@ in user programs first, then checker/contract correctness, then tooling, then de
       (completed 2026-10-27: `klar run` builds into a fresh `klar-run-*` directory made by
       `mkdtemp`, 0700, under `$TMPDIR` or `/tmp`; on Windows under `%TEMP%`)
       Reviewed: 2026-10-27 fa6a00c0 (gaps 7, Philip 2)
-- [ ] Bug 51 — a parse error in an imported module is swallowed by `catch continue` and the
+- [x] Bug 51 — a parse error in an imported module is swallowed by `catch continue` and the
       build reports success (`src/main.zig`, four discovery loops); make it fatal, as the
       test runner does. (Philip, 2026-10-25: before v0.6.0) (qa-audit 2026-09-04)
       Under `check --partial` an imported module's parse error is a diagnostic like the
@@ -198,6 +198,8 @@ in user programs first, then checker/contract correctness, then tooling, then de
       make discovery stop at the parse error, so the only error printed is the parse
       error and the misleading "module not found" line goes away (Philip, 2026-10-27;
       decision: `docs/decisions/2026-10-27-import-parse-error-stops-discovery.md`).
+      (completed 2026-10-27: every discovery loop, the test runner's included, goes
+      through `discoverModules`, which stops at the first module that fails to parse)
       Reviewed: 2026-10-27 e723e687 (gaps 1, Philip 0)
 
 **Move checking and explicit move/clone (Philip, 2026-10-18; not in the v0.6.0 cut set)**
@@ -340,6 +342,10 @@ in user programs first, then checker/contract correctness, then tooling, then de
       (`src/bytecode.zig:491`). (crash: `klar disasm` can panic) (qa-audit 2026-09-04)
 
 **CLI, driver and LSP**
+- [x] Bug 142 — `klar check --scope-at` on a file with no imports panics ("Invalid free",
+      exit 134): the scope slice comes from the checker's arena and `checkFile` frees it
+      with the general-purpose allocator (`src/main.zig:4567`). (crash)
+      (found: fix/bug-51-import-parse-error, 2026-10-27) (completed 2026-10-27, qa-fix)
 - [ ] Bug 52 — ownership analysis only in `check`, entry module only (`src/main.zig:4645`);
       run it in every pipeline over every module. (Philip, 2026-10-24: keeps its line, a
       move/clone § 6 prerequisite) (qa-audit 2026-09-04)
